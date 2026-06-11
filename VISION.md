@@ -32,12 +32,12 @@ peer — no sidecar, no thin-client compromise.**
 
 ### Security modes (live in `dist/assets/Layout-uyPNBzUp.js`, `Sa` object)
 
-| Mode | Label | Protocol | When used |
-|------|-------|----------|-----------|
-| **Seal** | `SEAL // 1:1 E2EE` | X3DH key agreement + Double Ratchet | Direct messages between two peers |
-| **Tree** | `TREE // GROUP E2EE` | MLS (Messaging Layer Security) | Small groups with full member trees |
-| **Crowd** | `CROWD // CHANNEL E2EE` | Epoch-rotation channel encryption | Large channels |
-| **Clear** | `UNENCRYPTED // DO NOT TRUST` | None | Only in legacy or interop contexts; Harmolyn **never** negotiates this mode for its own spaces |
+| Mode      | Label                         | Protocol                            | When used                                                                                      |
+| --------- | ----------------------------- | ----------------------------------- | ---------------------------------------------------------------------------------------------- |
+| **Seal**  | `SEAL // 1:1 E2EE`            | X3DH key agreement + Double Ratchet | Direct messages between two peers                                                              |
+| **Tree**  | `TREE // GROUP E2EE`          | MLS (Messaging Layer Security)      | Small groups with full member trees                                                            |
+| **Crowd** | `CROWD // CHANNEL E2EE`       | Epoch-rotation channel encryption   | Large channels                                                                                 |
+| **Clear** | `UNENCRYPTED // DO NOT TRUST` | None                                | Only in legacy or interop contexts; Harmolyn **never** negotiates this mode for its own spaces |
 
 The mode badge is rendered on every conversation header. Clear mode carries an explicit
 danger label and `insecure: true` in the data model — it is never a silent default.
@@ -76,6 +76,7 @@ at app startup, not by a sidecar.
 ### 4.2 `node.xorein.com` is a support service, never on the message path
 
 The support node provides:
+
 - Circuit relay bootstrap (WebSocket endpoint `:9999/wss`, UDP/QUIC `:33445`)
 - Relay address enumeration (`GET https://node.xorein.com/v1/relay/addrs`)
 - Blob storage for async delivery
@@ -133,10 +134,10 @@ Harmolyn will **not** become:
 
 The following standards must hold before any feature ships:
 
-| Dimension | Minimum bar | Verification |
-|-----------|-------------|--------------|
-| E2EE correctness | Seal/Tree/Crowd messages must not be decryptable by the support node or any party outside the negotiated member set | Protocol unit tests covering the crypto primitive round-trip |
-| Security-mode UI accuracy | The mode badge rendered in the channel header must match the actual negotiated mode object; mismatches are a P0 bug | E2E test asserting badge ↔ negotiated mode |
-| No secrets in bundle | Production bundles must not contain private keys, seed material, or API secrets | `dist/` static scan in CI (`.github/workflows/agenthub-ci.yml`) |
-| Protocol test coverage | Every crypto primitive used in Seal, Tree, and Crowd modes must have at least one test covering key generation, encrypt, and decrypt | Test run passes before merge |
-| Feature-flag gating | Experimental UI features (polls, threads, forums, etc.) must be gated behind a flag from `featureFlags.ts` and must not affect the E2EE path | Flag-off state tested alongside flag-on state |
+| Dimension                 | Minimum bar                                                                                                                                  | Verification                                                    |
+| ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
+| E2EE correctness          | Seal/Tree/Crowd messages must not be decryptable by the support node or any party outside the negotiated member set                          | Protocol unit tests covering the crypto primitive round-trip    |
+| Security-mode UI accuracy | The mode badge rendered in the channel header must match the actual negotiated mode object; mismatches are a P0 bug                          | E2E test asserting badge ↔ negotiated mode                     |
+| No secrets in bundle      | Production bundles must not contain private keys, seed material, or API secrets                                                              | `dist/` static scan in CI (`.github/workflows/agenthub-ci.yml`) |
+| Protocol test coverage    | Every crypto primitive used in Seal, Tree, and Crowd modes must have at least one test covering key generation, encrypt, and decrypt         | Test run passes before merge                                    |
+| Feature-flag gating       | Experimental UI features (polls, threads, forums, etc.) must be gated behind a flag from `featureFlags.ts` and must not affect the E2EE path | Flag-off state tested alongside flag-on state                   |
