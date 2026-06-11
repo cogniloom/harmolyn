@@ -75,15 +75,9 @@ at app startup, not by a sidecar.
 
 ### 4.2 `node.xorein.com` is a support service, never on the message path
 
-The support node provides:
-
-- Circuit relay bootstrap (WebSocket endpoint `:9999/wss`, UDP/QUIC `:33445`)
-- Relay address enumeration (`GET https://node.xorein.com/v1/relay/addrs`)
-- Blob storage for async delivery
-
+The support node provides circuit relay bootstrap and blob storage for async delivery.
 It must never appear in the routing path of a live E2EE message between two online
-peers. If the support node is unavailable, encrypted peer-to-peer messaging continues
-(relay-less via WebTransport/QUIC when both peers are reachable).
+peers.
 
 Evidence: `peerstream-CeMEa_Qx.js` `_()` function — the app dials the relay to
 acquire a `/p2p-circuit` address, then uses that address for peer reachability, not as
