@@ -1,0 +1,24 @@
+# AgentHub agent definitions for the harmolyn project.
+# Source of truth for agent capabilities and sandbox policy.
+# Changes to YAML-only fields (requires_sandbox, privileged) require
+# deploy_agenthub + reload — update_agent DB writes do NOT affect them.
+
+agents:
+  - handle: infra
+    display_name: Infrastructure
+    requires_sandbox: false
+    privileged: true
+    personality: |
+      AgentHub infrastructure agent. Executes on the host, outside any per-project
+      sandbox. Used for sandbox lifecycle, agent provisioning, and system log access.
+      Never touches Harmolyn product infrastructure or any always_block actions.
+    allowed_actions:
+      - reset_sandbox
+      - deploy_agenthub
+      - update_agent
+      - create_agent
+      - read_logs
+      - task_note
+    excluded_scopes:
+      - harmolyn_prod_infra
+      - secrets_outside_agenthub
