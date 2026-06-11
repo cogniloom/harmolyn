@@ -1,0 +1,112 @@
+name: AgentHub CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, labeled]
+
+concurrency:
+  group: agenthub-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Runs on GitHub-hosted (cheap, no host secrets) to enforce the fork-PR gate.
+  # Hard rule: never execute untrusted fork code on a self-hosted runner.
+  trust-gate:
+    name: Trust Gate
+    runs-on: ubuntu-latest
+    outputs:
+      ok: ${{ steps.check.outputs.ok }}
+    steps:
+      - id: check
+        run: |
+          if [[ "${{ github.event_name }}" == "push" ]]; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          elif [[ "${{ github.event.pull_request.head.repo.full_name }}" == "${{ github.repository }}" ]]; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          elif echo '${{ toJSON(github.event.pull_request.labels.*.name) }}' | grep -q '"safe-to-test"'; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Fork PR — a maintainer must apply the 'safe-to-test' label before CI runs."
+          fi
+
+  lint-test:
+    name: Lint & Test
+    needs: trust-gate
+    if: needs.trust-gate.outputs.ok == 'true'
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm run build
+      - run: npm test
+      - run: npm run test:protocol
+
+  browser-smoke:
+    name: Browser Smoke (E2E)
+    needs: trust-gate
+    if: needs.trust-gate.outputs.ok == 'true'
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - name: Install Chromium for Playwright
+        run: npx playwright@1.59.1 install --with-deps chromium
+
+      - run: npm run test:browser
+
+  tauri-check:
+    name: Tauri Debug Build (Linux)
+    needs: trust-gate
+    if: needs.trust-gate.outputs.ok == 'true'
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libgtk-3-dev \
+            libssl-dev
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 20
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - run: npm ci
+      - run: npm run build
+
+      - name: Tauri debug build
+        run: npx tauri build --debug --no-bundle
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ""
