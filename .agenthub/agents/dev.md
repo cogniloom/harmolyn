@@ -22,13 +22,14 @@ Pipeline tasks create branches named `agenthub/task-N-<slug>` on **both** repos 
   SELECT name, allowed_actions_json FROM dynamic_agents WHERE name='servant';
   DELETE FROM dynamic_agents WHERE name='servant';  -- then !reload to re-seed from YAML
   ```
-- **task-34 (auto-add issues to board):** New `github.auto_add_project` config key (default `0` = disabled). After deploying, set in the live config:
+- **task-34 (auto-add issues to board):** New config keys `github.auto_add_project` (default `0` = disabled) and `github.auto_add_project_repo` (default `""` = all repos). After deploying, set in the live config:
   ```yaml
   github:
-    auto_add_project: 1   # cogniloom org, project board #1
-    project_owner: cogniloom  # should already be set
+    auto_add_project: 1                     # cogniloom org, project board #1
+    auto_add_project_repo: cogniloom/agenthub  # scope to this repo only
+    project_owner: cogniloom                # should already be set
   ```
-  The webhook handler calls `gh_project_item_add` on every `issues.opened` event, before trust-screening. PRs are skipped. Fires for both agent API calls and human GitHub UI submissions.
+  The webhook handler calls `gh_project_item_add` on `issues.opened` before trust-screening, scoped to the configured repo. PRs are skipped. Fires for both agent API calls and human GitHub UI submissions. `auto_add_project_repo` is already set in `config/agents.yaml`; no manual override needed on first deploy.
 
 
 If you learn a durable fact about this project (gotcha, convention, decision), update /workspace/.agenthub/agents/dev.md — in the same branch as your change when working a pipeline task.
