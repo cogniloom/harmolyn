@@ -34,7 +34,7 @@
     "@libp2p/identify": "^4.1.7",
     "@libp2p/ping": "^3.1.6",
     "@libp2p/websockets": "^10.1.14",
-    "@libp2p/webtransport": "^6.0.28",
+    "@libp2p/webtransport": "^6.0.30",
     "@multiformats/multiaddr": "^13.0.3",
     "@noble/ciphers": "^2.2.0",
     "@noble/curves": "^2.2.0",
