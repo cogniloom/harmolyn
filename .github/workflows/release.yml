@@ -19,7 +19,7 @@ jobs:
       release_id: ${{ steps.create-release.outputs.id }}
       release_upload_url: ${{ steps.create-release.outputs.upload_url }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
 
       - name: Create draft release
         id: create-release
@@ -76,10 +76,10 @@ jobs:
 
     runs-on: self-hosted
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
 
       - name: Checkout xorein sidecar source
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
         with:
           repository: kylhuk/xorein
           path: xorein
@@ -201,7 +201,7 @@ jobs:
     needs: [draft-release, build]
     runs-on: self-hosted
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
 
       - name: Download release assets
         uses: actions/github-script@v8
