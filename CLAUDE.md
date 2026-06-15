@@ -12,7 +12,7 @@ The hosted xorein node (`https://node.xorein.com`) is a *support service only*, 
 - **Bootstrap / first contact** — a libp2p relay + rendezvous so a fresh client that has never reached any peer can join the P2P network.
 - **Blob storage** — files and avatars, which are impractical to host on the pure P2P network.
 
-**Current reality:** the native P2P engine (`src/native/`) is now the default (`nativeEngine: true` in featureFlags.ts). Message/server/channel mutations route through the native engine; the HTTP client (`src/lib/xoreinControl.ts`) handles the support-service role only: server-join invites, identity backup/restore, pins, moderation/roles, notifications, file uploads, and voice frames. The mutation facade (`src/hooks/runtime/useRuntimeMutations.ts`) is the single switch-point. The Tauri sidecar binary (`src-tauri/binaries/`) remains bundled for desktop builds but is not on the default data path.
+**Current reality:** the native P2P engine (`src/native/`) is now the default (`nativeEngine: true` in featureFlags.ts). Message/server/channel mutations route through the native engine; the HTTP client (`src/lib/xoreinControl.ts`) handles the support-service role only: identity backup/restore, role creation/assignment, moderation actions, notification queries, file uploads (gated off via `fileUploads: false`), and raw voice frames. The mutation facade (`src/hooks/runtime/useRuntimeMutations.ts`) is the single switch-point. The authoritative route table is `src/native/capabilityMap.ts`; `capabilityMap.test.ts` is the CI contract check. The Tauri sidecar binary (`src-tauri/binaries/`) remains bundled for desktop builds but is not on the default data path.
 
 ## Commands
 
@@ -67,31 +67,35 @@ Control API      src/lib/xoreinControl.ts  REST client to the support node (boot
 
 This is where the full xorein protocol runs in-app (no sidecar). `engine/engine.ts` (`XoreinNativeEngine`) is the unified API over a set of protocol subsystems, each its own folder:
 
-- `identity/` — hybrid PQ identity, certs, encrypted-at-rest storage (guest = sessionStorage, registered = Argon2 password + IndexedDB)
-- `crypto/` — hybrid (classical + PQ) sign/verify primitives
-- `seal/` — 1:1 E2EE: X3DH prekey bundles + Double Ratchet (`session.ts`, `ratchet.ts`, `bundle.ts`)
-- `tree/` — small-group E2EE (MLS-style)
-- `crowd/` — large-scale channel E2EE with sender keys / epoch rotation
-- `voice/` — SRTP-style media-frame encryption (`mediashield.ts`) + voice sessions
-- `transport/` — js-libp2p node, transport manager, relay/rendezvous, backoff
-- `delivery/` — store-and-forward mailbox + offline queue
-- `sync/` — peer sync, invites, inbound handlers, secure envelopes, registry
-- `families/` — protocol family wire framing (`peerstream.ts`), presence
-- `blobs/` — file/avatar upload/download via the support node
-- `state/` — the native store, snapshot publisher, and `mutations.ts` (all `nativeXxx` mutation impls)
+- `identity/` — hybrid PQ identity (Ed25519+ML-DSA-65), certs, encrypted-at-rest storage (guest = sessionStorage, registered = Argon2id password + IndexedDB)
+- `crypto/` — hybrid (X25519+ML-KEM-768 / Ed25519+ML-DSA-65) sign/verify/KEM primitives; ciphersuite `0xFF01`
+- `seal/` — 1:1 E2EE: X3DH prekey bundles + Double Ratchet (`session.ts`, `ratchet.ts`, `bundle.ts`, `persist.ts`)
+- `tree/` — small-group E2EE (MLS-style, epoch-keyed AES-128-GCM)
+- `crowd/` — large-scale channel E2EE with sender keys / epoch rotation (ChaCha20-Poly1305; `channel.ts`)
+- `voice/` — MediaShield SFrame E2EE (`mediashield.ts`, AES-128-GCM per frame) + WebRTC voice sessions
+- `transport/` — js-libp2p node (`node.ts`), transport manager with multi-relay failover (`manager.ts`), relay resolver (`relays.ts`), Noise prologue (`prologue.ts`), backoff
+- `delivery/` — zero-knowledge mailbox (pairwise-blinded tokens, `offline.ts`), store-and-forward + drain
+- `sync/` — peer sync, invite authorization (`invite.ts`), inbound handlers, secure envelopes (`secureEnvelope.ts`), registry
+- `families/` — PeerStream protobuf framing (`peerstream.ts`, 4-byte length prefix), presence, friends, typing
+- `blobs/` — client-side AES-256-GCM blob encryption before upload; content-addressed SHA-256 integrity
+- `recovery/` — identity + session recovery flows
+- `state/` — the native store, snapshot publisher (`toRuntimeSnapshot` strips `crowd_root`/`invite_secret`), and `mutations.ts` (all `nativeXxx` mutation impls)
+- `capabilityMap.ts` — authoritative route table (native / native-local / http / mixed / gap) for every mutation; `capabilityMap.test.ts` is the CI contract check
 
-**The mutation facade is the contract.** `src/hooks/runtime/useRuntimeMutations.ts` is the single place that decides, per operation, whether to call the native engine (`nativeXxx` from `state/mutations.ts`) or fall through to the HTTP control client (`xoreinControl.ts`). Add or change a data mutation *here*, not by importing `xoreinControl` directly from components. Operations still on the HTTP path: identity backup/restore, pins, moderation/roles, notifications, file uploads, voice frames.
+**The mutation facade is the contract.** `src/hooks/runtime/useRuntimeMutations.ts` is the single place that decides, per operation, whether to call the native engine (`nativeXxx` from `state/mutations.ts`) or fall through to the HTTP control client (`xoreinControl.ts`). Add or change a data mutation *here*, not by importing `xoreinControl` directly from components. Operations still on the HTTP path (see `capabilityMap.ts` for the full, authoritative list): identity backup/restore, role creation/assignment, moderation actions (kick/ban/mute), notification queries, file uploads (gated off), and raw voice frames. Pins, reactions, presence, server CRUD, friends requests, and voice signaling are all native P2P.
 
 **Snapshot ownership:** when the native engine is active it is the *sole* writer of the runtime snapshot (gated by the `__HARMOLYN_NATIVE_ACTIVE__` flag); UI reads via `useRuntimeSnapshot` / `xoreinRuntimeContext`. See `docs/PROTOCOL_GAPS.md` and `docs/xorein-native-roadmap.md` for which features are real vs. still gated off.
 
 ### Protocol layer (`src/protocol/`)
 
-- `client.ts` — `XoreinClient` with pluggable `XoreinTransport` interface
+- `client.ts` — `XoreinClient` with pluggable `XoreinTransport` interface; `DEFAULT_PREFERRED_SECURITY_MODES = ["seal", "tree"]` (clear excluded)
 - `capabilities.ts` — feature negotiation between client and runtime
 - `manifest.ts` — manifest validation with SHA256 digests
-- `deeplink.ts` — invite/join URL parsing
+- `deeplink.ts` — invite/join URL parsing (also `nativeDeepLink.ts` for native-engine join)
+- `featureBridge.ts` — maps protocol capability flags to `featureFlags.ts` toggles
 - `backoff.ts` — reconnection backoff
 - `protocolId.ts` — protocol version parsing
+- `url.ts` — canonical URL helpers
 
 Protocol TypeScript is **strict** (`tsconfig.protocol.json`). App TypeScript is intentionally **non-strict** (`tsconfig.app.json`) to allow rapid UI iteration.
 

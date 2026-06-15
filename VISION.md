@@ -30,7 +30,7 @@ interaction.
 **Discord-like UX + four explicit, always-visible security modes + a full in-browser P2P
 peer — no sidecar, no thin-client compromise.**
 
-### Security modes (live in `dist/assets/Layout-uyPNBzUp.js`, `Sa` object)
+### Security modes (source: `src/lib/securityMode.ts`, `src/protocol/client.ts`)
 
 | Mode      | Label                         | Protocol                            | When used                                                                                      |
 | --------- | ----------------------------- | ----------------------------------- | ---------------------------------------------------------------------------------------------- |
@@ -42,19 +42,22 @@ peer — no sidecar, no thin-client compromise.**
 The mode badge is rendered on every conversation header. Clear mode carries an explicit
 danger label and `insecure: true` in the data model — it is never a silent default.
 
-When `HARMOLYN_NATIVE_ACTIVE` is set (Tauri desktop build, `src-tauri/`), the native
-peer is authoritative: DMs default to Seal, channels to Crowd.
+The native engine is active by default on **all builds** (browser and Tauri desktop),
+controlled by `nativeEngine: true` in `src/config/featureFlags.ts`. When active, DMs
+default to Seal and channels default to Crowd. The `__HARMOLYN_NATIVE_ACTIVE__` runtime
+flag gates snapshot ownership in the UI layer.
 
 ### Full in-app peer
 
 The xorein P2P peer initialises inside the app process (browser or Tauri). The libp2p
-node is created in `dist/assets/peerstream-CeMEa_Qx.js` (`g()` factory), using:
+node is created in `src/native/transport/node.ts` (`createXoreinNode()`), using:
 
 - Transport: WebSockets + circuit-relay-v2 (browser), WebTransport/QUIC when available
 - Connection encryption: Noise XX with `ChaCha20-Poly1305 / SHA-256`
   (`/aether/noise/1.0|noise=XX_25519_ChaChaPoly_SHA256`)
-- Identity: Ed25519 keypair (derived from user seed)
+- Identity: Ed25519 + ML-DSA-65 hybrid keypair (`src/native/identity/`)
 - Peer ID: libp2p multihash format
+- PeerStream framing: 4-byte length-prefixed protobuf (`src/native/families/peerstream.ts`)
 
 The support node (`node.xorein.com`, peer
 `12D3KooWGWC3A4KawRYn9Mcyt9LjDg6TS7vF5uju7v6gTFsrEBS4`) provides bootstrap relay and
@@ -70,8 +73,10 @@ The full xorein protocol stack runs inside the app — both in the browser build
 Tauri desktop build (`src-tauri/`). There is no separate node process the user must
 install. No thin-client mode where messages are decrypted server-side.
 
-Evidence: `peerstream-CeMEa_Qx.js` exports `initNode()` (`g`), which is called
-at app startup, not by a sidecar.
+Evidence: `src/native/engine/engine.ts` (`XoreinNativeEngine`) is initialized at app
+startup via `NativeEngineProvider`; `nativeEngine: true` in `featureFlags.ts` is the
+default for all builds. The Tauri sidecar binary in `src-tauri/binaries/` is bundled for
+desktop but is not on the default data path.
 
 ### 4.2 `node.xorein.com` is a support service, never on the message path
 
@@ -79,26 +84,32 @@ The support node provides circuit relay bootstrap and blob storage for async del
 It must never appear in the routing path of a live E2EE message between two online
 peers.
 
-Evidence: `peerstream-CeMEa_Qx.js` `_()` function — the app dials the relay to
-acquire a `/p2p-circuit` address, then uses that address for peer reachability, not as
-a message intermediary.
+Evidence: `src/native/transport/manager.ts` (`XoreinTransportManager`) — the app dials
+the relay to acquire a `/p2p-circuit` address used for peer reachability. The only
+support-node HTTP calls are identity backup/restore, blob uploads, and relay registration.
+Live DM and channel messages travel peer-to-peer over the authenticated relay circuit.
 
 ### 4.3 Hybrid post-quantum E2EE is the cryptographic foundation
 
-The xorein hybrid scheme is the encryption baseline. No feature or protocol negotiation
-may silently downgrade a private space to classical-only or unencrypted.
+The xorein hybrid scheme (ciphersuite `0xFF01`: X25519+ML-KEM-768 / Ed25519+ML-DSA-65)
+is the encryption baseline. No feature or protocol negotiation may silently downgrade a
+private space to classical-only or unencrypted.
 
-Reference: `https://github.com/xorein/hybrid` (`Nc` constant in bundle).
+Sources: `src/native/crypto/hybrid.ts` (sign/verify + KEM primitives),
+`src/native/seal/` (X3DH + Double Ratchet), `src/native/crowd/` (epoch-keyed broadcast),
+`docs/xorein-native-roadmap.md` (locked decisions, 2026-06-02).
 
 ### 4.4 Security mode is always visible; Clear is never a silent default
 
-Every conversation renders its current security mode badge from the `Ca()` resolver in
-the Layout bundle. The `unspecified` state is distinct from `clear` — an unresolved
-negotiation is shown as `NOT NEGOTIATED`, not silently rendered as safe.
+Every conversation renders its current security mode badge from `resolveSecurityMode()`
+in `src/lib/securityMode.ts`. The `unspecified` state is distinct from `clear` — an
+unresolved negotiation is shown as `NOT NEGOTIATED`, not silently rendered as safe.
 
 The `clear` mode object carries `insecure: true` and the description explicitly states
 "Harmolyn never negotiates this mode" for its own private spaces. It exists solely for
-interoperability with external, non-E2EE contexts.
+interoperability with external, non-E2EE contexts. `DEFAULT_PREFERRED_SECURITY_MODES`
+in `src/protocol/client.ts` is `["seal", "tree"]` — `clear` is excluded; a
+`security_mode_incompatible` error is thrown rather than falling back to plaintext.
 
 ---
 
