@@ -1,0 +1,181 @@
+- generic [ref=e67]:
+  - complementary "Channel List" [ref=e451]:
+    - generic [ref=e452]:
+      - generic [ref=e455]:
+        - heading "Demo Hub" [level=2] [ref=e456]
+        - generic [ref=e457]: NO PEER
+      - generic [ref=e458]:
+        - button "Server Settings" [disabled] [ref=e459]:
+          - img [ref=e460]
+        - button "Collapse Channel List" [ref=e463] [cursor=pointer]:
+          - img [ref=e464]
+    - generic [ref=e468]:
+      - generic [ref=e469]:
+        - generic [ref=e470]: TEXT CHANNELS
+        - img [ref=e471]
+      - button "general" [disabled] [ref=e475]:
+        - img [ref=e476]
+        - generic [ref=e479]: general
+    - generic [ref=e480]:
+      - button "Set Status" [ref=e481] [cursor=pointer]:
+        - img "My Avatar" [ref=e482]
+      - generic [ref=e484]:
+        - generic [ref=e485]: Harmolyn Demo
+        - generic [ref=e486]: ID // ME
+      - generic [ref=e487]:
+        - button "Switch Account" [ref=e488] [cursor=pointer]:
+          - img [ref=e489]
+        - button "Mute Microphone" [disabled] [ref=e492]:
+          - img [ref=e493]
+        - button "Deafen Audio" [disabled] [ref=e496]:
+          - img [ref=e497]
+        - button "Open Settings" [ref=e499] [cursor=pointer]:
+          - img [ref=e500]
+  - generic [ref=e68]:
+    - generic [ref=e70]:
+      - generic [ref=e72]:
+        - generic [ref=e73]:
+          - button "Open Menu" [active] [ref=e74] [cursor=pointer]:
+            - img [ref=e75]
+          - img [ref=e77]
+          - generic [ref=e80]:
+            - generic [ref=e81]: general
+            - generic "No security mode has been negotiated for this conversation yet." [ref=e82]: NOT NEGOTIATED
+        - generic [ref=e83]:
+          - group "Channel type" [ref=e84]:
+            - button "Set channel type to Text" [pressed] [ref=e85] [cursor=pointer]:
+              - img [ref=e86]
+              - generic [ref=e89]: Text
+            - button "Set channel type to Announce" [ref=e90] [cursor=pointer]:
+              - img [ref=e91]
+              - generic [ref=e94]: Announce
+          - button "Theme Settings" [ref=e96] [cursor=pointer]
+          - button "Change Chat View" [ref=e98] [cursor=pointer]:
+            - img [ref=e99]
+          - button "Member List" [ref=e103] [cursor=pointer]:
+            - img [ref=e104]
+      - generic [ref=e109]:
+        - generic [ref=e110]:
+          - img [ref=e112]
+          - 'heading "Initiate Hub: #general" [level=1] [ref=e115]'
+          - paragraph [ref=e116]: OPERATOR // INGRESS POINT // DATA STREAM START
+        - generic [ref=e117]:
+          - img "Harmolyn Demo" [ref=e121] [cursor=pointer]
+          - generic [ref=e123]:
+            - generic [ref=e124]:
+              - generic [ref=e125] [cursor=pointer]:
+                - generic [ref=e126]: Harmolyn Demo
+                - generic "online" [ref=e127]
+              - generic [ref=e129]: 9:39 AM
+            - generic [ref=e130]: Hello from Harmolyn web! E2E test passed.
+        - generic [ref=e131]:
+          - img "Harmolyn Demo" [ref=e135] [cursor=pointer]
+          - generic [ref=e137]:
+            - generic [ref=e138]:
+              - generic [ref=e139] [cursor=pointer]:
+                - generic [ref=e140]: Harmolyn Demo
+                - generic "online" [ref=e141]
+              - generic [ref=e143]: 9:44 AM
+            - generic [ref=e144]: Hello from the browser! Full E2E working.
+        - generic [ref=e145]:
+          - img "Harmolyn Demo" [ref=e149] [cursor=pointer]
+          - generic [ref=e151]:
+            - generic [ref=e152]:
+              - generic [ref=e153] [cursor=pointer]:
+                - generic [ref=e154]: Harmolyn Demo
+                - generic "online" [ref=e155]
+              - generic [ref=e157]: 12:16 PM
+            - generic [ref=e158]: test
+        - generic [ref=e159]:
+          - img "Harmolyn Demo" [ref=e163] [cursor=pointer]
+          - generic [ref=e165]:
+            - generic [ref=e166]:
+              - generic [ref=e167] [cursor=pointer]:
+                - generic [ref=e168]: Harmolyn Demo
+                - generic "online" [ref=e169]
+              - generic [ref=e171]: 3:07 PM
+            - generic [ref=e172]: E2E test message from automated testing
+        - generic [ref=e173]:
+          - img "Harmolyn Demo" [ref=e177] [cursor=pointer]
+          - generic [ref=e179]:
+            - generic [ref=e180]:
+              - generic [ref=e181] [cursor=pointer]:
+                - generic [ref=e182]: Harmolyn Demo
+                - generic "online" [ref=e183]
+              - generic [ref=e185]: 3:07 PM
+            - generic [ref=e186]: 😂
+        - generic [ref=e187]:
+          - img "Harmolyn Demo" [ref=e191] [cursor=pointer]
+          - generic [ref=e193]:
+            - generic [ref=e194]:
+              - generic [ref=e195] [cursor=pointer]:
+                - generic [ref=e196]: Harmolyn Demo
+                - generic "online" [ref=e197]
+              - generic [ref=e199]: 3:11 PM
+            - generic [ref=e200]: 😀 edited(edited)
+        - generic [ref=e201]:
+          - img "Harmolyn Demo" [ref=e205] [cursor=pointer]
+          - generic [ref=e207]:
+            - generic [ref=e208]:
+              - generic [ref=e209] [cursor=pointer]:
+                - generic [ref=e210]: Harmolyn Demo
+                - generic "online" [ref=e211]
+              - generic [ref=e213]: 3:14 PM
+            - generic [ref=e214]: 😀 edited
+        - generic [ref=e215]:
+          - img "Harmolyn Demo" [ref=e219] [cursor=pointer]
+          - generic [ref=e221]:
+            - generic [ref=e222]:
+              - generic [ref=e223] [cursor=pointer]:
+                - generic [ref=e224]: Harmolyn Demo
+                - generic "online" [ref=e225]
+              - generic [ref=e227]: 3:22 PM
+            - generic [ref=e228]: unmute test
+        - generic [ref=e231]: NEW MESSAGES
+        - generic [ref=e233]:
+          - img "Harmolyn Demo" [ref=e237] [cursor=pointer]
+          - generic [ref=e239]:
+            - generic [ref=e240]:
+              - generic [ref=e241] [cursor=pointer]:
+                - generic [ref=e242]: Harmolyn Demo
+                - generic "online" [ref=e243]
+              - generic [ref=e245]: 3:25 PM
+            - generic [ref=e246]: E2E Test Announcement This is an E2E test announcement from automated testing.
+        - generic [ref=e435]:
+          - img "Harmolyn Demo" [ref=e439] [cursor=pointer]
+          - generic [ref=e441]:
+            - generic [ref=e442]:
+              - generic [ref=e443] [cursor=pointer]:
+                - generic [ref=e444]: Harmolyn Demo
+                - generic "online" [ref=e445]
+              - generic [ref=e447]: 3:43 PM
+            - generic [ref=e448]: 🎉
+      - generic [ref=e247]:
+        - generic [ref=e248]:
+          - generic [ref=e249]: connected
+          - generic [ref=e250]: Backend connected — chat mutations are sent to the remote xorein node.
+        - generic [ref=e251]:
+          - textbox "Message Input" [ref=e252]:
+            - /placeholder: "INPUT // #GENERAL"
+          - generic [ref=e253]:
+            - button "Stickers" [ref=e255] [cursor=pointer]:
+              - img [ref=e256]
+            - button "Emoji Picker" [ref=e261] [cursor=pointer]:
+              - img [ref=e262]
+            - button "Send Message" [ref=e265] [cursor=pointer]:
+              - img [ref=e266]
+    - generic [ref=e270]:
+      - button "HOME" [ref=e271] [cursor=pointer]:
+        - img [ref=e273]
+        - generic [ref=e276]: HOME
+      - button "CHANNELS" [ref=e277] [cursor=pointer]:
+        - img [ref=e279]
+        - generic [ref=e280]: CHANNELS
+      - button "CREATE" [disabled] [ref=e281]:
+        - img [ref=e284]
+      - button "EXPLORE" [disabled] [ref=e289]:
+        - img [ref=e291]
+        - generic [ref=e294]: EXPLORE
+      - button "SETTINGS" [ref=e295] [cursor=pointer]:
+        - img [ref=e297]
+        - generic [ref=e300]: SETTINGS

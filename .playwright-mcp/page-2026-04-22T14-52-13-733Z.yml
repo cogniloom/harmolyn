@@ -1,0 +1,118 @@
+- generic [ref=e3]:
+  - generic [ref=e102]:
+    - generic [ref=e104]:
+      - generic [ref=e105]: User settings
+      - button "My Account" [ref=e106] [cursor=pointer]:
+        - img [ref=e108]
+        - generic [ref=e111]: My Account
+      - button "Privacy & Safety" [ref=e112] [cursor=pointer]:
+        - img [ref=e114]
+        - generic [ref=e116]: Privacy & Safety
+      - button "Security (MFA)" [ref=e117] [cursor=pointer]:
+        - img [ref=e119]
+        - generic [ref=e122]: Security (MFA)
+      - button "Authorized Hubs" [ref=e123] [cursor=pointer]:
+        - img [ref=e125]
+        - generic [ref=e129]: Authorized Hubs
+      - generic [ref=e131]: System configuration
+      - button "Core Appearance" [active] [ref=e132] [cursor=pointer]:
+        - img [ref=e134]
+        - generic [ref=e136]: Core Appearance
+      - button "Signal Alerts" [ref=e137] [cursor=pointer]:
+        - img [ref=e139]
+        - generic [ref=e142]: Signal Alerts
+      - button "Accessibility" [ref=e143] [cursor=pointer]:
+        - img [ref=e145]
+        - generic [ref=e151]: Accessibility
+      - button "Mobile Sync" [ref=e152] [cursor=pointer]:
+        - img [ref=e154]
+        - generic [ref=e156]: Mobile Sync
+      - generic [ref=e158]: Support
+      - button "Donate" [ref=e159] [cursor=pointer]:
+        - img [ref=e161]
+        - generic [ref=e163]: Donate
+      - button "Shop" [ref=e164] [cursor=pointer]:
+        - img [ref=e166]
+        - generic [ref=e169]: Shop
+      - button "Quests" [ref=e170] [cursor=pointer]:
+        - img [ref=e172]
+        - generic [ref=e178]: Quests
+      - button "Log Out" [ref=e181] [cursor=pointer]:
+        - img [ref=e182]
+        - generic [ref=e185]: Log Out
+    - generic:
+      - generic:
+        - banner:
+          - heading "CORE // APPEARANCE" [level=2]
+          - paragraph: LAYOUT // SHELL // PREFERENCE
+        - generic:
+          - generic:
+            - generic:
+              - generic: Message Layout
+              - generic: Cycles the chat timeline between the supported local layouts.
+            - button "BUBBLES":
+              - img
+              - text: BUBBLES
+          - generic:
+            - generic:
+              - generic:
+                - img
+              - generic:
+                - generic: Locally saved
+                - generic: This preference persists in the browser and is restored on refresh.
+    - generic [ref=e186] [cursor=pointer]:
+      - img [ref=e188]
+      - generic [ref=e191]: ESC
+  - generic [ref=e5]:
+    - generic [ref=e7]:
+      - generic [ref=e9]:
+        - generic [ref=e10]:
+          - button "Open Menu" [ref=e11] [cursor=pointer]:
+            - img [ref=e12]
+          - img [ref=e14]
+          - generic [ref=e17]:
+            - generic [ref=e18]: runtime-offline
+            - generic [ref=e19]: SECURE // COMMS // ESTABLISHED
+        - generic [ref=e20]:
+          - button "Theme Settings" [ref=e22] [cursor=pointer]
+          - button "Change Chat View" [ref=e24] [cursor=pointer]:
+            - img [ref=e25]
+          - button "Member List" [ref=e29] [cursor=pointer]:
+            - img [ref=e30]
+      - generic [ref=e36]:
+        - img [ref=e38]
+        - 'heading "Initiate Hub: #runtime-offline" [level=1] [ref=e41]'
+        - paragraph [ref=e42]: OPERATOR // INGRESS POINT // DATA STREAM START
+      - generic [ref=e43]:
+        - generic [ref=e44]:
+          - generic [ref=e45]: offline preview
+          - generic [ref=e46]: Offline preview mode — chat text stays local in this browser, and attachments are disabled until the local xorein runtime returns.
+        - generic [ref=e47]:
+          - button "Add attachment" [ref=e48] [cursor=pointer]:
+            - img [ref=e49]
+          - button "Create Poll" [ref=e51] [cursor=pointer]:
+            - img [ref=e52]
+          - textbox "Message Input" [ref=e54]:
+            - /placeholder: "INPUT // #RUNTIME-OFFLINE"
+          - generic [ref=e55]:
+            - button "Stickers" [ref=e56] [cursor=pointer]:
+              - img [ref=e57]
+            - button "Emoji Picker" [ref=e62] [cursor=pointer]:
+              - img [ref=e63]
+            - button "Send Message" [ref=e66] [cursor=pointer]:
+              - img [ref=e67]
+    - generic [ref=e70]:
+      - button "HOME" [ref=e71] [cursor=pointer]:
+        - img [ref=e73]
+        - generic [ref=e76]: HOME
+      - button "CHANNELS" [ref=e77] [cursor=pointer]:
+        - img [ref=e79]
+        - generic [ref=e80]: CHANNELS
+      - button "CREATE" [disabled] [ref=e81]:
+        - img [ref=e84]
+      - button "EXPLORE" [disabled] [ref=e89]:
+        - img [ref=e91]
+        - generic [ref=e94]: EXPLORE
+      - button "SETTINGS" [ref=e95] [cursor=pointer]:
+        - img [ref=e97]
+        - generic [ref=e100]: SETTINGS

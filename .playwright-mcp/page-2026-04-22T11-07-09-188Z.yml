@@ -1,0 +1,84 @@
+- generic [ref=e3]:
+  - navigation "Servers" [ref=e155]:
+    - button "Home" [ref=e157] [cursor=pointer]:
+      - img [ref=e158]
+    - generic [ref=e241] [cursor=pointer]:
+      - 'button "Server: Alpha Node" [ref=e242]':
+        - img "Alpha Node" [ref=e243]
+      - generic [ref=e244]: ALPHA NODE
+    - button "Create Server" [ref=e163] [cursor=pointer]:
+      - img [ref=e164]
+    - button "Explore Servers" [ref=e165] [cursor=pointer]:
+      - img [ref=e166]
+    - generic [ref=e171]: CONNECTED
+  - generic [ref=e60]:
+    - complementary "Channel List" [ref=e173]:
+      - button "Expand Channel List" [ref=e174] [cursor=pointer]
+      - generic [ref=e176]:
+        - generic [ref=e179]:
+          - heading "System Hub" [level=2] [ref=e180]
+          - generic [ref=e181]: CONNECTED
+        - generic [ref=e182]:
+          - button "Support Harmolyn" [ref=e183] [cursor=pointer]:
+            - img [ref=e184]
+          - button "Collapse Channel List" [ref=e186] [cursor=pointer]:
+            - img [ref=e187]
+      - generic [ref=e192]: Direct Communications
+      - generic [ref=e193]:
+        - button "Set Status" [ref=e194] [cursor=pointer]:
+          - img "My Avatar" [ref=e195]
+        - generic [ref=e197]:
+          - generic [ref=e198]: Local User
+          - generic [ref=e199]: ID // ME
+        - generic [ref=e200]:
+          - button "Switch Account" [ref=e201] [cursor=pointer]:
+            - img [ref=e202]
+          - button "Mute Microphone" [ref=e205] [cursor=pointer]:
+            - img [ref=e206]
+          - button "Deafen Audio" [ref=e209] [cursor=pointer]:
+            - img [ref=e210]
+          - button "Open Settings" [ref=e212] [cursor=pointer]:
+            - img [ref=e213]
+    - generic [ref=e245]:
+      - generic [ref=e247]:
+        - generic [ref=e248]:
+          - img [ref=e250]
+          - generic [ref=e253]:
+            - generic [ref=e254]: empty-shell
+            - generic [ref=e255]: SECURE // COMMS // ESTABLISHED
+        - generic [ref=e256]:
+          - button "Theme Settings" [ref=e258] [cursor=pointer]
+          - button "Change Chat View" [ref=e260] [cursor=pointer]:
+            - img [ref=e261]
+          - generic [ref=e265]:
+            - button "Inbox" [ref=e266] [cursor=pointer]:
+              - img [ref=e267]
+              - generic [ref=e270]: "2"
+            - button "Notifications" [ref=e271] [cursor=pointer]:
+              - img [ref=e272]
+            - button "Pinned Messages" [ref=e276] [cursor=pointer]:
+              - img [ref=e277]
+            - button "Member List" [ref=e279] [cursor=pointer]:
+              - img [ref=e280]
+            - generic [ref=e285]:
+              - img [ref=e286]
+              - textbox "Search messages" [ref=e289]:
+                - /placeholder: Search...
+      - generic [ref=e291]:
+        - img [ref=e293]
+        - 'heading "Initiate Hub: #empty-shell" [level=1] [ref=e296]'
+        - paragraph [ref=e297]: OPERATOR // INGRESS POINT // DATA STREAM START
+      - generic [ref=e299]:
+        - button "Add attachment" [ref=e300] [cursor=pointer]:
+          - img [ref=e301]
+        - button "Create Poll" [ref=e303] [cursor=pointer]:
+          - img [ref=e304]
+        - textbox "Message Input" [ref=e306]:
+          - /placeholder: "INPUT // #EMPTY-SHELL"
+        - generic [ref=e307]:
+          - button "Stickers" [ref=e308] [cursor=pointer]:
+            - img [ref=e309]
+          - button "Emoji Picker" [ref=e314] [cursor=pointer]:
+            - img [ref=e315]
+          - button "Send Message" [ref=e318] [cursor=pointer]:
+            - img [ref=e319]

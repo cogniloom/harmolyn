@@ -1,0 +1,90 @@
+- generic [ref=e3]:
+  - generic [ref=e13]:
+    - button [ref=e16] [cursor=pointer]:
+      - img [ref=e17]
+    - generic [ref=e20]:
+      - generic [ref=e21]: 1 / 7
+      - generic [ref=e22]:
+        - img [ref=e24]
+        - img [ref=e27]
+      - heading "What you're running" [level=2] [ref=e30]
+      - generic [ref=e31]:
+        - generic [ref=e32]:
+          - img [ref=e33]
+          - generic [ref=e35]:
+            - strong [ref=e36]: Harmolyn
+            - text: is the UI.
+            - strong [ref=e37]: xorein
+            - text: is the local network engine it talks to.
+        - generic [ref=e38]:
+          - img [ref=e39]
+          - generic [ref=e42]: There is no "central server" that needs your plaintext to work.
+        - generic [ref=e43]:
+          - img [ref=e44]
+          - generic [ref=e47]:
+            - text: Your messages are processed and encrypted
+            - strong [ref=e48]: on your device
+            - text: .
+    - generic [ref=e49]:
+      - generic [ref=e60] [cursor=pointer]: Do not show again
+      - generic [ref=e61]:
+        - button "SKIP" [ref=e62] [cursor=pointer]
+        - button "NEXT" [ref=e64] [cursor=pointer]:
+          - text: NEXT
+          - img [ref=e65]
+  - generic [ref=e73]:
+    - generic [ref=e75]:
+      - generic [ref=e77]:
+        - generic [ref=e78]:
+          - button "Open Menu" [ref=e79] [cursor=pointer]:
+            - img [ref=e80]
+          - img [ref=e82]
+          - generic [ref=e85]:
+            - generic [ref=e86]: empty-shell
+            - generic "No security mode has been negotiated for this conversation yet." [ref=e87]: NOT NEGOTIATED
+        - generic [ref=e88]:
+          - group "Channel type" [ref=e89]:
+            - button "Set channel type to Text" [pressed] [ref=e90] [cursor=pointer]:
+              - img [ref=e91]
+              - generic [ref=e94]: Text
+            - button "Set channel type to Announce" [ref=e95] [cursor=pointer]:
+              - img [ref=e96]
+              - generic [ref=e99]: Announce
+          - button "Theme Settings" [ref=e101] [cursor=pointer]
+          - button "Change Chat View" [ref=e103] [cursor=pointer]:
+            - img [ref=e104]
+          - button "Member List" [ref=e108] [cursor=pointer]:
+            - img [ref=e109]
+      - generic [ref=e115]:
+        - img [ref=e117]
+        - 'heading "Initiate Hub: #empty-shell" [level=1] [ref=e120]'
+        - paragraph [ref=e121]: OPERATOR // INGRESS POINT // DATA STREAM START
+      - generic [ref=e122]:
+        - generic [ref=e165]:
+          - generic [ref=e166]: connected
+          - generic [ref=e167]: Backend connected — chat mutations are sent to the remote xorein node.
+        - generic [ref=e168]:
+          - textbox "Message Input" [ref=e169]:
+            - /placeholder: "INPUT // #EMPTY-SHELL"
+          - generic [ref=e170]:
+            - button "Stickers" [ref=e172] [cursor=pointer]:
+              - img [ref=e173]
+            - button "Emoji Picker" [ref=e178] [cursor=pointer]:
+              - img [ref=e179]
+            - button "Send Message" [ref=e182] [cursor=pointer]:
+              - img [ref=e183]
+    - generic [ref=e126]:
+      - button "HOME" [ref=e127] [cursor=pointer]:
+        - img [ref=e129]
+        - generic [ref=e132]: HOME
+      - button "CHANNELS" [ref=e133] [cursor=pointer]:
+        - img [ref=e135]
+        - generic [ref=e136]: CHANNELS
+      - button "CREATE" [ref=e137] [cursor=pointer]:
+        - img [ref=e140]
+      - button "EXPLORE" [ref=e145] [cursor=pointer]:
+        - img [ref=e147]
+        - generic [ref=e150]: EXPLORE
+      - button "SETTINGS" [ref=e151] [cursor=pointer]:
+        - img [ref=e153]
+        - generic [ref=e156]: SETTINGS

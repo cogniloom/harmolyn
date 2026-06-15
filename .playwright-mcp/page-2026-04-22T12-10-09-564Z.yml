@@ -1,0 +1,95 @@
+- generic [ref=e5]:
+  - generic [ref=e7]:
+    - generic [ref=e9]:
+      - generic [ref=e10]:
+        - button "Open Menu" [ref=e11] [cursor=pointer]:
+          - img [ref=e12]
+        - img [ref=e14]
+        - generic [ref=e17]:
+          - generic [ref=e18]: general
+          - generic [ref=e19]: SECURE // COMMS // ESTABLISHED
+      - generic [ref=e20]:
+        - button "Theme Settings" [ref=e22] [cursor=pointer]
+        - button "Change Chat View" [ref=e24] [cursor=pointer]:
+          - img [ref=e25]
+        - button "Member List" [ref=e29] [cursor=pointer]:
+          - img [ref=e30]
+    - generic [ref=e35]:
+      - generic [ref=e36]:
+        - img [ref=e38]
+        - 'heading "Initiate Hub: #general" [level=1] [ref=e41]'
+        - paragraph [ref=e42]: OPERATOR // INGRESS POINT // DATA STREAM START
+      - generic [ref=e101]:
+        - img "Local User" [ref=e105] [cursor=pointer]
+        - generic [ref=e107]:
+          - generic [ref=e108]:
+            - generic [ref=e109] [cursor=pointer]:
+              - generic [ref=e110]: Local User
+              - generic "online" [ref=e111]
+            - generic [ref=e113]: 2:09 PM
+          - generic [ref=e114]: QA send path
+        - generic [ref=e128]:
+          - button "Add Reaction" [active] [ref=e129] [cursor=pointer]:
+            - img [ref=e130]
+          - button "Reply" [ref=e133] [cursor=pointer]:
+            - img [ref=e134]
+          - button "Edit Message" [ref=e136] [cursor=pointer]:
+            - img [ref=e137]
+          - button "Pin" [ref=e140] [cursor=pointer]:
+            - img [ref=e141]
+          - button "Forward" [ref=e143] [cursor=pointer]:
+            - img [ref=e144]
+          - button "Thread" [ref=e147] [cursor=pointer]:
+            - img [ref=e148]
+          - button "Copy Link" [ref=e150] [cursor=pointer]:
+            - img [ref=e151]
+          - button "Delete Message" [ref=e154] [cursor=pointer]:
+            - img [ref=e155]
+          - button "Mute User" [ref=e158] [cursor=pointer]:
+            - img [ref=e159]
+          - button "More Actions" [ref=e165] [cursor=pointer]:
+            - img [ref=e166]
+          - generic [ref=e170]:
+            - button "👍" [ref=e171] [cursor=pointer]
+            - button "❤️" [ref=e172] [cursor=pointer]
+            - button "🔥" [ref=e173] [cursor=pointer]
+            - button "😂" [ref=e174] [cursor=pointer]
+            - button "😮" [ref=e175] [cursor=pointer]
+            - button "😢" [ref=e176] [cursor=pointer]
+            - button "🚀" [ref=e177] [cursor=pointer]
+            - button "👀" [ref=e178] [cursor=pointer]
+            - button [ref=e179] [cursor=pointer]:
+              - img [ref=e180]
+    - generic [ref=e43]:
+      - generic [ref=e44]:
+        - generic [ref=e45]: local preview
+        - generic [ref=e46]: Local preview mode — the current xorein control API exposes runtime state only, so chat mutations persist deterministically in this browser until transport write endpoints exist.
+      - generic [ref=e47]:
+        - button "Add attachment" [ref=e48] [cursor=pointer]:
+          - img [ref=e49]
+        - button "Create Poll" [ref=e51] [cursor=pointer]:
+          - img [ref=e52]
+        - textbox "Message Input" [ref=e54]:
+          - /placeholder: "INPUT // #GENERAL"
+        - generic [ref=e55]:
+          - button "Stickers" [ref=e56] [cursor=pointer]:
+            - img [ref=e57]
+          - button "Emoji Picker" [ref=e62] [cursor=pointer]:
+            - img [ref=e63]
+          - button "Send Message" [ref=e66] [cursor=pointer]:
+            - img [ref=e67]
+  - generic [ref=e70]:
+    - button "HOME" [ref=e71] [cursor=pointer]:
+      - img [ref=e73]
+      - generic [ref=e76]: HOME
+    - button "CHANNELS" [ref=e77] [cursor=pointer]:
+      - img [ref=e79]
+      - generic [ref=e80]: CHANNELS
+    - button "CREATE" [ref=e81] [cursor=pointer]:
+      - img [ref=e84]
+    - button "EXPLORE" [ref=e89] [cursor=pointer]:
+      - img [ref=e91]
+      - generic [ref=e94]: EXPLORE
+    - button "SETTINGS" [ref=e95] [cursor=pointer]:
+      - img [ref=e97]
+      - generic [ref=e100]: SETTINGS

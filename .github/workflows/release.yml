@@ -1,0 +1,274 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]*.[0-9]*.[0-9]*'
+
+permissions:
+  contents: write
+
+env:
+  XOREIN_REF: 7864adad8e7beaa63ae4a1e38b6325b2786586c4
+
+jobs:
+  draft-release:
+    name: Create Draft Release
+    runs-on: self-hosted
+    outputs:
+      release_id: ${{ steps.create-release.outputs.id }}
+      release_upload_url: ${{ steps.create-release.outputs.upload_url }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Create draft release
+        id: create-release
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const tag = context.ref.replace('refs/tags/', '');
+            const release = await github.rest.repos.createRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag_name: tag,
+              name: tag,
+              draft: true,
+              generate_release_notes: true,
+            });
+            core.setOutput('id', release.data.id);
+            core.setOutput('upload_url', release.data.upload_url);
+
+  build:
+    name: Build (${{ matrix.platform }})
+    needs: draft-release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            goos: linux
+            goarch: amd64
+            cgo: "1"
+            ext: ""
+            bundles: deb,appimage
+          - platform: macos-latest
+            target: x86_64-apple-darwin
+            goos: darwin
+            goarch: amd64
+            cgo: "0"
+            ext: ""
+            bundles: dmg
+          - platform: macos-latest
+            target: aarch64-apple-darwin
+            goos: darwin
+            goarch: arm64
+            cgo: "0"
+            ext: ""
+            bundles: dmg
+          - platform: windows-latest
+            target: x86_64-pc-windows-msvc
+            goos: windows
+            goarch: amd64
+            cgo: "0"
+            ext: ".exe"
+            bundles: msi,nsis
+
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Checkout xorein sidecar source
+        uses: actions/checkout@v5
+        with:
+          repository: kylhuk/xorein
+          path: xorein
+          ref: ${{ env.XOREIN_REF }}
+
+      - name: Install Linux system dependencies
+        if: matrix.platform == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            xdg-utils \
+            patchelf \
+            libgtk-3-dev \
+            libssl-dev
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 20
+          cache: npm
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: xorein/go.mod
+
+      - name: Build pinned xorein runtime
+        id: xorein
+        shell: bash
+        env:
+          CGO_ENABLED: ${{ matrix.cgo }}
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          set -euo pipefail
+          mkdir -p xorein-dist
+          asset_name="xorein-${{ matrix.target }}${{ matrix.ext }}"
+          output="$PWD/xorein-dist/$asset_name"
+          (cd xorein && go build -trimpath -o "$output" ./cmd/aether)
+          sha256="$(node -e "const crypto=require('crypto'); const fs=require('fs'); console.log(crypto.createHash('sha256').update(fs.readFileSync(process.argv[1])).digest('hex'))" "$output")"
+          echo "asset_name=$asset_name" >> "$GITHUB_OUTPUT"
+          echo "path=$output" >> "$GITHUB_OUTPUT"
+          echo "sha256=$sha256" >> "$GITHUB_OUTPUT"
+
+      - name: Upload xorein runtime asset
+        uses: actions/github-script@v8
+        env:
+          RELEASE_ID: ${{ needs.draft-release.outputs.release_id }}
+          XOREIN_ASSET_NAME: ${{ steps.xorein.outputs.asset_name }}
+          XOREIN_ASSET_PATH: ${{ steps.xorein.outputs.path }}
+        with:
+          script: |
+            const fs = require('fs');
+            await github.rest.repos.uploadReleaseAsset({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              release_id: process.env.RELEASE_ID,
+              name: process.env.XOREIN_ASSET_NAME,
+              data: fs.readFileSync(process.env.XOREIN_ASSET_PATH),
+              headers: { 'content-type': 'application/octet-stream' },
+            });
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: ${{ matrix.target }}
+
+      - name: Import macOS certificate
+        if: matrix.platform == 'macos-latest' && env.APPLE_CERTIFICATE != ''
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ github.run_id }}
+        run: |
+          echo "$APPLE_CERTIFICATE" | base64 --decode > certificate.p12
+          security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security import certificate.p12 -k build.keychain -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" build.keychain
+          rm certificate.p12
+
+      - run: npm ci
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: Build Tauri bundles
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # macOS signing
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # Windows signing
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+          HARMOLYN_XOREIN_ARTIFACT_URL: https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/${{ steps.xorein.outputs.asset_name }}
+          HARMOLYN_XOREIN_ARTIFACT_SHA256: ${{ steps.xorein.outputs.sha256 }}
+          HARMOLYN_XOREIN_ARTIFACT_TARGET: ${{ matrix.target }}
+          HARMOLYN_XOREIN_ARTIFACT_VERSION: ${{ env.XOREIN_REF }}
+        with:
+          releaseId: ${{ needs.draft-release.outputs.release_id }}
+          args: --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
+
+  manifest:
+    name: Generate Release Manifest
+    needs: [draft-release, build]
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Download release assets
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const fs = require('fs');
+            const crypto = require('crypto');
+            const releaseId = '${{ needs.draft-release.outputs.release_id }}';
+            const assets = await github.rest.repos.listReleaseAssets({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              release_id: releaseId,
+              per_page: 100,
+            });
+            const artifacts = [];
+            for (const asset of assets.data) {
+              const response = await github.request('GET /repos/{owner}/{repo}/releases/assets/{asset_id}', {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                asset_id: asset.id,
+                headers: { accept: 'application/octet-stream' },
+              });
+              const bytes = Buffer.from(response.data);
+              artifacts.push({
+                name: asset.name,
+                size: asset.size,
+                sha256: crypto.createHash('sha256').update(bytes).digest('hex'),
+                download_url: asset.browser_download_url,
+              });
+            }
+            const manifest = {
+              version: context.ref.replace('refs/tags/', ''),
+              git_sha: context.sha,
+              workflow_run_id: context.runId,
+              built_at: new Date().toISOString(),
+              xorein_ref: process.env.XOREIN_REF,
+              artifacts,
+            };
+            fs.writeFileSync('release-manifest.json', JSON.stringify(manifest, null, 2));
+
+      - name: Upload release manifest
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const fs = require('fs');
+            const releaseId = '${{ needs.draft-release.outputs.release_id }}';
+            await github.rest.repos.uploadReleaseAsset({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              release_id: releaseId,
+              name: 'release-manifest.json',
+              data: fs.readFileSync('release-manifest.json'),
+              headers: { 'content-type': 'application/json' },
+            });
+
+  publish:
+    name: Publish Release
+    needs: [draft-release, build, manifest]
+    runs-on: self-hosted
+    steps:
+      - name: Publish release
+        uses: actions/github-script@v8
+        with:
+          script: |
+            await github.rest.repos.updateRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              release_id: '${{ needs.draft-release.outputs.release_id }}',
+              draft: false,
+            });

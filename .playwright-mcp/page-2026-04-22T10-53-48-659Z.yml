@@ -1,0 +1,59 @@
+- generic [ref=e5]:
+  - generic [ref=e7]:
+    - generic [ref=e9]:
+      - generic [ref=e10]:
+        - button "Open Menu" [ref=e11] [cursor=pointer]:
+          - img [ref=e12]
+        - img [ref=e14]
+        - generic [ref=e17]:
+          - generic [ref=e18]: general
+          - generic [ref=e19]: SECURE // COMMS // ESTABLISHED
+      - generic [ref=e20]:
+        - button "Theme Settings" [ref=e22] [cursor=pointer]
+        - button "Change Chat View" [ref=e24] [cursor=pointer]:
+          - img [ref=e25]
+        - button "Member List" [ref=e29] [cursor=pointer]:
+          - img [ref=e30]
+    - generic [ref=e35]:
+      - generic [ref=e36]:
+        - img [ref=e38]
+        - 'heading "Initiate Hub: #general" [level=1] [ref=e41]'
+        - paragraph [ref=e42]: OPERATOR // INGRESS POINT // DATA STREAM START
+      - generic [ref=e43]:
+        - img "peer-r…te-1" [ref=e46] [cursor=pointer]
+        - generic [ref=e48]:
+          - generic [ref=e49]:
+            - generic [ref=e50] [cursor=pointer]:
+              - generic [ref=e51]: peer-r…te-1
+              - generic "offline" [ref=e52]
+            - generic [ref=e53]: 11:10 AM
+          - generic [ref=e54]: hello from runtime
+    - generic [ref=e56]:
+      - button "Add attachment" [ref=e57] [cursor=pointer]:
+        - img [ref=e58]
+      - button "Create Poll" [ref=e60] [cursor=pointer]:
+        - img [ref=e61]
+      - textbox "Message Input" [ref=e63]:
+        - /placeholder: "INPUT // #GENERAL"
+      - generic [ref=e64]:
+        - button "Stickers" [ref=e65] [cursor=pointer]:
+          - img [ref=e66]
+        - button "Emoji Picker" [ref=e71] [cursor=pointer]:
+          - img [ref=e72]
+        - button "Send Message" [ref=e75] [cursor=pointer]:
+          - img [ref=e76]
+  - generic [ref=e80]:
+    - button "HOME" [ref=e81] [cursor=pointer]:
+      - img [ref=e83]
+      - generic [ref=e86]: HOME
+    - button "CHANNELS" [ref=e87] [cursor=pointer]:
+      - img [ref=e89]
+      - generic [ref=e90]: CHANNELS
+    - button "CREATE" [ref=e91] [cursor=pointer]:
+      - img [ref=e94]
+    - button "EXPLORE" [ref=e99] [cursor=pointer]:
+      - img [ref=e101]
+      - generic [ref=e104]: EXPLORE
+    - button "SETTINGS" [ref=e105] [cursor=pointer]:
+      - img [ref=e107]
+      - generic [ref=e110]: SETTINGS

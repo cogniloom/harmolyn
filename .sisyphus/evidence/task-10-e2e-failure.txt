@@ -1,0 +1,5 @@
+Harmolyn browser smoke suite: missing-runtime path
+Base URL: http://127.0.0.1:5173
+Observed offline preview banner and disabled connectivity controls.
+Expected result: the suite exits non-zero after confirming the clean offline failure state.
+Evidence: .sisyphus/evidence/task-10-e2e-failure.png

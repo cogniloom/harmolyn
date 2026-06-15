@@ -1,0 +1,8 @@
+node_modules
+dist
+.git
+.generated
+src-tauri/target
+*.local
+.env.local
+.env.*.local

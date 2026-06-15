@@ -1,0 +1,98 @@
+- generic [ref=e3]:
+  - generic [ref=e7]:
+    - generic [ref=e8]:
+      - img [ref=e10]
+      - heading "HARMOLYN" [level=1] [ref=e12]
+      - paragraph [ref=e13]: SECURE // DECENTRALIZED // ENCRYPTED
+    - generic [ref=e14]:
+      - generic [ref=e15]:
+        - img [ref=e17]
+        - heading "UNLOCK // IDENTITY" [level=2] [ref=e20]
+        - paragraph [ref=e21]: Enter your password to decrypt your private key on this device.
+      - generic [ref=e22]:
+        - text: PASSWORD
+        - textbox "Your identity password" [active] [ref=e23]
+      - button "UNLOCK" [disabled] [ref=e24]:
+        - img [ref=e25]
+        - text: UNLOCK
+        - img [ref=e28]
+      - generic [ref=e30]:
+        - img [ref=e32]
+        - generic [ref=e35]: Your password never leaves this device and cannot be recovered. If you have forgotten it you can start over as a new guest — your previous identity stays encrypted and is only recoverable from a backup.
+      - paragraph [ref=e36]:
+        - button "Forgot password? Start over as guest" [ref=e37] [cursor=pointer]
+  - generic [ref=e38]:
+    - generic [ref=e39]: Viewing as guest — create an identity to post, react, and join servers
+    - generic [ref=e40]:
+      - button "Restore" [ref=e41] [cursor=pointer]
+      - button "Create Identity" [ref=e42] [cursor=pointer]
+  - navigation "Servers" [ref=e44]:
+    - button "Home" [ref=e46] [cursor=pointer]:
+      - img [ref=e47]
+    - button "Create Server" [disabled] [ref=e52]:
+      - img [ref=e53]
+    - button "Explore Servers" [disabled] [ref=e54]:
+      - img [ref=e55]
+    - generic [ref=e60]: RECONNECTING
+  - generic [ref=e61]:
+    - complementary "Channel List" [ref=e64]:
+      - generic [ref=e65]:
+        - generic [ref=e68]:
+          - heading "System Hub" [level=2] [ref=e69]
+          - generic [ref=e70]: RECONNECTING
+        - button "Collapse Channel List" [ref=e72] [cursor=pointer]:
+          - img [ref=e73]
+      - button "Friends" [ref=e78] [cursor=pointer]: Direct Communications
+      - generic [ref=e79]:
+        - button "Set Status" [ref=e80] [cursor=pointer]:
+          - img "My Avatar" [ref=e81]
+        - generic [ref=e83]:
+          - generic [ref=e84]: Local User
+          - generic [ref=e85]: ID // ME
+        - generic [ref=e86]:
+          - button "Switch Account" [ref=e87] [cursor=pointer]:
+            - img [ref=e88]
+          - button "Mute Microphone" [disabled] [ref=e91]:
+            - img [ref=e92]
+          - button "Deafen Audio" [disabled] [ref=e95]:
+            - img [ref=e96]
+          - button "Open Settings" [ref=e98] [cursor=pointer]:
+            - img [ref=e99]
+    - generic [ref=e104]:
+      - generic [ref=e106]:
+        - generic [ref=e107]:
+          - img [ref=e109]
+          - generic [ref=e112]:
+            - generic [ref=e113]: runtime-reconnecting
+            - generic "No security mode has been negotiated for this conversation yet." [ref=e114]: NOT NEGOTIATED
+        - generic [ref=e115]:
+          - group "Channel type" [ref=e116]:
+            - button "Set channel type to Text" [pressed] [ref=e117] [cursor=pointer]:
+              - img [ref=e118]
+              - generic [ref=e121]: Text
+            - button "Set channel type to Announce" [ref=e122] [cursor=pointer]:
+              - img [ref=e123]
+              - generic [ref=e126]: Announce
+          - button "Theme Settings" [ref=e128] [cursor=pointer]
+          - button "Change Chat View" [ref=e130] [cursor=pointer]:
+            - img [ref=e131]
+          - generic [ref=e135]:
+            - button "Inbox" [ref=e136] [cursor=pointer]:
+              - img [ref=e137]
+            - button "Notifications" [ref=e140] [cursor=pointer]:
+              - img [ref=e141]
+            - button "Pinned Messages" [ref=e145] [cursor=pointer]:
+              - img [ref=e146]
+            - button "Member List" [ref=e148] [cursor=pointer]:
+              - img [ref=e149]
+            - generic [ref=e154]:
+              - img [ref=e155]
+              - textbox "Search messages" [ref=e158]:
+                - /placeholder: Search...
+      - generic [ref=e160]:
+        - img [ref=e162]
+        - 'heading "Initiate Hub: #runtime-reconnecting" [level=1] [ref=e165]'
+        - paragraph [ref=e166]: OPERATOR // INGRESS POINT // DATA STREAM START
+      - button "Create identity to post" [ref=e168] [cursor=pointer]:
+        - generic [ref=e169]: "Create an identity to post in #runtime-reconnecting"
+        - generic [ref=e170]: Sign up

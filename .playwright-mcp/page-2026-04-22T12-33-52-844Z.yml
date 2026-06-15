@@ -1,0 +1,46 @@
+- generic [ref=e5]:
+  - generic [ref=e7]:
+    - generic [ref=e8]:
+      - generic [ref=e9]:
+        - img [ref=e10]
+        - generic [ref=e15]: FRIENDS
+        - generic [ref=e17]:
+          - button "ONLINE" [ref=e18] [cursor=pointer]
+          - button "ALL1" [active] [ref=e94] [cursor=pointer]
+          - button "PENDING2" [ref=e20] [cursor=pointer]
+          - button "BLOCKED" [ref=e21] [cursor=pointer]
+          - button "REQUESTS2" [ref=e95] [cursor=pointer]
+      - button "ADD FRIEND" [ref=e23] [cursor=pointer]:
+        - img [ref=e24]
+        - text: ADD FRIEND
+    - generic [ref=e97]: Message request accepted locally and added to your preview friends list.
+    - generic [ref=e28]:
+      - img [ref=e29]
+      - textbox "Search..." [ref=e32]
+    - generic [ref=e98]:
+      - generic [ref=e99]: ALL FRIENDS — 1
+      - generic [ref=e100]:
+        - img "u6" [ref=e102]
+        - generic [ref=e104]:
+          - generic [ref=e105]: u6
+          - generic [ref=e106]: OFFLINE
+        - generic [ref=e107]:
+          - button "Message" [ref=e108] [cursor=pointer]:
+            - img [ref=e109]
+          - button "Call" [ref=e111] [cursor=pointer]:
+            - img [ref=e112]
+  - generic [ref=e43]:
+    - button "HOME" [ref=e44] [cursor=pointer]:
+      - img [ref=e46]
+      - generic [ref=e49]: HOME
+    - button "CHANNELS" [ref=e50] [cursor=pointer]:
+      - img [ref=e52]
+      - generic [ref=e53]: CHANNELS
+    - button "CREATE" [ref=e54] [cursor=pointer]:
+      - img [ref=e57]
+    - button "EXPLORE" [ref=e62] [cursor=pointer]:
+      - img [ref=e64]
+      - generic [ref=e67]: EXPLORE
+    - button "SETTINGS" [ref=e68] [cursor=pointer]:
+      - img [ref=e70]
+      - generic [ref=e73]: SETTINGS

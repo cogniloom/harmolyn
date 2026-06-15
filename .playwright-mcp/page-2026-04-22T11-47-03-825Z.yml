@@ -1,0 +1,111 @@
+- generic [ref=e3]:
+  - generic [ref=e187]:
+    - button [ref=e188] [cursor=pointer]:
+      - img [ref=e189]
+    - generic [ref=e192]:
+      - banner [ref=e193]:
+        - img [ref=e195]
+        - heading "Construct Node" [level=2] [ref=e198]
+        - paragraph [ref=e199]: Establish a new encrypted community. You can define access protocols and security levels after initiation.
+      - generic [ref=e201] [cursor=pointer]:
+        - img [ref=e202]
+        - generic [ref=e205]: Upload // Icon
+      - generic [ref=e206]:
+        - generic [ref=e207]:
+          - generic [ref=e208]: Node Name
+          - textbox "THE // HUB" [ref=e209]
+        - generic [ref=e210]:
+          - button "Private Restricted access" [ref=e211] [cursor=pointer]:
+            - img [ref=e212]
+            - generic [ref=e215]: Private
+            - generic [ref=e216]: Restricted access
+          - button "Public Discoverable node" [ref=e217] [cursor=pointer]:
+            - img [ref=e218]
+            - generic [ref=e221]: Public
+            - generic [ref=e222]: Discoverable node
+      - generic [ref=e224]: By establishing this node, you confirm adherence to the Nexus Security Protocol.
+      - button "HAVE AN INVITE ALREADY?" [ref=e225] [cursor=pointer]:
+        - img [ref=e226]
+        - text: HAVE AN INVITE ALREADY?
+    - generic [ref=e229]:
+      - button "Cancel" [ref=e230] [cursor=pointer]
+      - button "Initiate Matrix" [ref=e231] [cursor=pointer]
+  - navigation "Servers" [ref=e99]:
+    - button "Home" [ref=e101] [cursor=pointer]:
+      - img [ref=e102]
+    - button "Create Server" [active] [ref=e107] [cursor=pointer]:
+      - img [ref=e108]
+    - button "Explore Servers" [ref=e109] [cursor=pointer]:
+      - img [ref=e110]
+    - generic [ref=e115]: CONNECTED
+  - generic [ref=e4]:
+    - complementary "Channel List" [ref=e117]:
+      - button "Expand Channel List" [ref=e118] [cursor=pointer]
+      - generic [ref=e120]:
+        - generic [ref=e123]:
+          - heading "System Hub" [level=2] [ref=e124]
+          - generic [ref=e125]: CONNECTED
+        - generic [ref=e126]:
+          - button "Support Harmolyn" [ref=e127] [cursor=pointer]:
+            - img [ref=e128]
+          - button "Collapse Channel List" [ref=e130] [cursor=pointer]:
+            - img [ref=e131]
+      - generic [ref=e136]: Direct Communications
+      - generic [ref=e137]:
+        - button "Set Status" [ref=e138] [cursor=pointer]:
+          - img "My Avatar" [ref=e139]
+        - generic [ref=e141]:
+          - generic [ref=e142]: Local User
+          - generic [ref=e143]: ID // ME
+        - generic [ref=e144]:
+          - button "Switch Account" [ref=e145] [cursor=pointer]:
+            - img [ref=e146]
+          - button "Mute Microphone" [ref=e149] [cursor=pointer]:
+            - img [ref=e150]
+          - button "Deafen Audio" [ref=e153] [cursor=pointer]:
+            - img [ref=e154]
+          - button "Open Settings" [ref=e156] [cursor=pointer]:
+            - img [ref=e157]
+    - generic [ref=e7]:
+      - generic [ref=e9]:
+        - generic [ref=e10]:
+          - img [ref=e14]
+          - generic [ref=e17]:
+            - generic [ref=e18]: empty-shell
+            - generic [ref=e19]: SECURE // COMMS // ESTABLISHED
+        - generic [ref=e20]:
+          - button "Theme Settings" [ref=e22] [cursor=pointer]
+          - button "Change Chat View" [ref=e24] [cursor=pointer]:
+            - img [ref=e25]
+          - generic [ref=e160]:
+            - button "Inbox" [ref=e161] [cursor=pointer]:
+              - img [ref=e162]
+              - generic [ref=e165]: "2"
+            - button "Notifications" [ref=e166] [cursor=pointer]:
+              - img [ref=e167]
+            - button "Pinned Messages" [ref=e171] [cursor=pointer]:
+              - img [ref=e172]
+            - button "Member List" [ref=e174] [cursor=pointer]:
+              - img [ref=e175]
+            - generic [ref=e180]:
+              - img [ref=e181]
+              - textbox "Search messages" [ref=e184]:
+                - /placeholder: Search...
+      - generic [ref=e36]:
+        - img [ref=e38]
+        - 'heading "Initiate Hub: #empty-shell" [level=1] [ref=e41]'
+        - paragraph [ref=e42]: OPERATOR // INGRESS POINT // DATA STREAM START
+      - generic [ref=e44]:
+        - button "Add attachment" [ref=e45] [cursor=pointer]:
+          - img [ref=e46]
+        - button "Create Poll" [ref=e48] [cursor=pointer]:
+          - img [ref=e49]
+        - textbox "Message Input" [ref=e51]:
+          - /placeholder: "INPUT // #EMPTY-SHELL"
+        - generic [ref=e52]:
+          - button "Stickers" [ref=e53] [cursor=pointer]:
+            - img [ref=e54]
+          - button "Emoji Picker" [ref=e59] [cursor=pointer]:
+            - img [ref=e60]
+          - button "Send Message" [ref=e63] [cursor=pointer]:
+            - img [ref=e64]

@@ -1,0 +1,94 @@
+- generic [ref=e9]:
+  - complementary "Channel List" [ref=e1128]:
+    - generic [ref=e1129]:
+      - generic [ref=e1132]:
+        - heading "System Hub" [level=2] [ref=e1133]
+        - generic [ref=e1134]: CONNECTED
+      - button "Collapse Channel List" [ref=e1136] [cursor=pointer]:
+        - img [ref=e1137]
+    - button "Friends" [ref=e1142] [cursor=pointer]: Direct Communications
+    - generic [ref=e1143]:
+      - button "Set Status" [ref=e1144] [cursor=pointer]:
+        - img "My Avatar" [ref=e1145]
+      - generic [ref=e1147]:
+        - generic [ref=e1148]: alice_node
+        - generic [ref=e1149]: ID // ME
+      - generic [ref=e1150]:
+        - button "Switch Account" [ref=e1151] [cursor=pointer]:
+          - img [ref=e1152]
+        - button "Mute Microphone" [disabled] [ref=e1155]:
+          - img [ref=e1156]
+        - button "Deafen Audio" [disabled] [ref=e1159]:
+          - img [ref=e1160]
+        - button "Open Settings" [ref=e1162] [cursor=pointer]:
+          - img [ref=e1163]
+  - generic [ref=e10]:
+    - generic [ref=e1013]:
+      - generic [ref=e1015]:
+        - generic [ref=e1016]:
+          - button "Open Menu" [active] [ref=e1017] [cursor=pointer]:
+            - img [ref=e1018]
+          - img [ref=e1020]
+          - generic [ref=e1023]:
+            - generic [ref=e1024]: empty-shell
+            - generic "Large-scale channel end-to-end encryption with epoch rotation." [ref=e1025]: CROWD // CHANNEL E2EE
+        - generic [ref=e1026]:
+          - group "Channel type" [ref=e1027]:
+            - button "Set channel type to Text" [pressed] [ref=e1028] [cursor=pointer]:
+              - img [ref=e1029]
+              - generic [ref=e1032]: Text
+            - button "Set channel type to Announce" [ref=e1033] [cursor=pointer]:
+              - img [ref=e1034]
+              - generic [ref=e1037]: Announce
+          - button "Theme Settings" [ref=e1039] [cursor=pointer]
+          - button "Change Chat View" [ref=e1041] [cursor=pointer]:
+            - img [ref=e1042]
+          - button "Member List" [ref=e1046] [cursor=pointer]:
+            - img [ref=e1047]
+      - generic [ref=e1052]:
+        - generic [ref=e1053]:
+          - img [ref=e1055]
+          - 'heading "Initiate Hub: #empty-shell" [level=1] [ref=e1058]'
+          - paragraph [ref=e1059]: OPERATOR // INGRESS POINT // DATA STREAM START
+        - generic [ref=e1062]:
+          - text: "[edited](edited)"
+          - generic [ref=e1063]: 7:32 PM
+        - generic [ref=e1093]:
+          - generic [ref=e1094]:
+            - text: Hello from harmolyn_e2e — Phase 2 test ✓
+            - generic [ref=e1095]: 7:37 PM
+          - button "👍 1" [ref=e1097] [cursor=pointer]:
+            - generic [ref=e1098]: 👍
+            - generic [ref=e1099]: "1"
+        - generic [ref=e1102]:
+          - text: Hello from alice_node — E2E test message 1(edited)
+          - generic [ref=e1103]: 7:07 PM
+      - generic [ref=e1104]:
+        - generic [ref=e1105]:
+          - generic [ref=e1106]: connected
+          - generic [ref=e1107]: Backend connected — chat mutations are sent to the remote xorein node.
+        - generic [ref=e1108]:
+          - textbox "Message Input" [ref=e1109]:
+            - /placeholder: "INPUT // #EMPTY-SHELL"
+          - generic [ref=e1110]:
+            - button "Stickers" [ref=e1112] [cursor=pointer]:
+              - img [ref=e1113]
+            - button "Emoji Picker" [ref=e1118] [cursor=pointer]:
+              - img [ref=e1119]
+            - button "Send Message" [ref=e1122] [cursor=pointer]:
+              - img [ref=e1123]
+    - generic [ref=e63]:
+      - button "HOME" [ref=e64] [cursor=pointer]:
+        - img [ref=e66]
+        - generic [ref=e69]: HOME
+      - button "CHANNELS" [ref=e70] [cursor=pointer]:
+        - img [ref=e72]
+        - generic [ref=e73]: CHANNELS
+      - button "CREATE" [ref=e74] [cursor=pointer]:
+        - img [ref=e77]
+      - button "EXPLORE" [ref=e82] [cursor=pointer]:
+        - img [ref=e84]
+        - generic [ref=e87]: EXPLORE
+      - button "SETTINGS" [ref=e88] [cursor=pointer]:
+        - img [ref=e90]
+        - generic [ref=e93]: SETTINGS

@@ -1,0 +1,51 @@
+- generic [ref=e3]:
+  - generic [ref=e101]:
+    - generic [ref=e102]: Viewing as guest — create an identity to post, react, and join servers
+    - generic [ref=e103]:
+      - button "Restore" [ref=e104] [cursor=pointer]
+      - button "Create Identity" [ref=e105] [cursor=pointer]
+  - generic [ref=e17]:
+    - generic [ref=e106]:
+      - generic [ref=e108]:
+        - generic [ref=e109]:
+          - button "Open Menu" [ref=e110] [cursor=pointer]:
+            - img [ref=e111]
+          - img [ref=e113]
+          - generic [ref=e116]:
+            - generic [ref=e117]: empty-shell
+            - generic "No security mode has been negotiated for this conversation yet." [ref=e118]: NOT NEGOTIATED
+        - generic [ref=e119]:
+          - group "Channel type" [ref=e120]:
+            - button "Set channel type to Text" [pressed] [ref=e121] [cursor=pointer]:
+              - img [ref=e122]
+              - generic [ref=e125]: Text
+            - button "Set channel type to Announce" [ref=e126] [cursor=pointer]:
+              - img [ref=e127]
+              - generic [ref=e130]: Announce
+          - button "Theme Settings" [ref=e132] [cursor=pointer]
+          - button "Change Chat View" [ref=e134] [cursor=pointer]:
+            - img [ref=e135]
+          - button "Member List" [ref=e139] [cursor=pointer]:
+            - img [ref=e140]
+      - generic [ref=e146]:
+        - img [ref=e148]
+        - 'heading "Initiate Hub: #empty-shell" [level=1] [ref=e151]'
+        - paragraph [ref=e152]: OPERATOR // INGRESS POINT // DATA STREAM START
+      - button "Create identity to post" [ref=e154] [cursor=pointer]:
+        - generic [ref=e155]: "Create an identity to post in #empty-shell"
+        - generic [ref=e156]: Sign up
+    - generic [ref=e70]:
+      - button "HOME" [ref=e71] [cursor=pointer]:
+        - img [ref=e73]
+        - generic [ref=e76]: HOME
+      - button "CHANNELS" [ref=e77] [cursor=pointer]:
+        - img [ref=e79]
+        - generic [ref=e80]: CHANNELS
+      - button "CREATE" [disabled] [ref=e81]:
+        - img [ref=e84]
+      - button "EXPLORE" [ref=e89] [cursor=pointer]:
+        - img [ref=e91]
+        - generic [ref=e94]: EXPLORE
+      - button "SETTINGS" [ref=e95] [cursor=pointer]:
+        - img [ref=e97]
+        - generic [ref=e100]: SETTINGS

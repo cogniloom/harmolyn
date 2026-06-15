@@ -1,0 +1,139 @@
+- generic [ref=e3]:
+  - generic [ref=e164]:
+    - generic [ref=e166]:
+      - generic [ref=e167]: User settings
+      - button "My Account" [ref=e168] [cursor=pointer]:
+        - img [ref=e170]
+        - generic [ref=e173]: My Account
+      - button "Privacy & Safety" [ref=e174] [cursor=pointer]:
+        - img [ref=e176]
+        - generic [ref=e178]: Privacy & Safety
+      - button "Security (MFA)" [ref=e179] [cursor=pointer]:
+        - img [ref=e181]
+        - generic [ref=e184]: Security (MFA)
+      - button "Authorized Hubs" [ref=e185] [cursor=pointer]:
+        - img [ref=e187]
+        - generic [ref=e191]: Authorized Hubs
+      - button "Network" [ref=e192] [cursor=pointer]:
+        - img [ref=e194]
+        - generic [ref=e197]: Network
+      - generic [ref=e199]: System configuration
+      - button "Core Appearance" [ref=e200] [cursor=pointer]:
+        - img [ref=e202]
+        - generic [ref=e204]: Core Appearance
+      - button "Signal Alerts" [ref=e205] [cursor=pointer]:
+        - img [ref=e207]
+        - generic [ref=e210]: Signal Alerts
+      - button "Accessibility" [ref=e211] [cursor=pointer]:
+        - img [ref=e213]
+        - generic [ref=e219]: Accessibility
+      - button "Mobile Sync" [ref=e220] [cursor=pointer]:
+        - img [ref=e222]
+        - generic [ref=e224]: Mobile Sync
+      - button "About & Legal" [ref=e225] [cursor=pointer]:
+        - img [ref=e227]
+        - generic [ref=e229]: About & Legal
+      - generic [ref=e231]: Support
+      - button "Log Out" [ref=e234] [cursor=pointer]:
+        - img [ref=e235]
+        - generic [ref=e238]: Log Out
+    - generic:
+      - generic:
+        - banner:
+          - heading "MY // ACCOUNT" [level=2]
+          - paragraph: OPERATOR // SECURITY // PROFILE
+        - generic:
+          - generic:
+            - generic:
+              - button "Replace avatar image":
+                - img
+                - generic: Replace
+              - generic:
+                - generic: Local User
+                - generic: ID // ME
+            - button "Edit Profile"
+          - generic:
+            - generic:
+              - generic:
+                - generic: Display Name
+                - generic: Local User
+              - button "Modify"
+            - generic:
+              - generic:
+                - generic: Identity Link
+                - generic: neo@nexus-underground.net
+              - button "Modify"
+            - generic:
+              - generic:
+                - generic: Primary Bio
+                - generic: CONNECTED TO LOCAL XOREIN RUNTIME
+              - button "Modify"
+        - generic:
+          - heading "Data encryption & authentication" [level=3]
+          - button "Identity backup & recovery Create an encrypted backup before you lose access to this device.":
+            - generic:
+              - generic:
+                - img
+              - generic:
+                - generic: Identity backup & recovery
+                - generic: Create an encrypted backup before you lose access to this device.
+            - img
+    - generic [ref=e239] [cursor=pointer]:
+      - img [ref=e241]
+      - generic [ref=e244]: ESC
+  - generic [ref=e61]:
+    - generic [ref=e63]:
+      - generic [ref=e65]:
+        - generic [ref=e66]:
+          - button "Open Menu" [ref=e67] [cursor=pointer]:
+            - img [ref=e68]
+          - img [ref=e70]
+          - generic [ref=e73]:
+            - generic [ref=e74]: empty-shell
+            - generic "No security mode has been negotiated for this conversation yet." [ref=e75]: NOT NEGOTIATED
+        - generic [ref=e76]:
+          - group "Channel type" [ref=e77]:
+            - button "Set channel type to Text" [pressed] [ref=e78] [cursor=pointer]:
+              - img [ref=e79]
+              - generic [ref=e82]: Text
+            - button "Set channel type to Announce" [ref=e83] [cursor=pointer]:
+              - img [ref=e84]
+              - generic [ref=e87]: Announce
+          - button "Theme Settings" [ref=e89] [cursor=pointer]
+          - button "Change Chat View" [ref=e91] [cursor=pointer]:
+            - img [ref=e92]
+          - button "Member List" [ref=e96] [cursor=pointer]:
+            - img [ref=e97]
+      - generic [ref=e103]:
+        - img [ref=e105]
+        - 'heading "Initiate Hub: #empty-shell" [level=1] [ref=e108]'
+        - paragraph [ref=e109]: OPERATOR // INGRESS POINT // DATA STREAM START
+      - generic [ref=e110]:
+        - generic [ref=e111]:
+          - generic [ref=e112]: local preview
+          - generic [ref=e113]: Backend connected — chat mutations are sent to the remote xorein node.
+        - generic [ref=e114]:
+          - textbox "Message Input" [ref=e115]:
+            - /placeholder: "INPUT // #EMPTY-SHELL"
+          - generic [ref=e116]:
+            - button "Stickers" [ref=e118] [cursor=pointer]:
+              - img [ref=e119]
+            - button "Emoji Picker" [ref=e124] [cursor=pointer]:
+              - img [ref=e125]
+            - button "Send Message" [ref=e128] [cursor=pointer]:
+              - img [ref=e129]
+    - generic [ref=e132]:
+      - button "HOME" [ref=e133] [cursor=pointer]:
+        - img [ref=e135]
+        - generic [ref=e138]: HOME
+      - button "CHANNELS" [ref=e139] [cursor=pointer]:
+        - img [ref=e141]
+        - generic [ref=e142]: CHANNELS
+      - button "CREATE" [ref=e143] [cursor=pointer]:
+        - img [ref=e146]
+      - button "EXPLORE" [ref=e151] [cursor=pointer]:
+        - img [ref=e153]
+        - generic [ref=e156]: EXPLORE
+      - button "SETTINGS" [active] [ref=e157] [cursor=pointer]:
+        - img [ref=e159]
+        - generic [ref=e162]: SETTINGS

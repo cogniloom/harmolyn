@@ -1,0 +1,120 @@
+- generic [ref=e3]:
+  - navigation "Servers" [ref=e155]:
+    - button "Home" [ref=e157] [cursor=pointer]:
+      - img [ref=e158]
+    - generic [ref=e241] [cursor=pointer]:
+      - 'button "Server: Alpha Node" [disabled] [ref=e242]':
+        - img "Alpha Node" [ref=e243]
+      - generic [ref=e244]: ALPHA NODE
+    - button "Create Server" [disabled] [ref=e163]:
+      - img [ref=e164]
+    - button "Explore Servers" [disabled] [ref=e165]:
+      - img [ref=e166]
+    - generic [ref=e171]: NO PEER
+  - generic [ref=e60]:
+    - complementary "Channel List" [ref=e173]:
+      - button "Expand Channel List" [ref=e174] [cursor=pointer]
+      - generic [ref=e176]:
+        - generic [ref=e179]:
+          - heading "Alpha Node" [level=2] [ref=e323]
+          - generic [ref=e181]: NO PEER
+        - generic [ref=e182]:
+          - button "Support Harmolyn" [ref=e183] [cursor=pointer]:
+            - img [ref=e184]
+          - button "Applications" [disabled] [ref=e324]:
+            - img [ref=e325]
+          - button "Server Settings" [disabled] [ref=e328]:
+            - img [ref=e329]
+          - button "Collapse Channel List" [ref=e186] [cursor=pointer]:
+            - img [ref=e187]
+      - generic [ref=e332]:
+        - generic [ref=e333]:
+          - generic [ref=e334]: TEXT CHANNELS
+          - img [ref=e335]
+        - button "general" [disabled] [ref=e339]:
+          - img [ref=e340]
+          - generic [ref=e343]: general
+      - generic [ref=e193]:
+        - button "Set Status" [ref=e194] [cursor=pointer]:
+          - img "My Avatar" [ref=e195]
+        - generic [ref=e197]:
+          - generic [ref=e198]: Local User
+          - generic [ref=e199]: ID // ME
+        - generic [ref=e200]:
+          - button "Switch Account" [ref=e201] [cursor=pointer]:
+            - img [ref=e202]
+          - button "Mute Microphone" [disabled] [ref=e205]:
+            - img [ref=e206]
+          - button "Deafen Audio" [disabled] [ref=e209]:
+            - img [ref=e210]
+          - button "Open Settings" [ref=e212] [cursor=pointer]:
+            - img [ref=e213]
+    - generic [ref=e62]:
+      - generic [ref=e357]:
+        - generic [ref=e359]:
+          - generic [ref=e360]:
+            - img [ref=e362]
+            - generic [ref=e365]:
+              - generic [ref=e366]: general
+              - generic [ref=e367]: SECURE // COMMS // ESTABLISHED
+          - generic [ref=e368]:
+            - button "Theme Settings" [ref=e370] [cursor=pointer]
+            - button "Change Chat View" [ref=e372] [cursor=pointer]:
+              - img [ref=e373]
+            - generic [ref=e377]:
+              - button "Inbox" [ref=e378] [cursor=pointer]:
+                - img [ref=e379]
+                - generic [ref=e382]: "2"
+              - button "Notifications" [ref=e383] [cursor=pointer]:
+                - img [ref=e384]
+              - button "Pinned Messages" [ref=e388] [cursor=pointer]:
+                - img [ref=e389]
+              - button "Member List" [ref=e391] [cursor=pointer]:
+                - img [ref=e392]
+              - generic [ref=e397]:
+                - img [ref=e398]
+                - textbox "Search messages" [ref=e401]:
+                  - /placeholder: Search...
+        - generic [ref=e403]:
+          - img [ref=e405]
+          - 'heading "Initiate Hub: #general" [level=1] [ref=e408]'
+          - paragraph [ref=e409]: OPERATOR // INGRESS POINT // DATA STREAM START
+        - generic [ref=e425]:
+          - button "Add attachment" [ref=e426] [cursor=pointer]:
+            - img [ref=e427]
+          - button "Create Poll" [ref=e429] [cursor=pointer]:
+            - img [ref=e430]
+          - textbox "Message Input" [ref=e432]:
+            - /placeholder: "INPUT // #GENERAL"
+          - generic [ref=e433]:
+            - button "Stickers" [ref=e434] [cursor=pointer]:
+              - img [ref=e435]
+            - button "Emoji Picker" [ref=e440] [cursor=pointer]:
+              - img [ref=e441]
+            - button "Send Message" [ref=e444] [cursor=pointer]:
+              - img [ref=e445]
+      - generic [ref=e449]:
+        - generic [ref=e450]:
+          - generic [ref=e451]: Entities
+          - button [ref=e452] [cursor=pointer]:
+            - img [ref=e453]
+        - generic [ref=e456]:
+          - generic [ref=e457]:
+            - heading "OPERATORS // 1" [level=3] [ref=e458]
+            - generic [ref=e460] [cursor=pointer]:
+              - img [ref=e462]
+              - generic [ref=e464]:
+                - generic [ref=e467]: Local User
+                - generic [ref=e470]: online
+              - button "Timeout user" [ref=e471]:
+                - img [ref=e472]
+          - heading "IDLE // 0" [level=3] [ref=e476]
+          - generic [ref=e477]:
+            - heading "OFFLINE // 1" [level=3] [ref=e478]
+            - generic [ref=e480] [cursor=pointer]:
+              - img [ref=e482]
+              - generic [ref=e484]:
+                - generic [ref=e487]: peer-owner
+                - generic [ref=e489]: offline
+              - button "Timeout user" [ref=e490]:
+                - img [ref=e491]

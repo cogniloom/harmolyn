@@ -1,0 +1,124 @@
+- generic [ref=e3]:
+  - navigation "Servers" [ref=e10]:
+    - button "Home" [ref=e12] [cursor=pointer]:
+      - img [ref=e13]
+    - generic [ref=e367] [cursor=pointer]:
+      - 'button "Server: Alice''s Test Hub" [ref=e368]':
+        - img "Alice's Test Hub" [ref=e369]
+      - generic [ref=e371]: ALICE'S TEST HUB
+    - button "Create Server" [ref=e18] [cursor=pointer]:
+      - img [ref=e19]
+    - button "Explore Servers" [ref=e20] [cursor=pointer]:
+      - img [ref=e21]
+    - generic [ref=e26]: CONNECTED
+  - generic [ref=e27]:
+    - complementary "Channel List" [ref=e374]:
+      - generic [ref=e375]:
+        - generic [ref=e378]:
+          - heading "Alice's Test Hub" [level=2] [ref=e379]
+          - generic [ref=e380]: CONNECTED
+        - generic [ref=e381]:
+          - button "Server Settings" [ref=e382] [cursor=pointer]:
+            - img [ref=e383]
+          - button "Collapse Channel List" [ref=e386] [cursor=pointer]:
+            - img [ref=e387]
+      - generic [ref=e391]:
+        - button "Set Status" [ref=e392] [cursor=pointer]:
+          - img "My Avatar" [ref=e393]
+        - generic [ref=e395]:
+          - generic [ref=e396]: bob_cipher
+          - generic [ref=e397]: ID // ME
+        - generic [ref=e398]:
+          - button "Switch Account" [ref=e399] [cursor=pointer]:
+            - img [ref=e400]
+          - button "Mute Microphone" [disabled] [ref=e403]:
+            - img [ref=e404]
+          - button "Deafen Audio" [disabled] [ref=e407]:
+            - img [ref=e408]
+          - button "Open Settings" [ref=e410] [cursor=pointer]:
+            - img [ref=e411]
+    - generic [ref=e69]:
+      - generic [ref=e414]:
+        - generic [ref=e416]:
+          - generic [ref=e417]:
+            - img [ref=e419]
+            - generic [ref=e422]:
+              - generic [ref=e423]: empty-shell
+              - generic "Large-scale channel end-to-end encryption with epoch rotation." [ref=e424]: CROWD // CHANNEL E2EE
+          - generic [ref=e425]:
+            - group "Channel type" [ref=e426]:
+              - button "Set channel type to Text" [pressed] [ref=e427] [cursor=pointer]:
+                - img [ref=e428]
+                - generic [ref=e431]: Text
+              - button "Set channel type to Announce" [ref=e432] [cursor=pointer]:
+                - img [ref=e433]
+                - generic [ref=e436]: Announce
+            - button "Theme Settings" [ref=e438] [cursor=pointer]
+            - button "Change Chat View" [ref=e440] [cursor=pointer]:
+              - img [ref=e441]
+            - generic [ref=e445]:
+              - button "Inbox" [ref=e446] [cursor=pointer]:
+                - img [ref=e447]
+              - button "Notifications" [ref=e450] [cursor=pointer]:
+                - img [ref=e451]
+              - button "Pinned Messages" [ref=e455] [cursor=pointer]:
+                - img [ref=e456]
+                - generic [ref=e458]: "1"
+              - button "Member List" [ref=e459] [cursor=pointer]:
+                - img [ref=e460]
+              - generic [ref=e465]:
+                - img [ref=e466]
+                - textbox "Search messages" [ref=e469]:
+                  - /placeholder: Search...
+        - generic [ref=e470]:
+          - generic [ref=e471]:
+            - img [ref=e473]
+            - 'heading "Initiate Hub: #empty-shell" [level=1] [ref=e476]'
+            - paragraph [ref=e477]: OPERATOR // INGRESS POINT // DATA STREAM START
+          - generic [ref=e480]:
+            - text: "[edited](edited)"
+            - generic [ref=e481]: 7:32 PM
+          - generic [ref=e483]:
+            - generic [ref=e484]:
+              - text: Hello from harmolyn_e2e — Phase 2 test ✓
+              - generic [ref=e485]: 7:37 PM
+            - button "👍 1" [ref=e487] [cursor=pointer]:
+              - generic [ref=e488]: 👍
+              - generic [ref=e489]: "1"
+          - generic [ref=e492]:
+            - text: Hello from alice_node — E2E test message 1(edited)
+            - generic [ref=e493]: 7:07 PM
+          - generic [ref=e551]:
+            - text: Hello from bob_cipher — identity switch test incoming!
+            - generic [ref=e552]: 7:55 PM
+        - generic [ref=e494]:
+          - generic [ref=e495]:
+            - generic [ref=e496]: connected
+            - generic [ref=e497]: Backend connected — chat mutations are sent to the remote xorein node.
+          - generic [ref=e498]:
+            - textbox "Message Input" [ref=e499]:
+              - /placeholder: "INPUT // #EMPTY-SHELL"
+            - generic [ref=e500]:
+              - button "Stickers" [ref=e502] [cursor=pointer]:
+                - img [ref=e503]
+              - button "Emoji Picker" [ref=e508] [cursor=pointer]:
+                - img [ref=e509]
+              - button "Send Message" [ref=e512] [cursor=pointer]:
+                - img [ref=e513]
+      - generic [ref=e518]:
+        - generic [ref=e519]:
+          - generic [ref=e520]: Entities
+          - button [ref=e521] [cursor=pointer]:
+            - img [ref=e522]
+        - generic [ref=e525]:
+          - generic [ref=e526]:
+            - heading "OPERATORS // 1" [level=3] [ref=e527]
+            - generic [ref=e529] [cursor=pointer]:
+              - img [ref=e531]
+              - generic [ref=e533]:
+                - generic [ref=e536]: bob_cipher
+                - generic [ref=e539]: online
+              - button "Timeout user" [ref=e541]:
+                - img [ref=e542]
+          - heading "IDLE // 0" [level=3] [ref=e546]
+          - heading "OFFLINE // 0" [level=3] [ref=e548]

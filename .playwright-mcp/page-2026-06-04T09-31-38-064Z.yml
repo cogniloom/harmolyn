@@ -1,0 +1,84 @@
+- generic [ref=e3]:
+  - generic [ref=e6]:
+    - button [ref=e9] [cursor=pointer]:
+      - img [ref=e10]
+    - generic [ref=e13]:
+      - generic [ref=e14]: 1 / 7
+      - generic [ref=e15]:
+        - img [ref=e17]
+        - img [ref=e20]
+      - heading "What you're running" [level=2] [ref=e23]
+      - generic [ref=e24]:
+        - generic [ref=e25]:
+          - img [ref=e26]
+          - generic [ref=e28]:
+            - strong [ref=e29]: Harmolyn
+            - text: is the UI.
+            - strong [ref=e30]: xorein
+            - text: is the local network engine it talks to.
+        - generic [ref=e31]:
+          - img [ref=e32]
+          - generic [ref=e35]: There is no "central server" that needs your plaintext to work.
+        - generic [ref=e36]:
+          - img [ref=e37]
+          - generic [ref=e40]:
+            - text: Your messages are processed and encrypted
+            - strong [ref=e41]: on your device
+            - text: .
+    - generic [ref=e42]:
+      - generic [ref=e53] [cursor=pointer]: Do not show again
+      - generic [ref=e54]:
+        - button "SKIP" [ref=e55] [cursor=pointer]
+        - button "NEXT" [ref=e57] [cursor=pointer]:
+          - text: NEXT
+          - img [ref=e58]
+  - generic [ref=e60]:
+    - generic [ref=e61]: Viewing as guest — create an identity to post, react, and join servers
+    - generic [ref=e62]:
+      - button "Restore" [ref=e63] [cursor=pointer]
+      - button "Create Identity" [ref=e64] [cursor=pointer]
+  - generic [ref=e66]:
+    - generic [ref=e68]:
+      - generic [ref=e70]:
+        - generic [ref=e71]:
+          - button "Open Menu" [ref=e72] [cursor=pointer]:
+            - img [ref=e73]
+          - img [ref=e75]
+          - generic [ref=e78]:
+            - generic [ref=e79]: runtime-offline
+            - generic "No security mode has been negotiated for this conversation yet." [ref=e80]: NOT NEGOTIATED
+        - generic [ref=e81]:
+          - group "Channel type" [ref=e82]:
+            - button "Set channel type to Text" [pressed] [ref=e83] [cursor=pointer]:
+              - img [ref=e84]
+              - generic [ref=e87]: Text
+            - button "Set channel type to Announce" [ref=e88] [cursor=pointer]:
+              - img [ref=e89]
+              - generic [ref=e92]: Announce
+          - button "Theme Settings" [ref=e94] [cursor=pointer]
+          - button "Change Chat View" [ref=e96] [cursor=pointer]:
+            - img [ref=e97]
+          - button "Member List" [ref=e101] [cursor=pointer]:
+            - img [ref=e102]
+      - generic [ref=e108]:
+        - img [ref=e110]
+        - 'heading "Initiate Hub: #runtime-offline" [level=1] [ref=e113]'
+        - paragraph [ref=e114]: OPERATOR // INGRESS POINT // DATA STREAM START
+      - button "Create identity to post" [ref=e116] [cursor=pointer]:
+        - generic [ref=e117]: "Create an identity to post in #runtime-offline"
+        - generic [ref=e118]: Sign up
+    - generic [ref=e119]:
+      - button "HOME" [ref=e120] [cursor=pointer]:
+        - img [ref=e122]
+        - generic [ref=e125]: HOME
+      - button "CHANNELS" [ref=e126] [cursor=pointer]:
+        - img [ref=e128]
+        - generic [ref=e129]: CHANNELS
+      - button "CREATE" [disabled] [ref=e130]:
+        - img [ref=e133]
+      - button "EXPLORE" [disabled] [ref=e138]:
+        - img [ref=e140]
+        - generic [ref=e143]: EXPLORE
+      - button "SETTINGS" [ref=e144] [cursor=pointer]:
+        - img [ref=e146]
+        - generic [ref=e149]: SETTINGS

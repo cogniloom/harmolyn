@@ -1,0 +1,99 @@
+- generic [ref=e60]:
+  - complementary "Channel List" [ref=e364]:
+    - generic [ref=e365]:
+      - generic [ref=e368]:
+        - heading "Test Hub Alpha" [level=2] [ref=e369]
+        - generic [ref=e370]: NO PEER
+      - generic [ref=e371]:
+        - button "Server Settings" [disabled] [ref=e372]:
+          - img [ref=e373]
+        - button "Collapse Channel List" [ref=e376] [cursor=pointer]:
+          - img [ref=e377]
+    - generic [ref=e404]:
+      - generic [ref=e405]:
+        - generic [ref=e406]: TEXT CHANNELS
+        - img [ref=e407]
+      - button "general" [disabled] [ref=e411]:
+        - img [ref=e412]
+        - generic [ref=e415]: general
+    - generic [ref=e381]:
+      - button "Set Status" [ref=e382] [cursor=pointer]:
+        - img "My Avatar" [ref=e383]
+      - generic [ref=e385]:
+        - generic [ref=e386]: Local User
+        - generic [ref=e387]: ID // ME
+      - generic [ref=e388]:
+        - button "Switch Account" [ref=e389] [cursor=pointer]:
+          - img [ref=e390]
+        - button "Mute Microphone" [disabled] [ref=e393]:
+          - img [ref=e394]
+        - button "Deafen Audio" [disabled] [ref=e397]:
+          - img [ref=e398]
+        - button "Open Settings" [ref=e400] [cursor=pointer]:
+          - img [ref=e401]
+  - generic [ref=e61]:
+    - generic [ref=e416]:
+      - generic [ref=e418]:
+        - generic [ref=e419]:
+          - button "Open Menu" [ref=e420] [cursor=pointer]:
+            - img [ref=e421]
+          - img [ref=e423]
+          - generic [ref=e426]:
+            - generic [ref=e427]: general
+            - generic "No security mode has been negotiated for this conversation yet." [ref=e428]: NOT NEGOTIATED
+        - generic [ref=e429]:
+          - group "Channel type" [ref=e430]:
+            - button "Set channel type to Text" [pressed] [ref=e431] [cursor=pointer]:
+              - img [ref=e432]
+              - generic [ref=e435]: Text
+            - button "Set channel type to Announce" [ref=e436] [cursor=pointer]:
+              - img [ref=e437]
+              - generic [ref=e440]: Announce
+          - button "Theme Settings" [ref=e442] [cursor=pointer]
+          - button "Change Chat View" [ref=e444] [cursor=pointer]:
+            - img [ref=e445]
+          - button "Member List" [ref=e449] [cursor=pointer]:
+            - img [ref=e450]
+      - generic [ref=e455]:
+        - generic [ref=e456]:
+          - img [ref=e458]
+          - 'heading "Initiate Hub: #general" [level=1] [ref=e461]'
+          - paragraph [ref=e462]: OPERATOR // INGRESS POINT // DATA STREAM START
+        - generic [ref=e463]:
+          - img "Local User" [ref=e467] [cursor=pointer]
+          - generic [ref=e469]:
+            - generic [ref=e470]:
+              - generic [ref=e471] [cursor=pointer]:
+                - generic [ref=e472]: Local User
+                - generic "online" [ref=e473]
+              - generic [ref=e475]: 9:18 AM
+            - generic [ref=e476]: Hello from Harmolyn web!
+      - generic [ref=e477]:
+        - generic [ref=e478]:
+          - generic [ref=e479]: local preview
+          - generic [ref=e480]: Backend connected — chat mutations are sent to the remote xorein node.
+        - generic [ref=e481]:
+          - textbox "Message Input" [ref=e482]:
+            - /placeholder: "INPUT // #GENERAL"
+          - generic [ref=e483]:
+            - button "Stickers" [ref=e485] [cursor=pointer]:
+              - img [ref=e486]
+            - button "Emoji Picker" [ref=e491] [cursor=pointer]:
+              - img [ref=e492]
+            - button "Send Message" [ref=e495] [cursor=pointer]:
+              - img [ref=e496]
+    - generic [ref=e132]:
+      - button "HOME" [ref=e133] [cursor=pointer]:
+        - img [ref=e135]
+        - generic [ref=e138]: HOME
+      - button "CHANNELS" [ref=e139] [cursor=pointer]:
+        - img [ref=e141]
+        - generic [ref=e142]: CHANNELS
+      - button "CREATE" [disabled] [ref=e143]:
+        - img [ref=e146]
+      - button "EXPLORE" [disabled] [ref=e151]:
+        - img [ref=e153]
+        - generic [ref=e156]: EXPLORE
+      - button "SETTINGS" [ref=e157] [cursor=pointer]:
+        - img [ref=e159]
+        - generic [ref=e162]: SETTINGS

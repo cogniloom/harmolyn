@@ -1,0 +1,114 @@
+- generic [ref=e3]:
+  - generic [ref=e5]:
+    - img [ref=e6]
+    - generic [ref=e8]:
+      - generic [ref=e9]: Preparing xorein
+      - generic [ref=e10]: Checking for a local xorein runtime...
+  - navigation "Servers" [ref=e12]:
+    - button "Home" [ref=e14] [cursor=pointer]:
+      - img [ref=e15]
+    - generic [ref=e19] [cursor=pointer]:
+      - 'button "Server: P2P Test Server" [ref=e20]':
+        - img "P2P Test Server" [ref=e21]
+      - generic [ref=e23]: P2P TEST SERVER
+    - button "Create Server" [disabled] [ref=e24]:
+      - img [ref=e25]
+    - button "Explore Servers" [disabled] [ref=e26]:
+      - img [ref=e27]
+    - generic [ref=e32]: NO PEER
+  - generic [ref=e33]:
+    - complementary "Channel List" [ref=e36]:
+      - generic [ref=e37]:
+        - generic [ref=e40]:
+          - heading "P2P Test Server" [level=2] [ref=e41]
+          - generic [ref=e42]: NO PEER
+        - generic [ref=e43]:
+          - button "Server Settings" [disabled] [ref=e44]:
+            - img [ref=e45]
+          - button "Collapse Channel List" [ref=e48] [cursor=pointer]:
+            - img [ref=e49]
+      - generic [ref=e53]:
+        - button "Set Status" [ref=e54] [cursor=pointer]:
+          - img "My Avatar" [ref=e55]
+        - generic [ref=e57]:
+          - generic [ref=e58]: harmolyn_e2e
+          - generic [ref=e59]: ID // ME
+        - generic [ref=e60]:
+          - button "Switch Account" [ref=e61] [cursor=pointer]:
+            - img [ref=e62]
+          - button "Mute Microphone" [disabled] [ref=e65]:
+            - img [ref=e66]
+          - button "Deafen Audio" [disabled] [ref=e69]:
+            - img [ref=e70]
+          - button "Open Settings" [ref=e72] [cursor=pointer]:
+            - img [ref=e73]
+    - generic [ref=e77]:
+      - generic [ref=e78]:
+        - generic [ref=e80]:
+          - generic [ref=e81]:
+            - img [ref=e83]
+            - generic [ref=e86]:
+              - generic [ref=e87]: peer-unreachable
+              - generic "No security mode has been negotiated for this conversation yet." [ref=e88]: NOT NEGOTIATED
+          - generic [ref=e89]:
+            - group "Channel type" [ref=e90]:
+              - button "Set channel type to Text" [pressed] [ref=e91] [cursor=pointer]:
+                - img [ref=e92]
+                - generic [ref=e95]: Text
+              - button "Set channel type to Announce" [ref=e96] [cursor=pointer]:
+                - img [ref=e97]
+                - generic [ref=e100]: Announce
+            - button "Theme Settings" [ref=e102] [cursor=pointer]
+            - button "Change Chat View" [ref=e104] [cursor=pointer]:
+              - img [ref=e105]
+            - generic [ref=e109]:
+              - button "Inbox" [ref=e110] [cursor=pointer]:
+                - img [ref=e111]
+              - button "Notifications" [ref=e114] [cursor=pointer]:
+                - img [ref=e115]
+              - button "Pinned Messages" [ref=e119] [cursor=pointer]:
+                - img [ref=e120]
+              - button "Member List" [ref=e122] [cursor=pointer]:
+                - img [ref=e123]
+              - generic [ref=e128]:
+                - img [ref=e129]
+                - textbox "Search messages" [ref=e132]:
+                  - /placeholder: Search...
+        - generic [ref=e134]:
+          - img [ref=e136]
+          - 'heading "Initiate Hub: #peer-unreachable" [level=1] [ref=e139]'
+          - paragraph [ref=e140]: OPERATOR // INGRESS POINT // DATA STREAM START
+        - generic [ref=e141]:
+          - generic [ref=e142]:
+            - generic [ref=e143]: connected
+            - generic [ref=e144]: Backend connected — chat mutations are sent to the remote xorein node.
+          - generic [ref=e145]:
+            - textbox "Message Input" [ref=e146]:
+              - /placeholder: "INPUT // #PEER-UNREACHABLE"
+            - generic [ref=e147]:
+              - button "Stickers" [ref=e149] [cursor=pointer]:
+                - img [ref=e150]
+              - button "Emoji Picker" [ref=e155] [cursor=pointer]:
+                - img [ref=e156]
+              - button "Send Message" [ref=e159] [cursor=pointer]:
+                - img [ref=e160]
+      - generic [ref=e165]:
+        - generic [ref=e166]:
+          - generic [ref=e167]: Entities
+          - button [ref=e168] [cursor=pointer]:
+            - img [ref=e169]
+        - generic [ref=e172]:
+          - heading "OPERATORS // 0" [level=3] [ref=e174]
+          - heading "IDLE // 0" [level=3] [ref=e176]
+          - generic [ref=e177]:
+            - heading "OFFLINE // 1" [level=3] [ref=e178]
+            - generic [ref=e180] [cursor=pointer]:
+              - img [ref=e182]
+              - generic [ref=e184]:
+                - generic [ref=e187]: 12D3Ko…EBS4
+                - generic [ref=e189]: offline
+              - generic [ref=e190]:
+                - button "Send DM to 12D3Ko…EBS4" [ref=e191]:
+                  - img [ref=e192]
+                - button "Timeout user" [ref=e194]:
+                  - img [ref=e195]

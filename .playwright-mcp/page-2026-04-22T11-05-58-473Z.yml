@@ -1,0 +1,49 @@
+- generic [ref=e61]:
+  - generic [ref=e63]:
+    - generic [ref=e65]:
+      - generic [ref=e66]:
+        - button "Open Menu" [ref=e67] [cursor=pointer]:
+          - img [ref=e68]
+        - img [ref=e70]
+        - generic [ref=e73]:
+          - generic [ref=e74]: runtime-offline
+          - generic [ref=e75]: SECURE // COMMS // ESTABLISHED
+      - generic [ref=e76]:
+        - button "Theme Settings" [ref=e78] [cursor=pointer]
+        - button "Change Chat View" [ref=e80] [cursor=pointer]:
+          - img [ref=e81]
+        - button "Member List" [ref=e85] [cursor=pointer]:
+          - img [ref=e86]
+    - generic [ref=e92]:
+      - img [ref=e94]
+      - 'heading "Initiate Hub: #runtime-offline" [level=1] [ref=e97]'
+      - paragraph [ref=e98]: OPERATOR // INGRESS POINT // DATA STREAM START
+    - generic [ref=e100]:
+      - button "Add attachment" [ref=e101] [cursor=pointer]:
+        - img [ref=e102]
+      - button "Create Poll" [ref=e104] [cursor=pointer]:
+        - img [ref=e105]
+      - textbox "Message Input" [ref=e107]:
+        - /placeholder: "INPUT // #RUNTIME-OFFLINE"
+      - generic [ref=e108]:
+        - button "Stickers" [ref=e109] [cursor=pointer]:
+          - img [ref=e110]
+        - button "Emoji Picker" [ref=e115] [cursor=pointer]:
+          - img [ref=e116]
+        - button "Send Message" [ref=e119] [cursor=pointer]:
+          - img [ref=e120]
+  - generic [ref=e123]:
+    - button "HOME" [ref=e124] [cursor=pointer]:
+      - img [ref=e126]
+      - generic [ref=e129]: HOME
+    - button "CHANNELS" [ref=e130] [cursor=pointer]:
+      - img [ref=e132]
+      - generic [ref=e133]: CHANNELS
+    - button "CREATE" [disabled] [ref=e134]:
+      - img [ref=e137]
+    - button "EXPLORE" [disabled] [ref=e142]:
+      - img [ref=e144]
+      - generic [ref=e147]: EXPLORE
+    - button "SETTINGS" [ref=e148] [cursor=pointer]:
+      - img [ref=e150]
+      - generic [ref=e153]: SETTINGS

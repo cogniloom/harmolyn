@@ -1,0 +1,53 @@
+- generic [ref=e5]:
+  - generic [ref=e7]:
+    - generic [ref=e9]:
+      - generic [ref=e10]:
+        - button "Open Menu" [ref=e11] [cursor=pointer]:
+          - img [ref=e12]
+        - img [ref=e14]
+        - generic [ref=e17]:
+          - generic [ref=e18]: general
+          - generic [ref=e19]: SECURE // COMMS // ESTABLISHED
+      - generic [ref=e20]:
+        - button "Theme Settings" [ref=e22] [cursor=pointer]
+        - button "Change Chat View" [ref=e24] [cursor=pointer]:
+          - img [ref=e25]
+        - button "Member List" [ref=e29] [cursor=pointer]:
+          - img [ref=e30]
+    - generic [ref=e36]:
+      - img [ref=e38]
+      - 'heading "Initiate Hub: #general" [level=1] [ref=e41]'
+      - paragraph [ref=e42]: OPERATOR // INGRESS POINT // DATA STREAM START
+    - generic [ref=e43]:
+      - generic [ref=e44]:
+        - generic [ref=e45]: offline preview
+        - generic [ref=e46]: Offline preview mode — chat text stays local in this browser, and attachments are disabled until the local xorein runtime returns.
+      - generic [ref=e47]:
+        - button "Add attachment" [ref=e48] [cursor=pointer]:
+          - img [ref=e49]
+        - button "Create Poll" [ref=e51] [cursor=pointer]:
+          - img [ref=e52]
+        - textbox "Message Input" [ref=e54]:
+          - /placeholder: "INPUT // #GENERAL"
+        - generic [ref=e55]:
+          - button "Stickers" [ref=e56] [cursor=pointer]:
+            - img [ref=e57]
+          - button "Emoji Picker" [ref=e62] [cursor=pointer]:
+            - img [ref=e63]
+          - button "Send Message" [ref=e66] [cursor=pointer]:
+            - img [ref=e67]
+  - generic [ref=e71]:
+    - button "HOME" [ref=e72] [cursor=pointer]:
+      - img [ref=e74]
+      - generic [ref=e77]: HOME
+    - button "CHANNELS" [ref=e78] [cursor=pointer]:
+      - img [ref=e80]
+      - generic [ref=e81]: CHANNELS
+    - button "CREATE" [disabled] [ref=e82]:
+      - img [ref=e85]
+    - button "EXPLORE" [disabled] [ref=e90]:
+      - img [ref=e92]
+      - generic [ref=e95]: EXPLORE
+    - button "SETTINGS" [ref=e96] [cursor=pointer]:
+      - img [ref=e98]
+      - generic [ref=e101]: SETTINGS

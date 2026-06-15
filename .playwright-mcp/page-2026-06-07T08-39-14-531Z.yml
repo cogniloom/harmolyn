@@ -1,0 +1,127 @@
+- generic [ref=e5]:
+  - navigation "Servers" [ref=e232]:
+    - button "Home" [ref=e234] [cursor=pointer]:
+      - img [ref=e235]
+    - generic [ref=e297] [cursor=pointer]:
+      - 'button "Server: Test Server" [ref=e298]':
+        - img "Test Server" [ref=e299]
+      - generic [ref=e301]: TEST SERVER
+    - button "Create Server" [ref=e240] [cursor=pointer]:
+      - img [ref=e241]
+    - button "Explore Servers" [ref=e242] [cursor=pointer]:
+      - img [ref=e243]
+    - 'status "Connection: CONNECTED. Connected to Test Server." [ref=e302]':
+      - generic [ref=e248]: CONNECTED
+  - generic [ref=e11]:
+    - complementary "Channel List" [ref=e250]:
+      - button "Expand Channel List" [ref=e251] [cursor=pointer]
+      - generic [ref=e253]:
+        - button "Open server settings" [ref=e303] [cursor=pointer]:
+          - generic [ref=e304]:
+            - heading "Test Server" [level=2] [ref=e305]
+            - generic [ref=e306]: CONNECTED
+          - img [ref=e307]
+        - generic [ref=e259]:
+          - button "Server Settings" [ref=e309] [cursor=pointer]:
+            - img [ref=e310]
+          - button "Collapse Channel List" [ref=e260] [cursor=pointer]:
+            - img [ref=e261]
+      - generic [ref=e313]:
+        - generic [ref=e314]:
+          - button "Collapse TEXT CHANNELS" [expanded] [ref=e315] [cursor=pointer]:
+            - img [ref=e316]
+            - generic [ref=e318]: TEXT CHANNELS
+          - button "Add channel" [ref=e320] [cursor=pointer]:
+            - img [ref=e321]
+        - button "general" [ref=e324] [cursor=pointer]:
+          - img [ref=e325]
+          - generic [ref=e328]: general
+      - generic [ref=e267]:
+        - 'status "Network status: connected to the xorein network" [ref=e268]':
+          - img [ref=e269]
+          - generic [ref=e273]: Connected
+        - generic [ref=e274]:
+          - button "Set Status" [ref=e275] [cursor=pointer]:
+            - img "My Avatar" [ref=e276]
+          - generic [ref=e278]:
+            - generic [ref=e279]: VoiceTester
+            - generic [ref=e280]: 12D3KooWF7…XXBCjd
+          - generic [ref=e281]:
+            - button "Switch Account" [ref=e282] [cursor=pointer]:
+              - img [ref=e283]
+            - button "Mute Microphone" [disabled] [ref=e286]:
+              - img [ref=e287]
+            - button "Deafen Audio" [disabled] [ref=e290]:
+              - img [ref=e291]
+            - button "Open Settings" [ref=e293] [cursor=pointer]:
+              - img [ref=e294]
+    - generic [ref=e13]:
+      - generic [ref=e329]:
+        - generic [ref=e331]:
+          - generic [ref=e332]:
+            - img [ref=e334]
+            - generic [ref=e337]:
+              - generic [ref=e338]: general
+              - button "CROWD // CHANNEL E2EE" [ref=e339] [cursor=pointer]:
+                - img [ref=e340]
+                - text: CROWD // CHANNEL E2EE
+          - generic [ref=e343]:
+            - group "Channel type" [ref=e344]:
+              - button "Set channel type to Text" [pressed] [ref=e345] [cursor=pointer]:
+                - img [ref=e346]
+                - generic [ref=e349]: Text
+              - button "Set channel type to Announce" [ref=e350] [cursor=pointer]:
+                - img [ref=e351]
+                - generic [ref=e354]: Announce
+            - button "Change Chat View" [ref=e355] [cursor=pointer]:
+              - img [ref=e356]
+            - generic [ref=e360]:
+              - button "Inbox" [ref=e361] [cursor=pointer]:
+                - img [ref=e362]
+              - button "Notifications" [ref=e365] [cursor=pointer]:
+                - img [ref=e366]
+              - button "Pinned Messages" [ref=e370] [cursor=pointer]:
+                - img [ref=e371]
+              - button "Member List" [ref=e373] [cursor=pointer]:
+                - img [ref=e374]
+              - generic [ref=e379]:
+                - img [ref=e380]
+                - textbox "Search messages" [ref=e383]:
+                  - /placeholder: Search...
+        - generic [ref=e385]:
+          - img [ref=e387]
+          - 'heading "Welcome to #general" [level=1] [ref=e390]'
+          - paragraph [ref=e391]: "This is the beginning of the #general channel."
+        - generic [ref=e392]:
+          - generic [ref=e393]:
+            - generic [ref=e394]: connected
+            - generic [ref=e395]: Backend connected — chat mutations are sent to the remote xorein node.
+          - generic [ref=e396]:
+            - button "Add attachment" [ref=e397] [cursor=pointer]:
+              - img [ref=e398]
+            - textbox "Message Input" [ref=e400]:
+              - /placeholder: "INPUT // #GENERAL"
+            - generic [ref=e401]:
+              - button "Stickers" [ref=e403] [cursor=pointer]:
+                - img [ref=e404]
+              - button "Emoji Picker" [ref=e409] [cursor=pointer]:
+                - img [ref=e410]
+              - button "Send Message" [disabled] [ref=e413]:
+                - img [ref=e414]
+      - generic [ref=e418]:
+        - generic [ref=e419]:
+          - generic [ref=e420]: Entities
+          - button [ref=e421] [cursor=pointer]:
+            - img [ref=e422]
+        - generic [ref=e425]:
+          - generic [ref=e426]:
+            - heading "OPERATORS // 1" [level=3] [ref=e427]
+            - generic [ref=e429] [cursor=pointer]:
+              - img [ref=e431]
+              - generic [ref=e433]:
+                - generic [ref=e436]: VoiceTester
+                - generic [ref=e439]: online
+              - button "Timeout user" [ref=e441]:
+                - img [ref=e442]
+          - heading "IDLE // 0" [level=3] [ref=e446]
+          - heading "OFFLINE // 0" [level=3] [ref=e448]

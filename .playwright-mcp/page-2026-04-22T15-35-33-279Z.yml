@@ -1,0 +1,82 @@
+- generic [ref=e3]:
+  - navigation "Servers" [ref=e61]:
+    - button "Home" [ref=e63] [cursor=pointer]:
+      - img [ref=e64]
+    - button "Create Server" [disabled] [ref=e69]:
+      - img [ref=e70]
+    - button "Explore Servers" [disabled] [ref=e71]:
+      - img [ref=e72]
+    - generic [ref=e77]: OFFLINE
+  - generic [ref=e78]:
+    - complementary "Channel List" [ref=e81]:
+      - generic [ref=e82]:
+        - generic [ref=e85]:
+          - heading "System Hub" [level=2] [ref=e86]
+          - generic [ref=e87]: OFFLINE
+        - generic [ref=e88]:
+          - button "Support Harmolyn" [ref=e89] [cursor=pointer]:
+            - img [ref=e90]
+          - button "Collapse Channel List" [ref=e92] [cursor=pointer]:
+            - img [ref=e93]
+      - generic [ref=e98]: Direct Communications
+      - generic [ref=e99]:
+        - button "Set Status" [ref=e100] [cursor=pointer]:
+          - img "My Avatar" [ref=e101]
+        - generic [ref=e103]:
+          - generic [ref=e104]: Local User
+          - generic [ref=e105]: ID // ME
+        - generic [ref=e106]:
+          - button "Switch Account" [ref=e107] [cursor=pointer]:
+            - img [ref=e108]
+          - button "Mute Microphone" [disabled] [ref=e111]:
+            - img [ref=e112]
+          - button "Deafen Audio" [disabled] [ref=e115]:
+            - img [ref=e116]
+          - button "Open Settings" [ref=e118] [cursor=pointer]:
+            - img [ref=e119]
+    - generic [ref=e124]:
+      - generic [ref=e126]:
+        - generic [ref=e127]:
+          - img [ref=e129]
+          - generic [ref=e132]:
+            - generic [ref=e133]: runtime-offline
+            - generic [ref=e134]: SECURE // COMMS // ESTABLISHED
+        - generic [ref=e135]:
+          - button "Theme Settings" [ref=e137] [cursor=pointer]
+          - button "Change Chat View" [ref=e139] [cursor=pointer]:
+            - img [ref=e140]
+          - generic [ref=e144]:
+            - button "Inbox" [ref=e145] [cursor=pointer]:
+              - img [ref=e146]
+            - button "Notifications" [ref=e149] [cursor=pointer]:
+              - img [ref=e150]
+            - button "Pinned Messages" [ref=e154] [cursor=pointer]:
+              - img [ref=e155]
+            - button "Member List" [ref=e157] [cursor=pointer]:
+              - img [ref=e158]
+            - generic [ref=e163]:
+              - img [ref=e164]
+              - textbox "Search messages" [ref=e167]:
+                - /placeholder: Search...
+      - generic [ref=e169]:
+        - img [ref=e171]
+        - 'heading "Initiate Hub: #runtime-offline" [level=1] [ref=e174]'
+        - paragraph [ref=e175]: OPERATOR // INGRESS POINT // DATA STREAM START
+      - generic [ref=e176]:
+        - generic [ref=e177]:
+          - generic [ref=e178]: offline preview
+          - generic [ref=e179]: Offline preview mode — chat text stays local in this browser, and attachments are disabled until the local xorein runtime returns.
+        - generic [ref=e180]:
+          - button "Add attachment" [ref=e181] [cursor=pointer]:
+            - img [ref=e182]
+          - button "Create Poll" [ref=e184] [cursor=pointer]:
+            - img [ref=e185]
+          - textbox "Message Input" [ref=e187]:
+            - /placeholder: "INPUT // #RUNTIME-OFFLINE"
+          - generic [ref=e188]:
+            - button "Stickers" [ref=e189] [cursor=pointer]:
+              - img [ref=e190]
+            - button "Emoji Picker" [ref=e195] [cursor=pointer]:
+              - img [ref=e196]
+            - button "Send Message" [ref=e199] [cursor=pointer]:
+              - img [ref=e200]

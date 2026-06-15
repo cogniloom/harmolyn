@@ -1,0 +1,60 @@
+- generic [ref=e10]:
+  - generic [ref=e940]:
+    - generic [ref=e942]:
+      - generic [ref=e943]:
+        - button "Open Menu" [ref=e944] [cursor=pointer]:
+          - img [ref=e945]
+        - img [ref=e947]
+        - generic [ref=e950]:
+          - generic [ref=e951]: new-2
+          - generic "Large-scale channel end-to-end encryption with epoch rotation." [ref=e952]: CROWD // CHANNEL E2EE
+      - generic [ref=e953]:
+        - group "Channel type" [ref=e954]:
+          - button "Set channel type to Text" [pressed] [ref=e955] [cursor=pointer]:
+            - img [ref=e956]
+            - generic [ref=e959]: Text
+          - button "Set channel type to Announce" [ref=e960] [cursor=pointer]:
+            - img [ref=e961]
+            - generic [ref=e964]: Announce
+        - button "Theme Settings" [ref=e966] [cursor=pointer]
+        - button "Change Chat View" [ref=e968] [cursor=pointer]:
+          - img [ref=e969]
+        - button "Member List" [ref=e973] [cursor=pointer]:
+          - img [ref=e974]
+    - generic [ref=e979]:
+      - generic [ref=e980]:
+        - img [ref=e982]
+        - 'heading "Initiate Hub: #new-2" [level=1] [ref=e985]'
+        - paragraph [ref=e986]: OPERATOR // INGRESS POINT // DATA STREAM START
+      - generic [ref=e1011]:
+        - text: "Testing channel navigation to #new-2"
+        - generic [ref=e1012]: 7:19 PM
+    - generic [ref=e987]:
+      - generic [ref=e988]:
+        - generic [ref=e989]: connected
+        - generic [ref=e990]: Backend connected — chat mutations are sent to the remote xorein node.
+      - generic [ref=e991]:
+        - textbox "Message Input" [active] [ref=e992]:
+          - /placeholder: "INPUT // #NEW-2"
+        - generic [ref=e993]:
+          - button "Stickers" [ref=e995] [cursor=pointer]:
+            - img [ref=e996]
+          - button "Emoji Picker" [ref=e1001] [cursor=pointer]:
+            - img [ref=e1002]
+          - button "Send Message" [ref=e1005] [cursor=pointer]:
+            - img [ref=e1006]
+  - generic [ref=e63]:
+    - button "HOME" [ref=e64] [cursor=pointer]:
+      - img [ref=e66]
+      - generic [ref=e69]: HOME
+    - button "CHANNELS" [ref=e70] [cursor=pointer]:
+      - img [ref=e72]
+      - generic [ref=e73]: CHANNELS
+    - button "CREATE" [ref=e74] [cursor=pointer]:
+      - img [ref=e77]
+    - button "EXPLORE" [ref=e82] [cursor=pointer]:
+      - img [ref=e84]
+      - generic [ref=e87]: EXPLORE
+    - button "SETTINGS" [ref=e88] [cursor=pointer]:
+      - img [ref=e90]
+      - generic [ref=e93]: SETTINGS

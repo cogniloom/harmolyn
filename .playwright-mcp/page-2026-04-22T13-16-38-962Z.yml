@@ -1,0 +1,139 @@
+- generic [ref=e3]:
+  - generic [ref=e158]:
+    - generic [ref=e160]:
+      - generic [ref=e161]: User settings
+      - generic [ref=e162] [cursor=pointer]:
+        - img [ref=e164]
+        - generic [ref=e167]: My Account
+      - generic [ref=e168] [cursor=pointer]:
+        - img [ref=e170]
+        - generic [ref=e172]: Privacy & Safety
+      - generic [ref=e173] [cursor=pointer]:
+        - img [ref=e175]
+        - generic [ref=e178]: Security (MFA)
+      - generic [ref=e179] [cursor=pointer]:
+        - img [ref=e181]
+        - generic [ref=e185]: Authorized Hubs
+      - generic [ref=e187]: System configuration
+      - generic [ref=e188] [cursor=pointer]:
+        - img [ref=e190]
+        - generic [ref=e192]: Core Appearance
+      - generic [ref=e193] [cursor=pointer]:
+        - img [ref=e195]
+        - generic [ref=e198]: Signal Alerts
+      - generic [ref=e199] [cursor=pointer]:
+        - img [ref=e201]
+        - generic [ref=e207]: Accessibility
+      - generic [ref=e208] [cursor=pointer]:
+        - img [ref=e210]
+        - generic [ref=e212]: Mobile Sync
+      - generic [ref=e214]: Support
+      - generic [ref=e215] [cursor=pointer]:
+        - img [ref=e217]
+        - generic [ref=e219]: Donate
+      - generic [ref=e220] [cursor=pointer]:
+        - img [ref=e222]
+        - generic [ref=e225]: Shop
+      - generic [ref=e226] [cursor=pointer]:
+        - img [ref=e228]
+        - generic [ref=e234]: Quests
+      - button "Log Out" [ref=e237] [cursor=pointer]:
+        - img [ref=e238]
+        - generic [ref=e241]: Log Out
+    - generic:
+      - generic:
+        - banner:
+          - heading "MY // ACCOUNT" [level=2]
+          - paragraph: OPERATOR // SECURITY // PROFILE
+        - generic:
+          - generic:
+            - generic:
+              - generic:
+                - img
+                - generic: Replace
+              - generic:
+                - generic: Local Admin
+                - generic: ID // ME
+            - button "Edit Profile"
+          - generic:
+            - generic:
+              - generic:
+                - generic: Display Name
+                - generic: Local Admin
+              - button "Modify"
+            - generic:
+              - generic:
+                - generic: Identity Link
+                - generic: neo@nexus-underground.net
+              - button "Modify"
+            - generic:
+              - generic:
+                - generic: Primary Bio
+                - generic: CONNECTED TO LOCAL XOREIN RUNTIME
+              - button "Modify"
+        - generic:
+          - heading "Data encryption & authentication" [level=3]
+          - generic:
+            - generic:
+              - generic:
+                - img
+              - generic:
+                - generic: Two-Factor Authentication
+                - generic: Secure your account with an extra layer of protection.
+            - img
+    - generic [ref=e242] [cursor=pointer]:
+      - img [ref=e244]
+      - generic [ref=e247]: ESC
+  - generic [ref=e61]:
+    - generic [ref=e63]:
+      - generic [ref=e65]:
+        - generic [ref=e66]:
+          - button "Open Menu" [ref=e67] [cursor=pointer]:
+            - img [ref=e68]
+          - img [ref=e70]
+          - generic [ref=e73]:
+            - generic [ref=e74]: general
+            - generic [ref=e75]: SECURE // COMMS // ESTABLISHED
+        - generic [ref=e76]:
+          - button "Theme Settings" [ref=e78] [cursor=pointer]
+          - button "Change Chat View" [ref=e80] [cursor=pointer]:
+            - img [ref=e81]
+          - button "Member List" [ref=e85] [cursor=pointer]:
+            - img [ref=e86]
+      - generic [ref=e92]:
+        - img [ref=e94]
+        - 'heading "Initiate Hub: #general" [level=1] [ref=e97]'
+        - paragraph [ref=e98]: OPERATOR // INGRESS POINT // DATA STREAM START
+      - generic [ref=e99]:
+        - generic [ref=e100]:
+          - generic [ref=e101]: offline preview
+          - generic [ref=e102]: Offline preview mode — chat text stays local in this browser, and attachments are disabled until the local xorein runtime returns.
+        - generic [ref=e103]:
+          - button "Add attachment" [ref=e104] [cursor=pointer]:
+            - img [ref=e105]
+          - button "Create Poll" [ref=e107] [cursor=pointer]:
+            - img [ref=e108]
+          - textbox "Message Input" [ref=e110]:
+            - /placeholder: "INPUT // #GENERAL"
+          - generic [ref=e111]:
+            - button "Stickers" [ref=e112] [cursor=pointer]:
+              - img [ref=e113]
+            - button "Emoji Picker" [ref=e118] [cursor=pointer]:
+              - img [ref=e119]
+            - button "Send Message" [ref=e122] [cursor=pointer]:
+              - img [ref=e123]
+    - generic [ref=e126]:
+      - button "HOME" [ref=e127] [cursor=pointer]:
+        - img [ref=e129]
+        - generic [ref=e132]: HOME
+      - button "CHANNELS" [ref=e133] [cursor=pointer]:
+        - img [ref=e135]
+        - generic [ref=e136]: CHANNELS
+      - button "CREATE" [ref=e137] [cursor=pointer]:
+        - img [ref=e140]
+      - button "EXPLORE" [ref=e145] [cursor=pointer]:
+        - img [ref=e147]
+        - generic [ref=e150]: EXPLORE
+      - button "SETTINGS" [active] [ref=e151] [cursor=pointer]:
+        - img [ref=e153]
+        - generic [ref=e156]: SETTINGS

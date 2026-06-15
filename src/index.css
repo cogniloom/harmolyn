@@ -1,0 +1,281 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 185 33% 3%;
+    --foreground: 170 18% 96%;
+    --card: 185 20% 5%;
+    --card-foreground: 170 18% 96%;
+    --popover: 185 20% 5%;
+    --popover-foreground: 170 18% 96%;
+    --primary: 183 85% 50%;
+    --primary-foreground: 185 33% 3%;
+    --secondary: 185 20% 10%;
+    --secondary-foreground: 170 18% 96%;
+    --muted: 185 20% 10%;
+    --muted-foreground: 170 18% 60%;
+    --accent: 185 20% 10%;
+    --accent-foreground: 170 18% 96%;
+    --destructive: 342 100% 59%;
+    --destructive-foreground: 170 18% 96%;
+    --border: 0 0% 100% / 0.08;
+    --input: 185 20% 10%;
+    --ring: 183 85% 50%;
+    --radius: 0.5rem;
+    --sidebar-background: 185 25% 4%;
+    --sidebar-foreground: 170 18% 96%;
+    --sidebar-primary: 183 85% 50%;
+    --sidebar-primary-foreground: 185 33% 3%;
+    --sidebar-accent: 185 20% 10%;
+    --sidebar-accent-foreground: 170 18% 96%;
+    --sidebar-border: 0 0% 100% / 0.08;
+    --sidebar-ring: 183 85% 50%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+}
+
+/* === Custom theme styles (merged from root index.css) === */
+
+:root {
+  --primary-glow: 0 0 10px rgba(19, 221, 236, 0.5), 0 0 20px rgba(19, 221, 236, 0.3);
+  --shadow-glow-sm: 0 0 5px rgba(19, 221, 236, 0.40);
+  --shadow-glass: 0 8px 32px rgba(0, 0, 0, 0.37);
+}
+
+body {
+  background-color: #050A0B;
+  color: #F6F8F8;
+  font-family: 'Space Grotesk', sans-serif;
+}
+
+.shadow-glow-sm {
+  box-shadow: var(--shadow-glow-sm);
+}
+
+.glass-card {
+  background: rgba(17, 23, 24, 0.70);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.glass-realistic {
+  background: var(--theme-glass-bg, rgba(16, 25, 27, 0.4));
+  backdrop-filter: blur(16px) saturate(180%);
+  -webkit-backdrop-filter: blur(16px) saturate(180%);
+  border-top: 1px solid var(--theme-glass-border, rgba(255, 255, 255, 0.15));
+  border-left: 1px solid var(--theme-glass-border, rgba(255, 255, 255, 0.1));
+  border-right: 1px solid var(--theme-glass-border, rgba(0, 0, 0, 0.1));
+  border-bottom: 1px solid var(--theme-glass-border, rgba(0, 0, 0, 0.2));
+  box-shadow: 
+    0 4px 24px -1px rgba(0, 0, 0, 0.2),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.02),
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.1);
+}
+
+.theme-text { color: var(--theme-text, #F6F8F8); }
+.theme-text-secondary { color: var(--theme-text-secondary, rgba(246,248,248,0.7)); }
+.theme-text-dim { color: var(--theme-text-dim, rgba(246,248,248,0.4)); }
+.theme-border { border-color: var(--theme-border, rgba(255,255,255,0.08)); }
+
+.grid-overlay {
+  background-image: 
+    linear-gradient(rgba(19, 221, 236, 0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(19, 221, 236, 0.03) 1px, transparent 1px);
+  background-size: 40px 40px;
+  pointer-events: none;
+}
+
+.text-glow {
+  text-shadow: 0 0 10px rgba(19, 221, 236, 0.5);
+}
+
+.shadow-glow {
+  box-shadow: 0 0 10px rgba(19, 221, 236, 0.4);
+}
+
+/* Micro-interaction utilities */
+.btn-press {
+  transition: transform 0.1s ease, box-shadow 0.2s ease;
+}
+.btn-press:active {
+  transform: scale(0.96);
+}
+
+.hover-lift {
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+.hover-lift:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+}
+
+.focus-ring:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(19, 221, 236, 0.3), var(--shadow-glow-sm);
+}
+
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(19, 221, 236, 0.15); border-radius: 999px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(19, 221, 236, 0.35); }
+
+.micro-label {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+}
+
+.font-display {
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.glass-panel {
+  background: rgba(16, 25, 27, 0.65);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+/* Neon gradient utilities */
+.bg-neon-primary {
+  background: linear-gradient(135deg, #13DDEC 0%, #00A8CC 100%);
+}
+
+.bg-chroma-glow {
+  background: radial-gradient(circle at 50% 0%, rgba(19, 221, 236, 0.15) 0%, rgba(16, 32, 34, 0) 70%);
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.pb-safe {
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+/* ═══════════════════════════════════════════════
+   Performance Mode — .perf-mode on <html>
+   Disables all expensive GPU-composite effects.
+   ═══════════════════════════════════════════════ */
+
+.perf-mode .glass-card,
+.perf-mode .glass-realistic,
+.perf-mode .glass-panel {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+/* Increase opacity to compensate for no blur */
+.perf-mode .glass-card { background: rgba(17, 23, 24, 0.92); }
+.perf-mode .glass-realistic { background: rgba(16, 25, 27, 0.88); box-shadow: none; }
+.perf-mode .glass-panel { background: rgba(16, 25, 27, 0.90); }
+
+/* Kill glows and complex shadows */
+.perf-mode .shadow-glow,
+.perf-mode .shadow-glow-sm,
+.perf-mode .text-glow {
+  box-shadow: none !important;
+  text-shadow: none !important;
+}
+
+/* Kill grid overlay background pattern */
+.perf-mode .grid-overlay {
+  background-image: none !important;
+}
+
+/* Kill hover-lift transforms */
+.perf-mode .hover-lift:hover {
+  transform: none;
+  box-shadow: none;
+}
+
+/* Reduce all transitions & animations */
+.perf-mode *,
+.perf-mode *::before,
+.perf-mode *::after {
+  animation-duration: 0.01ms !important;
+  transition-duration: 0.05s !important;
+}
+
+/* Respect prefers-reduced-motion natively too */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.1s !important;
+  }
+}
+
+/* ═══════════════════════════════════════════════
+   High Contrast Mode — .high-contrast on <html>
+   ═══════════════════════════════════════════════ */
+
+.high-contrast body {
+  background-color: #000 !important;
+  color: #fff !important;
+}
+
+.high-contrast .glass-card,
+.high-contrast .glass-realistic,
+.high-contrast .glass-panel {
+  background: #0a0a0a !important;
+  border-color: rgba(255,255,255,0.35) !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+.high-contrast .text-white\/40,
+.high-contrast .text-white\/30,
+.high-contrast .text-white\/20,
+.high-contrast [class*="text-white/"] {
+  color: rgba(255,255,255,0.85) !important;
+}
+
+.high-contrast .border-white\/5,
+.high-contrast .border-white\/10,
+.high-contrast [class*="border-white/"] {
+  border-color: rgba(255,255,255,0.3) !important;
+}
+
+.high-contrast .bg-white\/5,
+.high-contrast .bg-white\/10,
+.high-contrast [class*="bg-white/"] {
+  background-color: rgba(255,255,255,0.12) !important;
+}
+
+.high-contrast :root {
+  --primary: 183 100% 60%;
+}
+
+.high-contrast .grid-overlay {
+  background-image: none !important;
+}
+
+/* reduce-motion class applied from AccessibilitySection */
+.reduce-motion *, .reduce-motion *::before, .reduce-motion *::after {
+  animation-duration: 0.01ms !important;
+  transition-duration: 0.05s !important;
+}
+
+/* dyslexic-font class applied from AccessibilitySection */
+.dyslexic-font, .dyslexic-font * {
+  font-family: 'OpenDyslexic', sans-serif !important;
+  letter-spacing: 0.05em;
+  word-spacing: 0.1em;
+  line-height: 1.6;
+}

@@ -1,0 +1,131 @@
+- generic [ref=e3]:
+  - generic [ref=e239]:
+    - button [ref=e240] [cursor=pointer]:
+      - img [ref=e241]
+    - generic [ref=e244]:
+      - banner [ref=e245]:
+        - img [ref=e247]
+        - heading "Construct Node" [level=2] [ref=e250]
+        - paragraph [ref=e251]: Establish a new encrypted community. You can define access protocols and security levels after initiation.
+      - generic [ref=e253] [cursor=pointer]:
+        - img [ref=e254]
+        - generic [ref=e257]: Upload // Icon
+      - generic [ref=e258]:
+        - generic [ref=e259]:
+          - generic [ref=e260]: Node Name
+          - textbox "THE // HUB" [ref=e261]
+        - generic [ref=e262]:
+          - button "Private Restricted access" [ref=e263] [cursor=pointer]:
+            - img [ref=e264]
+            - generic [ref=e267]: Private
+            - generic [ref=e268]: Restricted access
+          - button "Public Discoverable node" [ref=e269] [cursor=pointer]:
+            - img [ref=e270]
+            - generic [ref=e273]: Public
+            - generic [ref=e274]: Discoverable node
+        - paragraph [ref=e276]: Visibility controls who can find and join — not encryption. Each conversation's security mode is negotiated separately.
+      - generic [ref=e277]: By establishing this node, you confirm adherence to the Nexus Security Protocol.
+      - button "HAVE AN INVITE ALREADY?" [ref=e278] [cursor=pointer]:
+        - img [ref=e279]
+        - text: HAVE AN INVITE ALREADY?
+    - generic [ref=e282]:
+      - button "Cancel" [ref=e283] [cursor=pointer]
+      - button "Initiate Matrix" [ref=e284] [cursor=pointer]
+  - generic [ref=e12]:
+    - generic [ref=e115]:
+      - generic [ref=e117]:
+        - generic [ref=e118]:
+          - button "Open Menu" [ref=e119] [cursor=pointer]:
+            - img [ref=e120]
+          - img [ref=e122]
+          - generic [ref=e125]:
+            - generic [ref=e126]: empty-shell
+            - generic "No security mode has been negotiated for this conversation yet." [ref=e127]: NOT NEGOTIATED
+        - generic [ref=e128]:
+          - group "Channel type" [ref=e129]:
+            - button "Set channel type to Text" [pressed] [ref=e130] [cursor=pointer]:
+              - img [ref=e131]
+              - generic [ref=e134]: Text
+            - button "Set channel type to Announce" [ref=e135] [cursor=pointer]:
+              - img [ref=e136]
+              - generic [ref=e139]: Announce
+          - button "Theme Settings" [ref=e141] [cursor=pointer]
+          - button "Change Chat View" [ref=e143] [cursor=pointer]:
+            - img [ref=e144]
+          - button "Member List" [ref=e148] [cursor=pointer]:
+            - img [ref=e149]
+      - generic [ref=e154]:
+        - generic [ref=e155]:
+          - img [ref=e157]
+          - 'heading "Initiate Hub: #empty-shell" [level=1] [ref=e160]'
+          - paragraph [ref=e161]: OPERATOR // INGRESS POINT // DATA STREAM START
+        - generic [ref=e162]:
+          - img "harmolyn_e2e" [ref=e165] [cursor=pointer]
+          - generic [ref=e167]:
+            - generic [ref=e168]:
+              - generic [ref=e169] [cursor=pointer]:
+                - generic [ref=e170]: harmolyn_e2e
+                - generic "online" [ref=e171]
+              - generic [ref=e172]: 7:32 PM
+            - generic [ref=e173]: "[edited](edited)"
+        - generic [ref=e174]:
+          - img "harmolyn_e2e" [ref=e177] [cursor=pointer]
+          - generic [ref=e179]:
+            - generic [ref=e180]:
+              - generic [ref=e181] [cursor=pointer]:
+                - generic [ref=e182]: harmolyn_e2e
+                - generic "online" [ref=e183]
+              - generic [ref=e184]: 7:37 PM
+            - generic [ref=e185]: Hello from harmolyn_e2e — Phase 2 test ✓
+            - button "👍 1" [ref=e187] [cursor=pointer]:
+              - generic [ref=e188]: 👍
+              - generic [ref=e189]: "1"
+        - generic [ref=e190]:
+          - img "harmolyn_e2e" [ref=e193] [cursor=pointer]
+          - generic [ref=e195]:
+            - generic [ref=e196]:
+              - generic [ref=e197] [cursor=pointer]:
+                - generic [ref=e198]: harmolyn_e2e
+                - generic "online" [ref=e199]
+              - generic [ref=e200]: 7:44 PM
+            - generic [ref=e201]: 🎉
+        - generic [ref=e202]:
+          - img "harmolyn_e2e" [ref=e205] [cursor=pointer]
+          - generic [ref=e207]:
+            - generic [ref=e208]:
+              - generic [ref=e209] [cursor=pointer]:
+                - generic [ref=e210]: harmolyn_e2e
+                - generic "online" [ref=e211]
+              - generic [ref=e212]: 7:44 PM
+            - generic [ref=e213]:
+              - strong [ref=e214]: bold
+              - text: _italic_ spoiler
+      - generic [ref=e215]:
+        - generic [ref=e216]:
+          - generic [ref=e217]: connected
+          - generic [ref=e218]: Backend connected — chat mutations are sent to the remote xorein node.
+        - generic [ref=e219]:
+          - textbox "Message Input" [ref=e220]:
+            - /placeholder: "INPUT // #EMPTY-SHELL"
+          - generic [ref=e221]:
+            - button "Stickers" [ref=e223] [cursor=pointer]:
+              - img [ref=e224]
+            - button "Emoji Picker" [ref=e229] [cursor=pointer]:
+              - img [ref=e230]
+            - button "Send Message" [ref=e233] [cursor=pointer]:
+              - img [ref=e234]
+    - generic [ref=e84]:
+      - button "HOME" [ref=e85] [cursor=pointer]:
+        - img [ref=e87]
+        - generic [ref=e90]: HOME
+      - button "CHANNELS" [ref=e91] [cursor=pointer]:
+        - img [ref=e93]
+        - generic [ref=e94]: CHANNELS
+      - button "CREATE" [active] [ref=e95] [cursor=pointer]:
+        - img [ref=e98]
+      - button "EXPLORE" [ref=e103] [cursor=pointer]:
+        - img [ref=e105]
+        - generic [ref=e108]: EXPLORE
+      - button "SETTINGS" [ref=e109] [cursor=pointer]:
+        - img [ref=e111]
+        - generic [ref=e114]: SETTINGS

@@ -1,0 +1,56 @@
+- generic [ref=e12]:
+  - generic [ref=e2099]:
+    - generic [ref=e2101]:
+      - generic [ref=e2102]:
+        - button "Open Menu" [ref=e2103] [cursor=pointer]:
+          - img [ref=e2104]
+        - img [ref=e2106]
+        - generic [ref=e2109]:
+          - generic [ref=e2110]: peer-unreachable
+          - generic "No security mode has been negotiated for this conversation yet." [ref=e2111]: NOT NEGOTIATED
+      - generic [ref=e2112]:
+        - group "Channel type" [ref=e2113]:
+          - button "Set channel type to Text" [pressed] [ref=e2114] [cursor=pointer]:
+            - img [ref=e2115]
+            - generic [ref=e2118]: Text
+          - button "Set channel type to Announce" [ref=e2119] [cursor=pointer]:
+            - img [ref=e2120]
+            - generic [ref=e2123]: Announce
+        - button "Theme Settings" [ref=e2125] [cursor=pointer]
+        - button "Change Chat View" [ref=e2127] [cursor=pointer]:
+          - img [ref=e2128]
+        - button "Member List" [ref=e2132] [cursor=pointer]:
+          - img [ref=e2133]
+    - generic [ref=e2139]:
+      - img [ref=e2141]
+      - 'heading "Initiate Hub: #peer-unreachable" [level=1] [ref=e2144]'
+      - paragraph [ref=e2145]: OPERATOR // INGRESS POINT // DATA STREAM START
+    - generic [ref=e2146]:
+      - generic [ref=e2147]:
+        - generic [ref=e2148]: connected
+        - generic [ref=e2149]: Backend connected — chat mutations are sent to the remote xorein node.
+      - generic [ref=e2150]:
+        - textbox "Message Input" [ref=e2151]:
+          - /placeholder: "INPUT // #PEER-UNREACHABLE"
+        - generic [ref=e2152]:
+          - button "Stickers" [ref=e2154] [cursor=pointer]:
+            - img [ref=e2155]
+          - button "Emoji Picker" [ref=e2160] [cursor=pointer]:
+            - img [ref=e2161]
+          - button "Send Message" [ref=e2164] [cursor=pointer]:
+            - img [ref=e2165]
+  - generic [ref=e158]:
+    - button "HOME" [ref=e159] [cursor=pointer]:
+      - img [ref=e161]
+      - generic [ref=e164]: HOME
+    - button "CHANNELS" [ref=e165] [cursor=pointer]:
+      - img [ref=e167]
+      - generic [ref=e168]: CHANNELS
+    - button "CREATE" [disabled] [ref=e169]:
+      - img [ref=e172]
+    - button "EXPLORE" [disabled] [ref=e177]:
+      - img [ref=e179]
+      - generic [ref=e182]: EXPLORE
+    - button "SETTINGS" [ref=e183] [cursor=pointer]:
+      - img [ref=e185]
+      - generic [ref=e188]: SETTINGS

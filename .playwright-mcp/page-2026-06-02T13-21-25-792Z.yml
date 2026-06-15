@@ -1,0 +1,56 @@
+- generic [ref=e68]:
+  - generic [ref=e70]:
+    - generic [ref=e72]:
+      - generic [ref=e73]:
+        - button "Open Menu" [ref=e74] [cursor=pointer]:
+          - img [ref=e75]
+        - img [ref=e77]
+        - generic [ref=e80]:
+          - generic [ref=e81]: general
+          - generic "No security mode has been negotiated for this conversation yet." [ref=e82]: NOT NEGOTIATED
+      - generic [ref=e83]:
+        - group "Channel type" [ref=e84]:
+          - button "Set channel type to Text" [pressed] [ref=e85] [cursor=pointer]:
+            - img [ref=e86]
+            - generic [ref=e89]: Text
+          - button "Set channel type to Announce" [ref=e90] [cursor=pointer]:
+            - img [ref=e91]
+            - generic [ref=e94]: Announce
+        - button "Theme Settings" [ref=e96] [cursor=pointer]
+        - button "Change Chat View" [ref=e98] [cursor=pointer]:
+          - img [ref=e99]
+        - button "Member List" [ref=e103] [cursor=pointer]:
+          - img [ref=e104]
+    - generic [ref=e110]:
+      - img [ref=e112]
+      - 'heading "Initiate Hub: #general" [level=1] [ref=e115]'
+      - paragraph [ref=e116]: OPERATOR // INGRESS POINT // DATA STREAM START
+    - generic [ref=e159]:
+      - generic [ref=e160]:
+        - generic [ref=e161]: local preview
+        - generic [ref=e162]: Copied a stable local message link to the clipboard.
+      - generic [ref=e163]:
+        - textbox "Message Input" [ref=e164]:
+          - /placeholder: "INPUT // #GENERAL"
+        - generic [ref=e165]:
+          - button "Stickers" [ref=e167] [cursor=pointer]:
+            - img [ref=e168]
+          - button "Emoji Picker" [ref=e173] [cursor=pointer]:
+            - img [ref=e174]
+          - button "Send Message" [ref=e177] [cursor=pointer]:
+            - img [ref=e178]
+  - generic [ref=e182]:
+    - button "HOME" [ref=e183] [cursor=pointer]:
+      - img [ref=e185]
+      - generic [ref=e188]: HOME
+    - button "CHANNELS" [ref=e189] [cursor=pointer]:
+      - img [ref=e191]
+      - generic [ref=e192]: CHANNELS
+    - button "CREATE" [disabled] [ref=e193]:
+      - img [ref=e196]
+    - button "EXPLORE" [disabled] [ref=e201]:
+      - img [ref=e203]
+      - generic [ref=e206]: EXPLORE
+    - button "SETTINGS" [ref=e207] [cursor=pointer]:
+      - img [ref=e209]
+      - generic [ref=e212]: SETTINGS

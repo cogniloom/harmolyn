@@ -1,0 +1,63 @@
+- generic [ref=e5]:
+  - generic [ref=e7]:
+    - generic [ref=e9]:
+      - generic [ref=e10]:
+        - button "Open Menu" [ref=e11] [cursor=pointer]:
+          - img [ref=e12]
+        - img [ref=e14]
+        - generic [ref=e17]:
+          - generic [ref=e18]: general
+          - generic [ref=e19]: SECURE // COMMS // ESTABLISHED
+      - generic [ref=e20]:
+        - button "Theme Settings" [ref=e22] [cursor=pointer]
+        - button "Change Chat View" [ref=e24] [cursor=pointer]:
+          - img [ref=e25]
+        - button "Member List" [ref=e29] [cursor=pointer]:
+          - img [ref=e30]
+    - generic [ref=e35]:
+      - generic [ref=e36]:
+        - img [ref=e38]
+        - 'heading "Initiate Hub: #general" [level=1] [ref=e41]'
+        - paragraph [ref=e42]: OPERATOR // INGRESS POINT // DATA STREAM START
+      - generic [ref=e43]:
+        - img "peer-remote" [ref=e46] [cursor=pointer]
+        - generic [ref=e48]:
+          - generic [ref=e49]:
+            - generic [ref=e50] [cursor=pointer]:
+              - generic [ref=e51]: peer-remote
+              - generic "online" [ref=e52]
+            - generic [ref=e53]: 1:02 PM
+          - generic [ref=e54]: Hello @Local User from remote
+    - generic [ref=e55]:
+      - generic [ref=e56]:
+        - generic [ref=e57]: local preview
+        - generic [ref=e58]: Local preview mode — the current xorein control API exposes runtime state only, so chat mutations persist deterministically in this browser until transport write endpoints exist.
+      - generic [ref=e59]:
+        - button "Add attachment" [ref=e60] [cursor=pointer]:
+          - img [ref=e61]
+        - button "Create Poll" [ref=e63] [cursor=pointer]:
+          - img [ref=e64]
+        - textbox "Message Input" [ref=e66]:
+          - /placeholder: "INPUT // #GENERAL"
+        - generic [ref=e67]:
+          - button "Stickers" [ref=e68] [cursor=pointer]:
+            - img [ref=e69]
+          - button "Emoji Picker" [ref=e74] [cursor=pointer]:
+            - img [ref=e75]
+          - button "Send Message" [ref=e78] [cursor=pointer]:
+            - img [ref=e79]
+  - generic [ref=e82]:
+    - button "HOME" [ref=e83] [cursor=pointer]:
+      - img [ref=e85]
+      - generic [ref=e88]: HOME
+    - button "CHANNELS" [ref=e89] [cursor=pointer]:
+      - img [ref=e91]
+      - generic [ref=e92]: CHANNELS
+    - button "CREATE" [ref=e93] [cursor=pointer]:
+      - img [ref=e96]
+    - button "EXPLORE" [ref=e101] [cursor=pointer]:
+      - img [ref=e103]
+      - generic [ref=e106]: EXPLORE
+    - button "SETTINGS" [ref=e107] [cursor=pointer]:
+      - img [ref=e109]
+      - generic [ref=e112]: SETTINGS

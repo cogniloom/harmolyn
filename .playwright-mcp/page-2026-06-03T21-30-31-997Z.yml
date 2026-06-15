@@ -1,0 +1,91 @@
+- generic [ref=e3]:
+  - navigation "Servers" [ref=e12]:
+    - button "Home" [ref=e14] [cursor=pointer]:
+      - img [ref=e15]
+    - button "Create Server" [ref=e28] [cursor=pointer]:
+      - img [ref=e29]
+    - button "Explore Servers" [ref=e30] [cursor=pointer]:
+      - img [ref=e31]
+    - generic [ref=e36]: CONNECTED
+  - generic [ref=e37]:
+    - complementary "Channel List" [ref=e40]:
+      - generic [ref=e41]:
+        - generic [ref=e44]:
+          - heading "System Hub" [level=2] [ref=e203]
+          - generic [ref=e46]: CONNECTED
+        - button "Collapse Channel List" [ref=e52] [cursor=pointer]:
+          - img [ref=e53]
+      - generic [ref=e204]:
+        - button "Friends" [ref=e205] [cursor=pointer]: Direct Communications
+        - button "12D3Ko…SYK5 12D3Ko…SYK5 P2P cross-client delivery test — harmolyn_e2e to p2p_client_b" [ref=e505] [cursor=pointer]:
+          - img "12D3Ko…SYK5" [ref=e209]
+          - generic [ref=e210]:
+            - generic [ref=e211]: 12D3Ko…SYK5
+            - generic [ref=e212]: P2P cross-client delivery test — harmolyn_e2e to p2p_client_b
+      - generic [ref=e57]:
+        - button "Set Status" [ref=e58] [cursor=pointer]:
+          - img "My Avatar" [ref=e59]
+        - generic [ref=e61]:
+          - generic [ref=e62]: harmolyn_e2e
+          - generic [ref=e63]: ID // ME
+        - generic [ref=e64]:
+          - button "Switch Account" [ref=e65] [cursor=pointer]:
+            - img [ref=e66]
+          - button "Mute Microphone" [disabled] [ref=e69]:
+            - img [ref=e70]
+          - button "Deafen Audio" [disabled] [ref=e73]:
+            - img [ref=e74]
+          - button "Open Settings" [ref=e76] [cursor=pointer]:
+            - img [ref=e77]
+    - generic [ref=e431]:
+      - generic [ref=e433]:
+        - generic [ref=e434]:
+          - img [ref=e436]
+          - generic [ref=e439]:
+            - generic [ref=e440]: 12D3Ko…SYK5
+            - generic "No security mode has been negotiated for this conversation yet." [ref=e441]: NOT NEGOTIATED
+        - generic [ref=e442]:
+          - button "Theme Settings" [ref=e444] [cursor=pointer]
+          - button "Change Chat View" [ref=e446] [cursor=pointer]:
+            - img [ref=e447]
+          - generic [ref=e451]:
+            - button "Inbox" [ref=e452] [cursor=pointer]:
+              - img [ref=e453]
+            - button "Notifications" [ref=e456] [cursor=pointer]:
+              - img [ref=e457]
+            - button "Pinned Messages" [ref=e461] [cursor=pointer]:
+              - img [ref=e462]
+            - button "Member List" [ref=e464] [cursor=pointer]:
+              - img [ref=e465]
+            - generic [ref=e470]:
+              - img [ref=e471]
+              - textbox "Search messages" [ref=e474]:
+                - /placeholder: Search...
+      - generic [ref=e475]:
+        - generic [ref=e476]:
+          - img [ref=e478]
+          - 'heading "Initiate Hub: @12D3Ko…SYK5" [level=1] [ref=e481]'
+          - paragraph [ref=e482]: OPERATOR // INGRESS POINT // DATA STREAM START
+        - generic [ref=e506]:
+          - img "harmolyn_e2e" [ref=e509] [cursor=pointer]
+          - generic [ref=e511]:
+            - generic [ref=e512]:
+              - generic [ref=e513] [cursor=pointer]:
+                - generic [ref=e514]: harmolyn_e2e
+                - generic "online" [ref=e515]
+              - generic [ref=e516]: 11:30 PM
+            - generic [ref=e517]: P2P cross-client delivery test — harmolyn_e2e to p2p_client_b
+      - generic [ref=e483]:
+        - generic [ref=e484]:
+          - generic [ref=e485]: connected
+          - generic [ref=e486]: Backend connected — chat mutations are sent to the remote xorein node.
+        - generic [ref=e487]:
+          - textbox "Message Input" [active] [ref=e488]:
+            - /placeholder: INPUT // @12D3KO…SYK5
+          - generic [ref=e489]:
+            - button "Stickers" [ref=e491] [cursor=pointer]:
+              - img [ref=e492]
+            - button "Emoji Picker" [ref=e497] [cursor=pointer]:
+              - img [ref=e498]
+            - button "Send Message" [ref=e501] [cursor=pointer]:
+              - img [ref=e502]

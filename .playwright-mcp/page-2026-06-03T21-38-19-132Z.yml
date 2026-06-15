@@ -1,0 +1,118 @@
+- generic [ref=e3]:
+  - generic [ref=e5]:
+    - img [ref=e6]
+    - generic [ref=e8]:
+      - generic [ref=e9]: Preparing xorein
+      - generic [ref=e10]: Checking for a local xorein runtime...
+  - navigation "Servers" [ref=e12]:
+    - button "Home" [ref=e14] [cursor=pointer]:
+      - img [ref=e15]
+    - generic [ref=e19] [cursor=pointer]:
+      - 'button "Server: UI Verify Own" [ref=e20]':
+        - img "UI Verify Own" [ref=e21]
+      - generic [ref=e23]: UI VERIFY OWN
+    - button "Create Server" [ref=e24] [cursor=pointer]:
+      - img [ref=e25]
+    - button "Explore Servers" [ref=e26] [cursor=pointer]:
+      - img [ref=e27]
+    - generic [ref=e32]: CONNECTED
+  - generic [ref=e33]:
+    - complementary "Channel List" [ref=e36]:
+      - generic [ref=e37]:
+        - generic [ref=e40]:
+          - heading "UI Verify Own" [level=2] [ref=e41]
+          - generic [ref=e42]: CONNECTED
+        - generic [ref=e43]:
+          - button "Server Settings" [ref=e44] [cursor=pointer]:
+            - img [ref=e45]
+          - button "Collapse Channel List" [ref=e48] [cursor=pointer]:
+            - img [ref=e49]
+      - generic [ref=e53]:
+        - generic [ref=e54]:
+          - generic [ref=e55]: TEXT CHANNELS
+          - img [ref=e56]
+        - button "general" [ref=e60] [cursor=pointer]:
+          - img [ref=e61]
+          - generic [ref=e64]: general
+      - generic [ref=e65]:
+        - button "Set Status" [ref=e66] [cursor=pointer]:
+          - img "My Avatar" [ref=e67]
+        - generic [ref=e69]:
+          - generic [ref=e70]: harmolyn_e2e
+          - generic [ref=e71]: ID // ME
+        - generic [ref=e72]:
+          - button "Switch Account" [ref=e73] [cursor=pointer]:
+            - img [ref=e74]
+          - button "Mute Microphone" [disabled] [ref=e77]:
+            - img [ref=e78]
+          - button "Deafen Audio" [disabled] [ref=e81]:
+            - img [ref=e82]
+          - button "Open Settings" [ref=e84] [cursor=pointer]:
+            - img [ref=e85]
+    - generic [ref=e89]:
+      - generic [ref=e90]:
+        - generic [ref=e92]:
+          - generic [ref=e93]:
+            - img [ref=e95]
+            - generic [ref=e98]:
+              - generic [ref=e99]: general
+              - generic "No security mode has been negotiated for this conversation yet." [ref=e100]: NOT NEGOTIATED
+          - generic [ref=e101]:
+            - group "Channel type" [ref=e102]:
+              - button "Set channel type to Text" [pressed] [ref=e103] [cursor=pointer]:
+                - img [ref=e104]
+                - generic [ref=e107]: Text
+              - button "Set channel type to Announce" [ref=e108] [cursor=pointer]:
+                - img [ref=e109]
+                - generic [ref=e112]: Announce
+            - button "Theme Settings" [ref=e114] [cursor=pointer]
+            - button "Change Chat View" [ref=e116] [cursor=pointer]:
+              - img [ref=e117]
+            - generic [ref=e121]:
+              - button "Inbox" [ref=e122] [cursor=pointer]:
+                - img [ref=e123]
+              - button "Notifications" [ref=e126] [cursor=pointer]:
+                - img [ref=e127]
+              - button "Pinned Messages" [ref=e131] [cursor=pointer]:
+                - img [ref=e132]
+              - button "Member List" [ref=e134] [cursor=pointer]:
+                - img [ref=e135]
+              - generic [ref=e140]:
+                - img [ref=e141]
+                - textbox "Search messages" [ref=e144]:
+                  - /placeholder: Search...
+        - generic [ref=e146]:
+          - img [ref=e148]
+          - 'heading "Initiate Hub: #general" [level=1] [ref=e151]'
+          - paragraph [ref=e152]: OPERATOR // INGRESS POINT // DATA STREAM START
+        - generic [ref=e153]:
+          - generic [ref=e154]:
+            - generic [ref=e155]: connected
+            - generic [ref=e156]: Backend connected — chat mutations are sent to the remote xorein node.
+          - generic [ref=e157]:
+            - textbox "Message Input" [ref=e158]:
+              - /placeholder: "INPUT // #GENERAL"
+            - generic [ref=e159]:
+              - button "Stickers" [ref=e161] [cursor=pointer]:
+                - img [ref=e162]
+              - button "Emoji Picker" [ref=e167] [cursor=pointer]:
+                - img [ref=e168]
+              - button "Send Message" [ref=e171] [cursor=pointer]:
+                - img [ref=e172]
+      - generic [ref=e177]:
+        - generic [ref=e178]:
+          - generic [ref=e179]: Entities
+          - button [ref=e180] [cursor=pointer]:
+            - img [ref=e181]
+        - generic [ref=e184]:
+          - generic [ref=e185]:
+            - heading "OPERATORS // 1" [level=3] [ref=e186]
+            - generic [ref=e188] [cursor=pointer]:
+              - img [ref=e190]
+              - generic [ref=e192]:
+                - generic [ref=e195]: harmolyn_e2e
+                - generic [ref=e198]: online
+              - button "Timeout user" [ref=e200]:
+                - img [ref=e201]
+          - heading "IDLE // 0" [level=3] [ref=e205]
+          - heading "OFFLINE // 0" [level=3] [ref=e207]

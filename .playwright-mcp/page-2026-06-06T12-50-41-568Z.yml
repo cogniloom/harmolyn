@@ -1,0 +1,74 @@
+- generic [ref=e5]:
+  - generic [ref=e133]:
+    - button "Close" [ref=e136] [cursor=pointer]:
+      - img [ref=e137]
+    - generic [ref=e140]:
+      - generic [ref=e141]:
+        - img [ref=e143]
+        - heading "Create your account" [level=1] [ref=e145]
+        - paragraph [ref=e146]: Pick a name and a password — that’s it.
+      - generic [ref=e147]:
+        - paragraph [ref=e149]: We’ll create a secure account that lives on this device.
+        - generic [ref=e150]:
+          - text: NICKNAME
+          - textbox "e.g. Sam" [ref=e151]
+        - generic [ref=e152]:
+          - text: PASSWORD
+          - textbox "At least 10 characters" [ref=e153]
+        - generic [ref=e154]:
+          - text: CONFIRM PASSWORD
+          - textbox "Re-enter your password" [ref=e155]
+        - generic [ref=e156]:
+          - generic [ref=e157]: BIO (OPTIONAL)
+          - textbox "A short description about yourself…" [ref=e158]
+        - generic [ref=e159]:
+          - img [ref=e161]
+          - generic [ref=e164]: Your password encrypts this account on this device. It's needed every time you return, and it can't be reset or recovered — there's no server that holds it. We'll help you save a backup on the next step.
+        - button "Create account" [ref=e165] [cursor=pointer]:
+          - img [ref=e166]
+          - text: Create account
+          - img [ref=e169]
+        - paragraph [ref=e171]:
+          - text: Already have an account?
+          - button "Sign in" [ref=e172] [cursor=pointer]
+  - generic [ref=e59]:
+    - generic [ref=e60]: You're browsing as a guest. Create a free account to post, react and join servers.
+    - generic [ref=e61]:
+      - button "Sign in" [ref=e62] [cursor=pointer]
+      - button "Create account" [ref=e63] [cursor=pointer]
+  - generic [ref=e65]:
+    - generic [ref=e68]:
+      - generic [ref=e69]:
+        - img [ref=e71]
+        - heading "Welcome to Harmolyn" [level=1] [ref=e74]
+        - paragraph [ref=e75]: A private, peer-to-peer chat network. You don’t have any servers yet — here’s how to get started.
+      - generic [ref=e76]:
+        - generic [ref=e77]:
+          - img [ref=e79]
+          - paragraph [ref=e84]: Peer-to-peer — messages travel directly between people, not through a central server.
+        - generic [ref=e85]:
+          - img [ref=e87]
+          - paragraph [ref=e90]: End-to-end encrypted — every space shows exactly which protection is in use.
+        - generic [ref=e91]:
+          - img [ref=e93]
+          - paragraph [ref=e96]: You own your identity — it’s a key on your device, and you can back it up any time.
+      - generic [ref=e97]:
+        - paragraph [ref=e98]: Create a free account to start a server, join one, or add a friend.
+        - button "Create your account" [ref=e99] [cursor=pointer]:
+          - text: Create your account
+          - img [ref=e100]
+    - generic [ref=e102]:
+      - button "HOME" [ref=e103] [cursor=pointer]:
+        - img [ref=e105]
+        - generic [ref=e108]: HOME
+      - button "CHANNELS" [ref=e109] [cursor=pointer]:
+        - img [ref=e111]
+        - generic [ref=e112]: CHANNELS
+      - button "CREATE" [disabled] [ref=e113]:
+        - img [ref=e116]
+      - button "EXPLORE" [ref=e121] [cursor=pointer]:
+        - img [ref=e123]
+        - generic [ref=e126]: EXPLORE
+      - button "SETTINGS" [ref=e127] [cursor=pointer]:
+        - img [ref=e129]
+        - generic [ref=e132]: SETTINGS

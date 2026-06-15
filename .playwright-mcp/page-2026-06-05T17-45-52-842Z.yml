@@ -1,0 +1,233 @@
+- generic [ref=e3]:
+  - generic [ref=e2566]:
+    - generic [ref=e2568]:
+      - generic [ref=e2569]: User settings
+      - button "My Account" [ref=e2570] [cursor=pointer]:
+        - img [ref=e2572]
+        - generic [ref=e2575]: My Account
+      - button "Privacy & Safety" [ref=e2576] [cursor=pointer]:
+        - img [ref=e2578]
+        - generic [ref=e2580]: Privacy & Safety
+      - button "Security (MFA)" [ref=e2581] [cursor=pointer]:
+        - img [ref=e2583]
+        - generic [ref=e2586]: Security (MFA)
+      - button "Authorized Hubs" [ref=e2587] [cursor=pointer]:
+        - img [ref=e2589]
+        - generic [ref=e2593]: Authorized Hubs
+      - button "Network" [ref=e2594] [cursor=pointer]:
+        - img [ref=e2596]
+        - generic [ref=e2599]: Network
+      - generic [ref=e2601]: System configuration
+      - button "Core Appearance" [ref=e2602] [cursor=pointer]:
+        - img [ref=e2604]
+        - generic [ref=e2606]: Core Appearance
+      - button "Signal Alerts" [ref=e2607] [cursor=pointer]:
+        - img [ref=e2609]
+        - generic [ref=e2612]: Signal Alerts
+      - button "Accessibility" [ref=e2613] [cursor=pointer]:
+        - img [ref=e2615]
+        - generic [ref=e2621]: Accessibility
+      - button "Mobile Sync" [ref=e2622] [cursor=pointer]:
+        - img [ref=e2624]
+        - generic [ref=e2626]: Mobile Sync
+      - button "About & Legal" [ref=e2627] [cursor=pointer]:
+        - img [ref=e2629]
+        - generic [ref=e2631]: About & Legal
+      - generic [ref=e2633]: Support
+      - button "Log Out" [ref=e2636] [cursor=pointer]:
+        - img [ref=e2637]
+        - generic [ref=e2640]: Log Out
+    - generic:
+      - generic:
+        - banner:
+          - heading "MY // ACCOUNT" [level=2]
+          - paragraph: OPERATOR // SECURITY // PROFILE
+        - generic:
+          - generic:
+            - generic:
+              - button "Replace avatar image":
+                - img
+                - generic: Replace
+              - generic:
+                - generic: harmolyn_e2e
+                - generic: ID // ME
+            - button "Edit Profile"
+          - generic:
+            - generic:
+              - generic:
+                - generic: Display Name
+                - generic: harmolyn_e2e
+              - button "Modify"
+            - generic:
+              - generic:
+                - generic: Identity Link
+                - generic: neo@nexus-underground.net
+              - button "Modify"
+            - generic:
+              - generic:
+                - generic: Primary Bio
+                - generic: CONNECTED TO LOCAL XOREIN RUNTIME
+              - button "Modify"
+        - generic:
+          - heading "Data encryption & authentication" [level=3]
+          - button "Identity backup & recovery Create an encrypted backup before you lose access to this device.":
+            - generic:
+              - generic:
+                - img
+              - generic:
+                - generic: Identity backup & recovery
+                - generic: Create an encrypted backup before you lose access to this device.
+            - img
+        - generic:
+          - heading "Saved identities" [level=3]
+          - button "Save current identity to vault 12D3KooWNNcQCdxHJ32LcnXNVkiGMTiTM5kS…":
+            - generic:
+              - img
+            - generic:
+              - generic: Save current identity to vault
+              - generic: 12D3KooWNNcQCdxHJ32LcnXNVkiGMTiTM5kS…
+          - generic:
+            - generic:
+              - generic:
+                - generic:
+                  - generic:
+                    - img
+                  - generic:
+                    - generic: alice_node
+                    - generic: 12D3KooWRiuZrRRarFgNYDsDsDUtsc…
+                - generic:
+                  - button "Export backup":
+                    - img
+                  - button "Remove from vault":
+                    - img
+              - button "Switch to this identity":
+                - img
+                - text: Switch to this identity
+          - generic:
+            - img
+            - generic: Import identity from backup file
+            - button "Import identity from backup file"
+    - generic [ref=e2641] [cursor=pointer]:
+      - img [ref=e2643]
+      - generic [ref=e2646]: ESC
+  - navigation "Servers" [ref=e10]:
+    - button "Home" [ref=e12] [cursor=pointer]:
+      - img [ref=e13]
+    - generic [ref=e327] [cursor=pointer]:
+      - 'button "Server: Alice''s Test Hub" [ref=e328]':
+        - img "Alice's Test Hub" [ref=e329]
+      - generic [ref=e331]: ALICE'S TEST HUB
+    - button "Create Server" [ref=e18] [cursor=pointer]:
+      - img [ref=e19]
+    - button "Explore Servers" [ref=e20] [cursor=pointer]:
+      - img [ref=e21]
+    - generic [ref=e26]: CONNECTED
+  - generic [ref=e27]:
+    - complementary "Channel List" [ref=e1968]:
+      - generic [ref=e1969]:
+        - generic [ref=e1972]:
+          - heading "Alice's Test Hub" [level=2] [ref=e1973]
+          - generic [ref=e1974]: CONNECTED
+        - generic [ref=e1975]:
+          - button "Server Settings" [ref=e1976] [cursor=pointer]:
+            - img [ref=e1977]
+          - button "Collapse Channel List" [ref=e1980] [cursor=pointer]:
+            - img [ref=e1981]
+      - generic [ref=e1985]:
+        - generic [ref=e1986]:
+          - generic [ref=e1987]: TEXT CHANNELS
+          - img [ref=e1988]
+        - generic [ref=e1990]:
+          - button "general" [ref=e1992] [cursor=pointer]:
+            - img [ref=e1993]
+            - generic [ref=e1996]: general
+          - button "new-2" [ref=e1998] [cursor=pointer]:
+            - img [ref=e1999]
+            - generic [ref=e2002]: new-2
+      - generic [ref=e2003]:
+        - button "Set Status" [ref=e2004] [cursor=pointer]:
+          - img "My Avatar" [ref=e2005]
+        - generic [ref=e2007]:
+          - generic [ref=e2008]: alice_node
+          - generic [ref=e2009]: ID // ME
+        - generic [ref=e2010]:
+          - button "Switch Account" [ref=e2011] [cursor=pointer]:
+            - img [ref=e2012]
+          - button "Mute Microphone" [disabled] [ref=e2015]:
+            - img [ref=e2016]
+          - button "Deafen Audio" [disabled] [ref=e2019]:
+            - img [ref=e2020]
+          - button "Open Settings" [ref=e2022] [cursor=pointer]:
+            - img [ref=e2023]
+    - generic [ref=e69]:
+      - generic [ref=e2026]:
+        - generic [ref=e2028]:
+          - generic [ref=e2029]:
+            - img [ref=e2031]
+            - generic [ref=e2034]:
+              - generic [ref=e2035]: general
+              - generic "Large-scale channel end-to-end encryption with epoch rotation." [ref=e2036]: CROWD // CHANNEL E2EE
+          - generic [ref=e2037]:
+            - group "Channel type" [ref=e2038]:
+              - button "Set channel type to Text" [pressed] [ref=e2039] [cursor=pointer]:
+                - img [ref=e2040]
+                - generic [ref=e2043]: Text
+              - button "Set channel type to Announce" [ref=e2044] [cursor=pointer]:
+                - img [ref=e2045]
+                - generic [ref=e2048]: Announce
+            - button "Theme Settings" [ref=e2050] [cursor=pointer]
+            - button "Change Chat View" [ref=e2052] [cursor=pointer]:
+              - img [ref=e2053]
+            - generic [ref=e2057]:
+              - button "Inbox" [ref=e2058] [cursor=pointer]:
+                - img [ref=e2059]
+              - button "Notifications" [ref=e2062] [cursor=pointer]:
+                - img [ref=e2063]
+              - button "Pinned Messages" [ref=e2067] [cursor=pointer]:
+                - img [ref=e2068]
+                - generic [ref=e2239]: "1"
+              - button "Member List" [ref=e2070] [cursor=pointer]:
+                - img [ref=e2071]
+              - generic [ref=e2076]:
+                - img [ref=e2077]
+                - textbox "Search messages" [active] [ref=e2080]:
+                  - /placeholder: Search...
+        - generic [ref=e2081]:
+          - generic [ref=e2558]:
+            - img [ref=e2560]
+            - 'heading "Initiate Hub: #general" [level=1] [ref=e2563]'
+            - paragraph [ref=e2564]: OPERATOR // INGRESS POINT // DATA STREAM START
+          - generic [ref=e2091]:
+            - text: Hello from alice_node — E2E test start [edited](edited)
+            - generic [ref=e2092]: 7:34 PM
+        - generic [ref=e2121]:
+          - generic [ref=e2122]:
+            - generic [ref=e2123]: connected
+            - generic [ref=e2124]: Backend connected — chat mutations are sent to the remote xorein node.
+          - generic [ref=e2125]:
+            - textbox "Message Input" [ref=e2126]:
+              - /placeholder: "INPUT // #GENERAL"
+            - generic [ref=e2127]:
+              - button "Stickers" [ref=e2129] [cursor=pointer]:
+                - img [ref=e2130]
+              - button "Emoji Picker" [ref=e2135] [cursor=pointer]:
+                - img [ref=e2136]
+              - button "Send Message" [ref=e2139] [cursor=pointer]:
+                - img [ref=e2140]
+      - generic [ref=e2144]:
+        - generic [ref=e2145]:
+          - generic [ref=e2146]: Entities
+          - button [ref=e2147] [cursor=pointer]:
+            - img [ref=e2148]
+        - generic [ref=e2151]:
+          - generic [ref=e2152]:
+            - heading "OPERATORS // 1" [level=3] [ref=e2153]
+            - generic [ref=e2155] [cursor=pointer]:
+              - img [ref=e2157]
+              - generic [ref=e2159]:
+                - generic [ref=e2162]: alice_node
+                - generic [ref=e2165]: online
+              - button "Timeout user" [ref=e2167]:
+                - img [ref=e2168]
+          - heading "IDLE // 0" [level=3] [ref=e2172]
+          - heading "OFFLINE // 0" [level=3] [ref=e2174]

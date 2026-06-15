@@ -1,0 +1,87 @@
+- generic [ref=e3]:
+  - generic [ref=e6]:
+    - button [ref=e9] [cursor=pointer]:
+      - img [ref=e10]
+    - generic [ref=e13]:
+      - generic [ref=e14]: 1 / 7
+      - generic [ref=e15]:
+        - img [ref=e17]
+        - img [ref=e20]
+      - heading "What you're running" [level=2] [ref=e23]
+      - generic [ref=e24]:
+        - generic [ref=e25]:
+          - img [ref=e26]
+          - generic [ref=e28]:
+            - strong [ref=e29]: Harmolyn
+            - text: is the UI.
+            - strong [ref=e30]: xorein
+            - text: is the local network engine it talks to.
+        - generic [ref=e31]:
+          - img [ref=e32]
+          - generic [ref=e35]: There is no "central server" that needs your plaintext to work.
+        - generic [ref=e36]:
+          - img [ref=e37]
+          - generic [ref=e40]:
+            - text: Your messages are processed and encrypted
+            - strong [ref=e41]: on your device
+            - text: .
+    - generic [ref=e42]:
+      - generic [ref=e53] [cursor=pointer]: Do not show again
+      - generic [ref=e54]:
+        - button "SKIP" [ref=e55] [cursor=pointer]
+        - button "NEXT" [ref=e57] [cursor=pointer]:
+          - text: NEXT
+          - img [ref=e58]
+  - generic [ref=e61]:
+    - generic [ref=e63]:
+      - generic [ref=e65]:
+        - generic [ref=e66]:
+          - button "Open Menu" [ref=e67] [cursor=pointer]:
+            - img [ref=e68]
+          - img [ref=e70]
+          - generic [ref=e73]:
+            - generic [ref=e74]: general
+            - generic [ref=e75]: SECURE // COMMS // ESTABLISHED
+        - generic [ref=e76]:
+          - button "Theme Settings" [ref=e78] [cursor=pointer]
+          - button "Change Chat View" [ref=e80] [cursor=pointer]:
+            - img [ref=e81]
+          - button "Member List" [ref=e85] [cursor=pointer]:
+            - img [ref=e86]
+      - generic [ref=e92]:
+        - img [ref=e94]
+        - 'heading "Initiate Hub: #general" [level=1] [ref=e97]'
+        - paragraph [ref=e98]: OPERATOR // INGRESS POINT // DATA STREAM START
+      - generic [ref=e99]:
+        - generic [ref=e100]:
+          - generic [ref=e101]: offline preview
+          - generic [ref=e102]: Offline preview mode — chat text stays local in this browser, and attachments are disabled until the local xorein runtime returns.
+        - generic [ref=e103]:
+          - button "Add attachment" [ref=e104] [cursor=pointer]:
+            - img [ref=e105]
+          - button "Create Poll" [ref=e107] [cursor=pointer]:
+            - img [ref=e108]
+          - textbox "Message Input" [ref=e110]:
+            - /placeholder: "INPUT // #GENERAL"
+          - generic [ref=e111]:
+            - button "Stickers" [ref=e112] [cursor=pointer]:
+              - img [ref=e113]
+            - button "Emoji Picker" [ref=e118] [cursor=pointer]:
+              - img [ref=e119]
+            - button "Send Message" [ref=e122] [cursor=pointer]:
+              - img [ref=e123]
+    - generic [ref=e127]:
+      - button "HOME" [ref=e128] [cursor=pointer]:
+        - img [ref=e130]
+        - generic [ref=e133]: HOME
+      - button "CHANNELS" [ref=e134] [cursor=pointer]:
+        - img [ref=e136]
+        - generic [ref=e137]: CHANNELS
+      - button "CREATE" [ref=e138] [cursor=pointer]:
+        - img [ref=e141]
+      - button "EXPLORE" [ref=e146] [cursor=pointer]:
+        - img [ref=e148]
+        - generic [ref=e151]: EXPLORE
+      - button "SETTINGS" [ref=e152] [cursor=pointer]:
+        - img [ref=e154]
+        - generic [ref=e157]: SETTINGS

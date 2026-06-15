@@ -1,0 +1,81 @@
+- generic [ref=e3]:
+  - navigation "Servers" [ref=e66]:
+    - button "Home" [ref=e68] [cursor=pointer]:
+      - img [ref=e69]
+    - button "Create Server" [ref=e74] [cursor=pointer]:
+      - img [ref=e75]
+    - button "Explore Servers" [ref=e76] [cursor=pointer]:
+      - img [ref=e77]
+    - generic [ref=e82]: CONNECTED
+  - generic [ref=e83]:
+    - complementary "Channel List" [ref=e86]:
+      - generic [ref=e87]:
+        - generic [ref=e90]:
+          - heading [level=2]
+          - generic [ref=e92]: CONNECTED
+        - button "Collapse Channel List" [ref=e94] [cursor=pointer]:
+          - img [ref=e95]
+      - generic [ref=e101]:
+        - button "Set Status" [ref=e102] [cursor=pointer]:
+          - img "My Avatar" [ref=e103]
+        - generic [ref=e105]:
+          - generic [ref=e106]: alice_test
+          - generic [ref=e107]: ID // ME
+        - generic [ref=e108]:
+          - button "Switch Account" [ref=e109] [cursor=pointer]:
+            - img [ref=e110]
+          - button "Mute Microphone" [disabled] [ref=e113]:
+            - img [ref=e114]
+          - button "Deafen Audio" [disabled] [ref=e117]:
+            - img [ref=e118]
+          - button "Open Settings" [ref=e120] [cursor=pointer]:
+            - img [ref=e121]
+    - generic [ref=e366]:
+      - generic [ref=e368]:
+        - generic [ref=e369]:
+          - img [ref=e371]
+          - generic [ref=e374]:
+            - generic [ref=e375]: empty-shell
+            - generic "No security mode has been negotiated for this conversation yet." [ref=e376]: NOT NEGOTIATED
+        - generic [ref=e377]:
+          - group "Channel type" [ref=e378]:
+            - button "Set channel type to Text" [pressed] [ref=e379] [cursor=pointer]:
+              - img [ref=e380]
+              - generic [ref=e383]: Text
+            - button "Set channel type to Announce" [ref=e384] [cursor=pointer]:
+              - img [ref=e385]
+              - generic [ref=e388]: Announce
+          - button "Theme Settings" [ref=e390] [cursor=pointer]
+          - button "Change Chat View" [ref=e392] [cursor=pointer]:
+            - img [ref=e393]
+          - generic [ref=e397]:
+            - button "Inbox" [ref=e398] [cursor=pointer]:
+              - img [ref=e399]
+            - button "Notifications" [ref=e402] [cursor=pointer]:
+              - img [ref=e403]
+            - button "Pinned Messages" [ref=e407] [cursor=pointer]:
+              - img [ref=e408]
+            - button "Member List" [ref=e410] [cursor=pointer]:
+              - img [ref=e411]
+            - generic [ref=e416]:
+              - img [ref=e417]
+              - textbox "Search messages" [ref=e420]:
+                - /placeholder: Search...
+      - generic [ref=e422]:
+        - img [ref=e424]
+        - 'heading "Initiate Hub: #empty-shell" [level=1] [ref=e427]'
+        - paragraph [ref=e428]: OPERATOR // INGRESS POINT // DATA STREAM START
+      - generic [ref=e429]:
+        - generic [ref=e430]:
+          - generic [ref=e431]: connected
+          - generic [ref=e432]: Backend connected — chat mutations are sent to the remote xorein node.
+        - generic [ref=e433]:
+          - textbox "Message Input" [ref=e434]:
+            - /placeholder: "INPUT // #EMPTY-SHELL"
+          - generic [ref=e435]:
+            - button "Stickers" [ref=e437] [cursor=pointer]:
+              - img [ref=e438]
+            - button "Emoji Picker" [ref=e443] [cursor=pointer]:
+              - img [ref=e444]
+            - button "Send Message" [ref=e447] [cursor=pointer]:
+              - img [ref=e448]

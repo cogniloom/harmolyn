@@ -1,0 +1,108 @@
+- generic [ref=e3]:
+  - generic [ref=e5]:
+    - img [ref=e6]
+    - generic [ref=e8]:
+      - generic [ref=e9]: Preparing xorein
+      - generic [ref=e10]: Checking for a local xorein runtime...
+  - generic [ref=e11]:
+    - generic [ref=e12]: Viewing as guest — create an identity to post, react, and join servers
+    - generic [ref=e13]:
+      - button "Restore" [ref=e14] [cursor=pointer]
+      - button "Create Identity" [ref=e15] [cursor=pointer]
+  - navigation "Servers" [ref=e17]:
+    - button "Home" [ref=e19] [cursor=pointer]:
+      - img [ref=e20]
+    - generic [ref=e24] [cursor=pointer]:
+      - 'button "Server: P2P Test Server" [ref=e25]':
+        - img "P2P Test Server" [ref=e26]
+      - generic [ref=e28]: P2P TEST SERVER
+    - button "Create Server" [disabled] [ref=e29]:
+      - img [ref=e30]
+    - button "Explore Servers" [disabled] [ref=e31]:
+      - img [ref=e32]
+    - generic [ref=e37]: OFFLINE
+  - generic [ref=e38]:
+    - complementary "Channel List" [ref=e41]:
+      - generic [ref=e42]:
+        - generic [ref=e45]:
+          - heading "P2P Test Server" [level=2] [ref=e46]
+          - generic [ref=e47]: OFFLINE
+        - generic [ref=e48]:
+          - button "Server Settings" [disabled] [ref=e49]:
+            - img [ref=e50]
+          - button "Collapse Channel List" [ref=e53] [cursor=pointer]:
+            - img [ref=e54]
+      - generic [ref=e58]:
+        - button "Set Status" [ref=e59] [cursor=pointer]:
+          - img "My Avatar" [ref=e60]
+        - generic [ref=e62]:
+          - generic [ref=e63]: Local User
+          - generic [ref=e64]: ID // ME
+        - generic [ref=e65]:
+          - button "Switch Account" [ref=e66] [cursor=pointer]:
+            - img [ref=e67]
+          - button "Mute Microphone" [disabled] [ref=e70]:
+            - img [ref=e71]
+          - button "Deafen Audio" [disabled] [ref=e74]:
+            - img [ref=e75]
+          - button "Open Settings" [ref=e77] [cursor=pointer]:
+            - img [ref=e78]
+    - generic [ref=e82]:
+      - generic [ref=e83]:
+        - generic [ref=e85]:
+          - generic [ref=e86]:
+            - img [ref=e88]
+            - generic [ref=e91]:
+              - generic [ref=e92]: runtime-offline
+              - generic "No security mode has been negotiated for this conversation yet." [ref=e93]: NOT NEGOTIATED
+          - generic [ref=e94]:
+            - group "Channel type" [ref=e95]:
+              - button "Set channel type to Text" [pressed] [ref=e96] [cursor=pointer]:
+                - img [ref=e97]
+                - generic [ref=e100]: Text
+              - button "Set channel type to Announce" [ref=e101] [cursor=pointer]:
+                - img [ref=e102]
+                - generic [ref=e105]: Announce
+            - button "Theme Settings" [ref=e107] [cursor=pointer]
+            - button "Change Chat View" [ref=e109] [cursor=pointer]:
+              - img [ref=e110]
+            - generic [ref=e114]:
+              - button "Inbox" [ref=e115] [cursor=pointer]:
+                - img [ref=e116]
+              - button "Notifications" [ref=e119] [cursor=pointer]:
+                - img [ref=e120]
+              - button "Pinned Messages" [ref=e124] [cursor=pointer]:
+                - img [ref=e125]
+              - button "Member List" [ref=e127] [cursor=pointer]:
+                - img [ref=e128]
+              - generic [ref=e133]:
+                - img [ref=e134]
+                - textbox "Search messages" [ref=e137]:
+                  - /placeholder: Search...
+        - generic [ref=e139]:
+          - img [ref=e141]
+          - 'heading "Initiate Hub: #runtime-offline" [level=1] [ref=e144]'
+          - paragraph [ref=e145]: OPERATOR // INGRESS POINT // DATA STREAM START
+        - button "Create identity to post" [ref=e147] [cursor=pointer]:
+          - generic [ref=e148]: "Create an identity to post in #runtime-offline"
+          - generic [ref=e149]: Sign up
+      - generic [ref=e152]:
+        - generic [ref=e153]:
+          - generic [ref=e154]: Entities
+          - button [ref=e155] [cursor=pointer]:
+            - img [ref=e156]
+        - generic [ref=e159]:
+          - heading "OPERATORS // 0" [level=3] [ref=e161]
+          - heading "IDLE // 0" [level=3] [ref=e163]
+          - generic [ref=e164]:
+            - heading "OFFLINE // 1" [level=3] [ref=e165]
+            - generic [ref=e167] [cursor=pointer]:
+              - img [ref=e169]
+              - generic [ref=e171]:
+                - generic [ref=e174]: 12D3Ko…EBS4
+                - generic [ref=e176]: offline
+              - generic [ref=e177]:
+                - button "Send DM to 12D3Ko…EBS4" [ref=e178]:
+                  - img [ref=e179]
+                - button "Timeout user" [ref=e181]:
+                  - img [ref=e182]

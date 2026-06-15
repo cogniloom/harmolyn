@@ -1,0 +1,82 @@
+- generic [ref=e60]:
+  - complementary "Channel List" [ref=e364]:
+    - generic [ref=e365]:
+      - generic [ref=e368]:
+        - heading "Test Hub Alpha" [level=2] [ref=e369]
+        - generic [ref=e370]: NO PEER
+      - generic [ref=e371]:
+        - button "Server Settings" [disabled] [ref=e372]:
+          - img [ref=e373]
+        - button "Collapse Channel List" [ref=e376] [cursor=pointer]:
+          - img [ref=e377]
+    - generic [ref=e381]:
+      - button "Set Status" [ref=e382] [cursor=pointer]:
+        - img "My Avatar" [ref=e383]
+      - generic [ref=e385]:
+        - generic [ref=e386]: Local User
+        - generic [ref=e387]: ID // ME
+      - generic [ref=e388]:
+        - button "Switch Account" [ref=e389] [cursor=pointer]:
+          - img [ref=e390]
+        - button "Mute Microphone" [disabled] [ref=e393]:
+          - img [ref=e394]
+        - button "Deafen Audio" [disabled] [ref=e397]:
+          - img [ref=e398]
+        - button "Open Settings" [ref=e400] [cursor=pointer]:
+          - img [ref=e401]
+  - generic [ref=e61]:
+    - generic [ref=e293]:
+      - generic [ref=e295]:
+        - generic [ref=e296]:
+          - button "Open Menu" [ref=e297] [cursor=pointer]:
+            - img [ref=e298]
+          - img [ref=e300]
+          - generic [ref=e303]:
+            - generic [ref=e304]: peer-unreachable
+            - generic "No security mode has been negotiated for this conversation yet." [ref=e305]: NOT NEGOTIATED
+        - generic [ref=e306]:
+          - group "Channel type" [ref=e307]:
+            - button "Set channel type to Text" [pressed] [ref=e308] [cursor=pointer]:
+              - img [ref=e309]
+              - generic [ref=e312]: Text
+            - button "Set channel type to Announce" [ref=e313] [cursor=pointer]:
+              - img [ref=e314]
+              - generic [ref=e317]: Announce
+          - button "Theme Settings" [ref=e319] [cursor=pointer]
+          - button "Change Chat View" [ref=e321] [cursor=pointer]:
+            - img [ref=e322]
+          - button "Member List" [ref=e326] [cursor=pointer]:
+            - img [ref=e327]
+      - generic [ref=e333]:
+        - img [ref=e335]
+        - 'heading "Initiate Hub: #peer-unreachable" [level=1] [ref=e338]'
+        - paragraph [ref=e339]: OPERATOR // INGRESS POINT // DATA STREAM START
+      - generic [ref=e340]:
+        - generic [ref=e341]:
+          - generic [ref=e342]: local preview
+          - generic [ref=e343]: Backend connected — chat mutations are sent to the remote xorein node.
+        - generic [ref=e344]:
+          - textbox "Message Input" [ref=e345]:
+            - /placeholder: "INPUT // #PEER-UNREACHABLE"
+          - generic [ref=e346]:
+            - button "Stickers" [ref=e348] [cursor=pointer]:
+              - img [ref=e349]
+            - button "Emoji Picker" [ref=e354] [cursor=pointer]:
+              - img [ref=e355]
+            - button "Send Message" [ref=e358] [cursor=pointer]:
+              - img [ref=e359]
+    - generic [ref=e132]:
+      - button "HOME" [ref=e133] [cursor=pointer]:
+        - img [ref=e135]
+        - generic [ref=e138]: HOME
+      - button "CHANNELS" [ref=e139] [cursor=pointer]:
+        - img [ref=e141]
+        - generic [ref=e142]: CHANNELS
+      - button "CREATE" [disabled] [ref=e143]:
+        - img [ref=e146]
+      - button "EXPLORE" [disabled] [ref=e151]:
+        - img [ref=e153]
+        - generic [ref=e156]: EXPLORE
+      - button "SETTINGS" [ref=e157] [cursor=pointer]:
+        - img [ref=e159]
+        - generic [ref=e162]: SETTINGS

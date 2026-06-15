@@ -1,0 +1,31 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2023", "DOM"],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "skipLibCheck": true,
+    "allowSyntheticDefaultImports": true,
+    "noEmit": false,
+    "outDir": ".generated/protocol-tests",
+    "rootDir": ".",
+    "sourceMap": false,
+    "declaration": false,
+    "verbatimModuleSyntax": true,
+    "esModuleInterop": false,
+    "isolatedModules": false
+  },
+  "include": [
+    "src/protocol/**/*.ts",
+    "src/lib/authPreview.ts",
+    "src/lib/browserStorage.ts",
+    "src/types.ts",
+    "src/config/featureFlags.ts",
+    "protocol-tests/**/*.ts"
+  ],
+  "exclude": [
+    "src/**/*.test.ts",
+    "src/**/*.test.tsx"
+  ]
+}

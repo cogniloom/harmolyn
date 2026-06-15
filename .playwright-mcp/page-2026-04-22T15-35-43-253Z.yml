@@ -1,0 +1,167 @@
+- generic [ref=e3]:
+  - generic [ref=e204]:
+    - generic [ref=e206]:
+      - generic [ref=e207]: User settings
+      - button "My Account" [ref=e208] [cursor=pointer]:
+        - img [ref=e210]
+        - generic [ref=e213]: My Account
+      - button "Privacy & Safety" [ref=e214] [cursor=pointer]:
+        - img [ref=e216]
+        - generic [ref=e218]: Privacy & Safety
+      - button "Security (MFA)" [ref=e219] [cursor=pointer]:
+        - img [ref=e221]
+        - generic [ref=e224]: Security (MFA)
+      - button "Authorized Hubs" [ref=e225] [cursor=pointer]:
+        - img [ref=e227]
+        - generic [ref=e231]: Authorized Hubs
+      - generic [ref=e233]: System configuration
+      - button "Core Appearance" [ref=e234] [cursor=pointer]:
+        - img [ref=e236]
+        - generic [ref=e238]: Core Appearance
+      - button "Signal Alerts" [ref=e239] [cursor=pointer]:
+        - img [ref=e241]
+        - generic [ref=e244]: Signal Alerts
+      - button "Accessibility" [ref=e245] [cursor=pointer]:
+        - img [ref=e247]
+        - generic [ref=e253]: Accessibility
+      - button "Mobile Sync" [ref=e254] [cursor=pointer]:
+        - img [ref=e256]
+        - generic [ref=e258]: Mobile Sync
+      - generic [ref=e260]: Support
+      - button "Donate" [ref=e261] [cursor=pointer]:
+        - img [ref=e263]
+        - generic [ref=e265]: Donate
+      - button "Shop" [ref=e266] [cursor=pointer]:
+        - img [ref=e268]
+        - generic [ref=e271]: Shop
+      - button "Quests" [ref=e272] [cursor=pointer]:
+        - img [ref=e274]
+        - generic [ref=e280]: Quests
+      - button "Log Out" [ref=e283] [cursor=pointer]:
+        - img [ref=e284]
+        - generic [ref=e287]: Log Out
+    - generic:
+      - generic:
+        - banner:
+          - heading "MY // ACCOUNT" [level=2]
+          - paragraph: OPERATOR // SECURITY // PROFILE
+        - generic:
+          - generic:
+            - generic:
+              - button "Replace":
+                - img
+                - generic: Replace
+              - generic:
+                - generic: Local User
+                - generic: ID // ME
+            - button "Edit Profile"
+          - generic:
+            - generic:
+              - generic:
+                - generic: Display Name
+                - generic: Local User
+              - button "Modify"
+            - generic:
+              - generic:
+                - generic: Identity Link
+                - generic: neo@nexus-underground.net
+              - button "Modify"
+            - generic:
+              - generic:
+                - generic: Primary Bio
+                - generic: WAITING FOR LOCAL XOREIN RUNTIME
+              - button "Modify"
+        - generic:
+          - heading "Data encryption & authentication" [level=3]
+          - button "Identity backup & recovery Create an encrypted backup before you lose access to this device.":
+            - generic:
+              - generic:
+                - img
+              - generic:
+                - generic: Identity backup & recovery
+                - generic: Create an encrypted backup before you lose access to this device.
+            - img
+    - generic [ref=e288] [cursor=pointer]:
+      - img [ref=e290]
+      - generic [ref=e293]: ESC
+  - navigation "Servers" [ref=e61]:
+    - button "Home" [ref=e63] [cursor=pointer]:
+      - img [ref=e64]
+    - button "Create Server" [disabled] [ref=e69]:
+      - img [ref=e70]
+    - button "Explore Servers" [disabled] [ref=e71]:
+      - img [ref=e72]
+    - generic [ref=e77]: OFFLINE
+  - generic [ref=e78]:
+    - complementary "Channel List" [ref=e81]:
+      - generic [ref=e82]:
+        - generic [ref=e85]:
+          - heading "System Hub" [level=2] [ref=e86]
+          - generic [ref=e87]: OFFLINE
+        - generic [ref=e88]:
+          - button "Support Harmolyn" [ref=e89] [cursor=pointer]:
+            - img [ref=e90]
+          - button "Collapse Channel List" [ref=e92] [cursor=pointer]:
+            - img [ref=e93]
+      - generic [ref=e98]: Direct Communications
+      - generic [ref=e99]:
+        - button "Set Status" [ref=e100] [cursor=pointer]:
+          - img "My Avatar" [ref=e101]
+        - generic [ref=e103]:
+          - generic [ref=e104]: Local User
+          - generic [ref=e105]: ID // ME
+        - generic [ref=e106]:
+          - button "Switch Account" [ref=e107] [cursor=pointer]:
+            - img [ref=e108]
+          - button "Mute Microphone" [disabled] [ref=e111]:
+            - img [ref=e112]
+          - button "Deafen Audio" [disabled] [ref=e115]:
+            - img [ref=e116]
+          - button "Open Settings" [active] [ref=e118] [cursor=pointer]:
+            - img [ref=e119]
+    - generic [ref=e124]:
+      - generic [ref=e126]:
+        - generic [ref=e127]:
+          - img [ref=e129]
+          - generic [ref=e132]:
+            - generic [ref=e133]: runtime-offline
+            - generic [ref=e134]: SECURE // COMMS // ESTABLISHED
+        - generic [ref=e135]:
+          - button "Theme Settings" [ref=e137] [cursor=pointer]
+          - button "Change Chat View" [ref=e139] [cursor=pointer]:
+            - img [ref=e140]
+          - generic [ref=e144]:
+            - button "Inbox" [ref=e145] [cursor=pointer]:
+              - img [ref=e146]
+            - button "Notifications" [ref=e149] [cursor=pointer]:
+              - img [ref=e150]
+            - button "Pinned Messages" [ref=e154] [cursor=pointer]:
+              - img [ref=e155]
+            - button "Member List" [ref=e157] [cursor=pointer]:
+              - img [ref=e158]
+            - generic [ref=e163]:
+              - img [ref=e164]
+              - textbox "Search messages" [ref=e167]:
+                - /placeholder: Search...
+      - generic [ref=e169]:
+        - img [ref=e171]
+        - 'heading "Initiate Hub: #runtime-offline" [level=1] [ref=e174]'
+        - paragraph [ref=e175]: OPERATOR // INGRESS POINT // DATA STREAM START
+      - generic [ref=e176]:
+        - generic [ref=e177]:
+          - generic [ref=e178]: offline preview
+          - generic [ref=e179]: Offline preview mode — chat text stays local in this browser, and attachments are disabled until the local xorein runtime returns.
+        - generic [ref=e180]:
+          - button "Add attachment" [ref=e181] [cursor=pointer]:
+            - img [ref=e182]
+          - button "Create Poll" [ref=e184] [cursor=pointer]:
+            - img [ref=e185]
+          - textbox "Message Input" [ref=e187]:
+            - /placeholder: "INPUT // #RUNTIME-OFFLINE"
+          - generic [ref=e188]:
+            - button "Stickers" [ref=e189] [cursor=pointer]:
+              - img [ref=e190]
+            - button "Emoji Picker" [ref=e195] [cursor=pointer]:
+              - img [ref=e196]
+            - button "Send Message" [ref=e199] [cursor=pointer]:
+              - img [ref=e200]

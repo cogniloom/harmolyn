@@ -1,0 +1,121 @@
+- generic [ref=e3]:
+  - navigation "Servers" [ref=e10]:
+    - button "Home" [ref=e12] [cursor=pointer]:
+      - img [ref=e13]
+    - generic [ref=e327] [cursor=pointer]:
+      - 'button "Server: Alice''s Test Hub" [ref=e328]':
+        - img "Alice's Test Hub" [ref=e329]
+      - generic [ref=e331]: ALICE'S TEST HUB
+    - button "Create Server" [ref=e18] [cursor=pointer]:
+      - img [ref=e19]
+    - button "Explore Servers" [ref=e20] [cursor=pointer]:
+      - img [ref=e21]
+    - generic [ref=e26]: CONNECTED
+  - generic [ref=e27]:
+    - complementary "Channel List" [ref=e30]:
+      - generic [ref=e31]:
+        - generic [ref=e34]:
+          - heading "Alice's Test Hub" [level=2] [ref=e1723]
+          - generic [ref=e36]: CONNECTED
+        - generic [ref=e37]:
+          - button "Server Settings" [ref=e1724] [cursor=pointer]:
+            - img [ref=e1725]
+          - button "Collapse Channel List" [ref=e38] [cursor=pointer]:
+            - img [ref=e39]
+      - generic [ref=e1728]:
+        - generic [ref=e1729]:
+          - generic [ref=e1730]: TEXT CHANNELS
+          - img [ref=e1731]
+        - generic [ref=e1733]:
+          - button "general" [ref=e1735] [cursor=pointer]:
+            - img [ref=e1736]
+            - generic [ref=e1739]: general
+          - button "new-2" [ref=e1741] [cursor=pointer]:
+            - img [ref=e1742]
+            - generic [ref=e1745]: new-2
+      - generic [ref=e45]:
+        - button "Set Status" [ref=e46] [cursor=pointer]:
+          - img "My Avatar" [ref=e47]
+        - generic [ref=e49]:
+          - generic [ref=e50]: alice_node
+          - generic [ref=e51]: ID // ME
+        - generic [ref=e52]:
+          - button "Switch Account" [ref=e53] [cursor=pointer]:
+            - img [ref=e54]
+          - button "Mute Microphone" [disabled] [ref=e57]:
+            - img [ref=e58]
+          - button "Deafen Audio" [disabled] [ref=e61]:
+            - img [ref=e62]
+          - button "Open Settings" [ref=e64] [cursor=pointer]:
+            - img [ref=e65]
+    - generic [ref=e69]:
+      - generic [ref=e1746]:
+        - generic [ref=e1748]:
+          - generic [ref=e1749]:
+            - img [ref=e1751]
+            - generic [ref=e1754]:
+              - generic [ref=e1755]: general
+              - generic "Large-scale channel end-to-end encryption with epoch rotation." [ref=e1756]: CROWD // CHANNEL E2EE
+          - generic [ref=e1757]:
+            - group "Channel type" [ref=e1758]:
+              - button "Set channel type to Text" [pressed] [ref=e1759] [cursor=pointer]:
+                - img [ref=e1760]
+                - generic [ref=e1763]: Text
+              - button "Set channel type to Announce" [ref=e1764] [cursor=pointer]:
+                - img [ref=e1765]
+                - generic [ref=e1768]: Announce
+            - button "Theme Settings" [ref=e1770] [cursor=pointer]
+            - button "Change Chat View" [ref=e1772] [cursor=pointer]:
+              - img [ref=e1773]
+            - generic [ref=e1777]:
+              - button "Inbox" [ref=e1778] [cursor=pointer]:
+                - img [ref=e1779]
+              - button "Notifications" [ref=e1782] [cursor=pointer]:
+                - img [ref=e1783]
+              - button "Pinned Messages" [ref=e1787] [cursor=pointer]:
+                - img [ref=e1788]
+              - button "Member List" [ref=e1790] [cursor=pointer]:
+                - img [ref=e1791]
+              - generic [ref=e1796]:
+                - img [ref=e1797]
+                - textbox "Search messages" [ref=e1800]:
+                  - /placeholder: Search...
+        - generic [ref=e1801]:
+          - generic [ref=e1802]:
+            - img [ref=e1804]
+            - 'heading "Initiate Hub: #general" [level=1] [ref=e1807]'
+            - paragraph [ref=e1808]: OPERATOR // INGRESS POINT // DATA STREAM START
+          - generic [ref=e1811]:
+            - text: Hello from alice_node — E2E test start
+            - generic [ref=e1812]: 7:34 PM
+        - generic [ref=e1813]:
+          - generic [ref=e1814]:
+            - generic [ref=e1815]: connected
+            - generic [ref=e1816]: Backend connected — chat mutations are sent to the remote xorein node.
+          - generic [ref=e1817]:
+            - textbox "Message Input" [ref=e1818]:
+              - /placeholder: "INPUT // #GENERAL"
+            - generic [ref=e1819]:
+              - button "Stickers" [ref=e1821] [cursor=pointer]:
+                - img [ref=e1822]
+              - button "Emoji Picker" [ref=e1827] [cursor=pointer]:
+                - img [ref=e1828]
+              - button "Send Message" [ref=e1831] [cursor=pointer]:
+                - img [ref=e1832]
+      - generic [ref=e1836]:
+        - generic [ref=e1837]:
+          - generic [ref=e1838]: Entities
+          - button [ref=e1839] [cursor=pointer]:
+            - img [ref=e1840]
+        - generic [ref=e1843]:
+          - generic [ref=e1844]:
+            - heading "OPERATORS // 1" [level=3] [ref=e1845]
+            - generic [ref=e1847] [cursor=pointer]:
+              - img [ref=e1849]
+              - generic [ref=e1851]:
+                - generic [ref=e1854]: alice_node
+                - generic [ref=e1857]: online
+              - button "Timeout user" [ref=e1859]:
+                - img [ref=e1860]
+          - heading "IDLE // 0" [level=3] [ref=e1864]
+          - heading "OFFLINE // 0" [level=3] [ref=e1866]

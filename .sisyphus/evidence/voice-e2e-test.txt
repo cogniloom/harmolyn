@@ -1,0 +1,12 @@
+xorein voice E2E test suite
+Base: http://localhost:5174/p0-test.html
+
+T1 PASS — TURN credentials: stun:node.xorein.com:3479, turn:node.xorein.com:3479?transport=udp, turn:node.xorein.com:3479?transport=tcp, turns:node.xorein.com:5349?transport=tcp
+T2 PASS — WebTransport addr found: /ip4/161.97.165.103/udp/9998/quic-v1/webtransport/certhash/uEiC10g1mJImWyMv5RHBE...
+T2b PASS — WebTransport (QUIC) dial succeeded (transport: unknown)
+T3 setup — circuit addr: /dns4/node.xorein.com/tcp/9999/wss/p2p/12D3KooWGWC3A4KawRYn9...
+T3 PASS — voice.join/leave signaling: joined={"joined":"12D3KooWQfQEFpBBczvTknBMVY19WWeM7UntbGNdwciibBstSyMP","session_id":"test-channel-e2e-1780697677982"}
+T4 PASS — TURN relay path: relay candidates gathered (A:relay,relay,relay, B:)
+T5 PASS — A/V capture + SFrame E2EE ready: audio=1 video=1 e2ee=RTCRtpScriptTransform
+
+All voice E2E tests PASSED.

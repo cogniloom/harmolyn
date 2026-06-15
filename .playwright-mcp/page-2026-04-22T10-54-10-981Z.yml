@@ -1,0 +1,49 @@
+- generic [ref=e5]:
+  - generic [ref=e7]:
+    - generic [ref=e9]:
+      - generic [ref=e10]:
+        - button "Open Menu" [ref=e11] [cursor=pointer]:
+          - img [ref=e12]
+        - img [ref=e14]
+        - generic [ref=e17]:
+          - generic [ref=e18]: waiting-for-runtime
+          - generic [ref=e19]: SECURE // COMMS // ESTABLISHED
+      - generic [ref=e20]:
+        - button "Theme Settings" [ref=e22] [cursor=pointer]
+        - button "Change Chat View" [ref=e24] [cursor=pointer]:
+          - img [ref=e25]
+        - button "Member List" [ref=e29] [cursor=pointer]:
+          - img [ref=e30]
+    - generic [ref=e36]:
+      - img [ref=e38]
+      - 'heading "Initiate Hub: #waiting-for-runtime" [level=1] [ref=e41]'
+      - paragraph [ref=e42]: OPERATOR // INGRESS POINT // DATA STREAM START
+    - generic [ref=e44]:
+      - button "Add attachment" [ref=e45] [cursor=pointer]:
+        - img [ref=e46]
+      - button "Create Poll" [ref=e48] [cursor=pointer]:
+        - img [ref=e49]
+      - textbox "Message Input" [ref=e51]:
+        - /placeholder: "INPUT // #WAITING-FOR-RUNTIME"
+      - generic [ref=e52]:
+        - button "Stickers" [ref=e53] [cursor=pointer]:
+          - img [ref=e54]
+        - button "Emoji Picker" [ref=e59] [cursor=pointer]:
+          - img [ref=e60]
+        - button "Send Message" [ref=e63] [cursor=pointer]:
+          - img [ref=e64]
+  - generic [ref=e67]:
+    - button "HOME" [ref=e68] [cursor=pointer]:
+      - img [ref=e70]
+      - generic [ref=e73]: HOME
+    - button "CHANNELS" [ref=e74] [cursor=pointer]:
+      - img [ref=e76]
+      - generic [ref=e77]: CHANNELS
+    - button "CREATE" [ref=e78] [cursor=pointer]:
+      - img [ref=e81]
+    - button "EXPLORE" [ref=e86] [cursor=pointer]:
+      - img [ref=e88]
+      - generic [ref=e91]: EXPLORE
+    - button "SETTINGS" [ref=e92] [cursor=pointer]:
+      - img [ref=e94]
+      - generic [ref=e97]: SETTINGS

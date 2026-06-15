@@ -1,0 +1,84 @@
+- generic [ref=e61]:
+  - generic [ref=e380]:
+    - generic [ref=e381]:
+      - generic [ref=e382]:
+        - img [ref=e383]
+        - generic [ref=e386]:
+          - heading "general" [level=2] [ref=e387]
+          - text: BROADCAST // CHANNEL
+      - generic [ref=e388]:
+        - group "Channel type" [ref=e389]:
+          - button "Set channel type to Text" [ref=e390] [cursor=pointer]:
+            - img [ref=e391]
+            - generic [ref=e394]: Text
+          - button "Set channel type to Announce" [pressed] [ref=e395] [cursor=pointer]:
+            - img [ref=e396]
+            - generic [ref=e399]: Announce
+        - button "New" [ref=e400] [cursor=pointer]:
+          - img [ref=e401]
+          - text: New
+    - generic [ref=e402]:
+      - generic [ref=e404]:
+        - generic [ref=e405]:
+          - heading "Hello from Harmolyn web! E2E test passed." [level=3] [ref=e406]
+          - generic [ref=e407]: You // 2026-06-02T07:39:23.273480137Z
+        - button "React" [ref=e408] [cursor=pointer]:
+          - img [ref=e409]
+          - text: React
+      - generic [ref=e412]:
+        - generic [ref=e413]:
+          - heading "Hello from the browser! Full E2E working." [level=3] [ref=e414]
+          - generic [ref=e415]: You // 2026-06-02T07:44:46.532546152Z
+        - button "React" [ref=e416] [cursor=pointer]:
+          - img [ref=e417]
+          - text: React
+      - generic [ref=e420]:
+        - generic [ref=e421]:
+          - heading "test" [level=3] [ref=e422]
+          - generic [ref=e423]: You // 2026-06-02T10:16:39.424710524Z
+        - button "React" [ref=e424] [cursor=pointer]:
+          - img [ref=e425]
+          - text: React
+      - generic [ref=e428]:
+        - generic [ref=e429]:
+          - heading "E2E test message from automated testing" [level=3] [ref=e430]
+          - generic [ref=e431]: You // 2026-06-02T13:07:03.590279055Z
+        - button "React" [ref=e432] [cursor=pointer]:
+          - img [ref=e433]
+          - text: React
+      - generic [ref=e436]:
+        - generic [ref=e437]:
+          - heading "😀 edited" [level=3] [ref=e438]
+          - generic [ref=e439]: You // 2026-06-02T13:11:50.475826638Z
+        - button "React" [ref=e440] [cursor=pointer]:
+          - img [ref=e441]
+          - text: React
+      - generic [ref=e444]:
+        - generic [ref=e445]:
+          - heading "😀 edited" [level=3] [ref=e446]
+          - generic [ref=e447]: You // 2026-06-02T13:14:50.688037814Z
+        - button "React" [ref=e448] [cursor=pointer]:
+          - img [ref=e449]
+          - text: React
+      - generic [ref=e452]:
+        - generic [ref=e453]:
+          - heading "unmute test" [level=3] [ref=e454]
+          - generic [ref=e455]: You // 2026-06-02T13:22:11.789726158Z
+        - button "React" [ref=e456] [cursor=pointer]:
+          - img [ref=e457]
+          - text: React
+  - generic [ref=e244]:
+    - button "HOME" [ref=e245] [cursor=pointer]:
+      - img [ref=e247]
+      - generic [ref=e250]: HOME
+    - button "CHANNELS" [ref=e251] [cursor=pointer]:
+      - img [ref=e253]
+      - generic [ref=e254]: CHANNELS
+    - button "CREATE" [disabled] [ref=e255]:
+      - img [ref=e258]
+    - button "EXPLORE" [disabled] [ref=e263]:
+      - img [ref=e265]
+      - generic [ref=e268]: EXPLORE
+    - button "SETTINGS" [ref=e269] [cursor=pointer]:
+      - img [ref=e271]
+      - generic [ref=e274]: SETTINGS
