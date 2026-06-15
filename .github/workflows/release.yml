@@ -23,7 +23,7 @@ jobs:
 
       - name: Create draft release
         id: create-release
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         with:
           script: |
             const tag = context.ref.replace('refs/tags/', '');
@@ -126,7 +126,7 @@ jobs:
           echo "sha256=$sha256" >> "$GITHUB_OUTPUT"
 
       - name: Upload xorein runtime asset
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         env:
           RELEASE_ID: ${{ needs.draft-release.outputs.release_id }}
           XOREIN_ASSET_NAME: ${{ steps.xorein.outputs.asset_name }}
@@ -204,7 +204,7 @@ jobs:
       - uses: actions/checkout@v5
 
       - name: Download release assets
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         with:
           script: |
             const fs = require('fs');
@@ -243,7 +243,7 @@ jobs:
             fs.writeFileSync('release-manifest.json', JSON.stringify(manifest, null, 2));
 
       - name: Upload release manifest
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         with:
           script: |
             const fs = require('fs');
@@ -263,7 +263,7 @@ jobs:
     runs-on: self-hosted
     steps:
       - name: Publish release
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         with:
           script: |
             await github.rest.repos.updateRelease({
