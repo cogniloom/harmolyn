@@ -15,6 +15,7 @@ jobs:
   draft-release:
     name: Create Draft Release
     runs-on: self-hosted
+    container: debian:trixie
     outputs:
       release_id: ${{ steps.create-release.outputs.id }}
       release_upload_url: ${{ steps.create-release.outputs.upload_url }}
@@ -75,6 +76,7 @@ jobs:
             bundles: msi,nsis
 
     runs-on: self-hosted
+    container: debian:trixie
     steps:
       - uses: actions/checkout@v5
 
@@ -200,6 +202,7 @@ jobs:
     name: Generate Release Manifest
     needs: [draft-release, build]
     runs-on: self-hosted
+    container: debian:trixie
     steps:
       - uses: actions/checkout@v5
 
@@ -261,6 +264,7 @@ jobs:
     name: Publish Release
     needs: [draft-release, build, manifest]
     runs-on: self-hosted
+    container: debian:trixie
     steps:
       - name: Publish release
         uses: actions/github-script@v8

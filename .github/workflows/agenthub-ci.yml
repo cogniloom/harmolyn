@@ -38,6 +38,7 @@ jobs:
     needs: trust-gate
     if: needs.trust-gate.outputs.ok == 'true'
     runs-on: self-hosted
+    container: debian:trixie
     steps:
       - uses: actions/checkout@v4
 
@@ -58,6 +59,7 @@ jobs:
     needs: trust-gate
     if: needs.trust-gate.outputs.ok == 'true'
     runs-on: self-hosted
+    container: debian:trixie
     steps:
       - uses: actions/checkout@v4
 
@@ -78,6 +80,7 @@ jobs:
     needs: trust-gate
     if: needs.trust-gate.outputs.ok == 'true'
     runs-on: self-hosted
+    container: debian:trixie
     steps:
       - uses: actions/checkout@v4
 
