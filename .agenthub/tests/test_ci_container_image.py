@@ -76,3 +76,48 @@ def test_trust_gate_has_no_container():
     assert "container:" not in gate_block, (
         "trust-gate must NOT have a container: directive (it runs on GitHub-hosted ubuntu-latest)"
     )
+
+
+# ── sysbox no_new_privs constraints ──────────────────────────────────────────
+# Inside container: debian:trixie on the self-hosted sysbox runner, sudo is
+# unavailable (no_new_privs blocks privilege escalation) and --with-deps on
+# playwright calls sudo internally.  These tests enforce that neither construct
+# appears in any self-hosted job block.
+
+CI_YML = WORKFLOWS[0]
+RELEASE_YML = WORKFLOWS[2]
+
+
+def _job_block(text: str, job_key: str) -> str:
+    """Return the raw YAML block for a named top-level job key."""
+    blocks = re.split(r"\n(?=  \w)", text)
+    match = next((b for b in blocks if re.match(rf"\s{{2}}{re.escape(job_key)}:", b)), None)
+    assert match is not None, f"job '{job_key}' not found"
+    return match
+
+
+def test_browser_smoke_no_with_deps():
+    """browser-smoke runs inside debian:trixie; --with-deps calls sudo internally — must be absent."""
+    block = _job_block(CI_YML.read_text(), "browser-smoke")
+    assert "--with-deps" not in block, (
+        "ci.yml browser-smoke: --with-deps on playwright install invokes sudo "
+        "internally and fails under sysbox no_new_privs. Remove --with-deps."
+    )
+
+
+def test_tauri_check_no_sudo():
+    """tauri-check runs inside debian:trixie; sudo is unusable under sysbox no_new_privs."""
+    block = _job_block(CI_YML.read_text(), "tauri-check")
+    assert "sudo " not in block, (
+        "ci.yml tauri-check: 'sudo' found in job block — fails under sysbox no_new_privs "
+        "inside container: debian:trixie. Drop the sudo prefix from all apt-get calls."
+    )
+
+
+def test_release_build_no_sudo():
+    """release build job (linux matrix) runs inside debian:trixie; sudo fails under no_new_privs."""
+    block = _job_block(RELEASE_YML.read_text(), "build")
+    assert "sudo " not in block, (
+        "release.yml build: 'sudo' found in job block — fails under sysbox no_new_privs "
+        "inside container: debian:trixie. Drop the sudo prefix from all apt-get calls."
+    )
