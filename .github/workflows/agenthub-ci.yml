@@ -16,7 +16,10 @@ jobs:
   # Hard rule: never execute untrusted fork code on a self-hosted runner.
   trust-gate:
     name: Trust Gate
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
+    # The self-hosted runner is a minimal sysbox container with its own inner
+    # dockerd; jobs must declare a container image to get an isolated toolchain.
+    container: ubuntu-latest
     outputs:
       ok: ${{ steps.check.outputs.ok }}
     steps:
@@ -38,6 +41,9 @@ jobs:
     needs: trust-gate
     if: needs.trust-gate.outputs.ok == 'true'
     runs-on: self-hosted
+    # The self-hosted runner is a minimal sysbox container with its own inner
+    # dockerd; jobs must declare a container image to get an isolated toolchain.
+    container: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -58,6 +64,9 @@ jobs:
     needs: trust-gate
     if: needs.trust-gate.outputs.ok == 'true'
     runs-on: self-hosted
+    # The self-hosted runner is a minimal sysbox container with its own inner
+    # dockerd; jobs must declare a container image to get an isolated toolchain.
+    container: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -78,6 +87,9 @@ jobs:
     needs: trust-gate
     if: needs.trust-gate.outputs.ok == 'true'
     runs-on: self-hosted
+    # The self-hosted runner is a minimal sysbox container with its own inner
+    # dockerd; jobs must declare a container image to get an isolated toolchain.
+    container: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
