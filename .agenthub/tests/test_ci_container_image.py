@@ -66,15 +66,24 @@ def test_release_yml_self_hosted_jobs_use_debian_trixie():
     )
 
 
-def test_trust_gate_has_no_container():
-    """trust-gate runs on GitHub-hosted (ubuntu-latest); it must NOT have a container override."""
+def test_trust_gate_uses_self_hosted_debian_trixie():
+    """Owner directive: ALL runners must use self-hosted + container: debian:trixie, including trust-gate."""
     text = WORKFLOWS[1].read_text()
-    # Extract only the trust-gate block
     blocks = re.split(r"\n(?=  \w)", text)
     gate_block = next((b for b in blocks if "trust-gate:" in b), None)
     assert gate_block is not None, "trust-gate job not found in agenthub-ci.yml"
-    assert "container:" not in gate_block, (
-        "trust-gate must NOT have a container: directive (it runs on GitHub-hosted ubuntu-latest)"
+    assert "runs-on: self-hosted" in gate_block, (
+        "trust-gate must use 'runs-on: self-hosted' (owner directive: ONLY self-hosted runners)"
+    )
+    assert "ubuntu-latest" not in gate_block, (
+        "trust-gate must NOT use 'ubuntu-latest' (owner directive: ONLY self-hosted runners)"
+    )
+    container_m = re.search(r"container:\s*(.+)", gate_block)
+    assert container_m is not None, (
+        f"trust-gate is missing 'container: {REQUIRED_IMAGE}'"
+    )
+    assert container_m.group(1).strip() == REQUIRED_IMAGE, (
+        f"trust-gate container must be '{REQUIRED_IMAGE}', got '{container_m.group(1).strip()}'"
     )
 
 
