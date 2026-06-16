@@ -14,9 +14,6 @@ jobs:
   lint-test:
     name: Lint & Test
     runs-on: self-hosted
-    # The self-hosted runner is a minimal sysbox container with its own inner
-    # dockerd; jobs must declare a container image to get an isolated toolchain.
-    container: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
 
@@ -40,9 +37,6 @@ jobs:
   browser-smoke:
     name: Browser Smoke (E2E)
     runs-on: self-hosted
-    # The self-hosted runner is a minimal sysbox container with its own inner
-    # dockerd; jobs must declare a container image to get an isolated toolchain.
-    container: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
 
@@ -54,23 +48,20 @@ jobs:
       - run: npm ci
 
       - name: Install Chromium for Playwright
-        run: npx playwright@1.59.1 install chromium
+        run: npx playwright@1.59.1 install --with-deps chromium
 
       - run: npm run test:browser
 
   tauri-check:
     name: Tauri Debug Build (Linux)
     runs-on: self-hosted
-    # The self-hosted runner is a minimal sysbox container with its own inner
-    # dockerd; jobs must declare a container image to get an isolated toolchain.
-    container: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
 
       - name: Install system dependencies
         run: |
-          apt-get update
-          apt-get install -y \
+          sudo apt-get update
+          sudo apt-get install -y \
             libwebkit2gtk-4.1-dev \
             libappindicator3-dev \
             librsvg2-dev \
