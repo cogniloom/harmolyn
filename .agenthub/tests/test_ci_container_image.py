@@ -85,6 +85,7 @@ def test_trust_gate_has_no_container():
 # appears in any self-hosted job block.
 
 CI_YML = WORKFLOWS[0]
+AGENTHUB_CI_YML = WORKFLOWS[1]
 RELEASE_YML = WORKFLOWS[2]
 
 
@@ -119,5 +120,23 @@ def test_release_build_no_sudo():
     block = _job_block(RELEASE_YML.read_text(), "build")
     assert "sudo " not in block, (
         "release.yml build: 'sudo' found in job block — fails under sysbox no_new_privs "
+        "inside container: debian:trixie. Drop the sudo prefix from all apt-get calls."
+    )
+
+
+def test_agenthub_ci_browser_smoke_no_with_deps():
+    """agenthub-ci browser-smoke runs inside debian:trixie; --with-deps calls sudo internally."""
+    block = _job_block(AGENTHUB_CI_YML.read_text(), "browser-smoke")
+    assert "--with-deps" not in block, (
+        "agenthub-ci.yml browser-smoke: --with-deps on playwright install invokes sudo "
+        "internally and fails under sysbox no_new_privs. Remove --with-deps."
+    )
+
+
+def test_agenthub_ci_tauri_check_no_sudo():
+    """agenthub-ci tauri-check runs inside debian:trixie; sudo is unusable under no_new_privs."""
+    block = _job_block(AGENTHUB_CI_YML.read_text(), "tauri-check")
+    assert "sudo " not in block, (
+        "agenthub-ci.yml tauri-check: 'sudo' found in job block — fails under sysbox no_new_privs "
         "inside container: debian:trixie. Drop the sudo prefix from all apt-get calls."
     )
