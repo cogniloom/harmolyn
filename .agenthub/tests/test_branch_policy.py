@@ -137,13 +137,14 @@ def test_agents_md_ops_owns_promotion():
 
 
 def test_agents_md_ops_ci_merge():
-    """AGENTS.md must mention CI and/or merge as part of @ops promotion ownership."""
+    """AGENTS.md must mention BOTH CI verification AND merge as part of @ops promotion ownership."""
     text = AGENTS_MD.read_text()
-    has_ci = re.search(r"(?i)\bCI\b|continuous.integrat", text)
+    has_ci = re.search(r"(?i)\bCI\b|continuous.integrat|CI.verif", text)
     has_merge = re.search(r"(?i)\bmerge\b", text)
-    assert has_ci or has_merge, (
-        "AGENTS.md must mention CI verification and/or merge as part of @ops's "
-        "development → main promotion responsibility."
+    assert has_ci and has_merge, (
+        "AGENTS.md must mention both CI verification and merge as part of @ops's "
+        "development → main promotion responsibility. "
+        f"has_ci={bool(has_ci)}, has_merge={bool(has_merge)}"
     )
 
 
