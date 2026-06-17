@@ -2,6 +2,13 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Branch policy
+
+**`main` is production.** All agents must push to the `development` branch, never directly to `main`.
+- Feature work, bug fixes, and doc changes → commit and push to `development`.
+- `development` → `main` promotion (merge, deploy, restart) is owned exclusively by **@ops**.
+- Never force-push `main`. Never open PRs targeting `main` directly — open them targeting `development`.
+
 ## Project overview
 
 Harmolyn is an end-user chat client for the **xorein** P2P network — Discord-like UX with explicit, verifiable security modes.
