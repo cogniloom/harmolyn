@@ -172,6 +172,92 @@ def test_agents_md_policy_committed_on_development():
 
 
 # ---------------------------------------------------------------------------
+# CI workflow — self-hosted runner workspace cleanup guard
+# ---------------------------------------------------------------------------
+
+WORKFLOWS_DIR = REPO_ROOT / ".github" / "workflows"
+
+
+def _workflow_text(filename):
+    path = WORKFLOWS_DIR / filename
+    assert path.exists(), f"Workflow file not found: {path}"
+    return path.read_text()
+
+
+def _jobs_missing_pre_checkout_cleanup(wf_text):
+    """
+    Parse the workflow YAML text line-by-line to find self-hosted jobs that lack
+    a sudo chown/chmod/rm step before their first actions/checkout step.
+
+    Returns a list of job ids (strings) that are missing the cleanup.
+    """
+    missing = []
+    lines = wf_text.splitlines()
+
+    # Split into per-job blocks by finding top-level "  <job_id>:" lines under "jobs:"
+    # We look for lines at exactly 2-space indent (job keys) after we see "jobs:".
+    in_jobs = False
+    job_blocks = {}  # job_id -> list of lines
+    current_job = None
+
+    for line in lines:
+        if line.rstrip() == "jobs:":
+            in_jobs = True
+            continue
+        if not in_jobs:
+            continue
+        # top-level key inside jobs (2-space indent, no deeper)
+        m = re.match(r'^  (\w[\w-]*):\s*$', line)
+        if m:
+            current_job = m.group(1)
+            job_blocks[current_job] = []
+            continue
+        if current_job is not None:
+            job_blocks[current_job].append(line)
+
+    for jid, block in job_blocks.items():
+        block_text = "\n".join(block)
+        if "self-hosted" not in block_text:
+            continue
+        # Find the position of the first actions/checkout line
+        checkout_pos = None
+        for i, ln in enumerate(block):
+            if re.search(r"actions/checkout", ln):
+                checkout_pos = i
+                break
+        if checkout_pos is None:
+            continue  # no checkout step — not our concern
+        pre_block = "\n".join(block[:checkout_pos])
+        has_cleanup = bool(re.search(r"(chown|chmod|rm\s+-rf)", pre_block))
+        if not has_cleanup:
+            missing.append(jid)
+
+    return missing
+
+
+def test_ci_yml_self_hosted_jobs_have_pre_checkout_cleanup():
+    """Every self-hosted job in ci.yml must fix workspace permissions before checkout."""
+    wf_text = _workflow_text("ci.yml")
+    missing = _jobs_missing_pre_checkout_cleanup(wf_text)
+    assert not missing, (
+        f"ci.yml self-hosted job(s) {missing} have no workspace cleanup step before "
+        "actions/checkout. Runner workspace contamination causes EACCES on clean. "
+        "Add a 'sudo chown -R $(id -u):$(id -g) .' step before the checkout."
+    )
+
+
+def test_agenthub_ci_yml_self_hosted_jobs_have_pre_checkout_cleanup():
+    """Every self-hosted job in agenthub-ci.yml must fix workspace permissions before checkout."""
+    wf_text = _workflow_text("agenthub-ci.yml")
+    missing = _jobs_missing_pre_checkout_cleanup(wf_text)
+    assert not missing, (
+        f"agenthub-ci.yml self-hosted job(s) {missing} have no workspace cleanup step before "
+        "actions/checkout. Runner workspace contamination causes EACCES on clean. "
+        "Add a 'sudo chown -R $(id -u):$(id -g) .' step before the checkout."
+    )
+
+
+# ---------------------------------------------------------------------------
 # Manual runner
 # ---------------------------------------------------------------------------
 
@@ -187,6 +273,8 @@ if __name__ == "__main__":
         test_agents_md_ops_owns_promotion,
         test_agents_md_ops_ci_merge,
         test_agents_md_policy_committed_on_development,
+        test_ci_yml_self_hosted_jobs_have_pre_checkout_cleanup,
+        test_agenthub_ci_yml_self_hosted_jobs_have_pre_checkout_cleanup,
     ]
     passed = 0
     failed = 0
