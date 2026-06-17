@@ -162,6 +162,13 @@ def test_agents_md_policy_committed_on_development():
                      r"(development|develop).{0,60}main.{0,120}@?ops", content), (
         "AGENTS.md on remote `development` branch does not name @ops as promotion owner."
     )
+    has_ci = re.search(r"(?i)\bCI\b|continuous.integrat|CI.verif", content)
+    has_merge = re.search(r"(?i)\bmerge\b", content)
+    assert has_ci and has_merge, (
+        "AGENTS.md on remote `development` branch must mention both CI verification and merge "
+        "as part of @ops promotion. "
+        f"has_ci={bool(has_ci)}, has_merge={bool(has_merge)}"
+    )
 
 
 # ---------------------------------------------------------------------------
