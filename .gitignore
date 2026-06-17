@@ -1,4 +1,5 @@
 .serena
+.claude/settings.local.json
 src-tauri/target/
 src-tauri/binaries/xorein-*
 src-tauri/binaries/xorein-manifest.json
