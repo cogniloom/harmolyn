@@ -1,5 +1,12 @@
 # AGENTS.md
 
+## Branch policy
+
+**`main` is production.** All agents must push to the `development` branch, never directly to `main`.
+- Feature work, bug fixes, and doc changes → commit and push to `development`.
+- `development` → `main` promotion (merge, deploy, restart) is owned exclusively by **@ops**.
+- Never force-push `main`. Never open PRs targeting `main` directly — open them targeting `development`.
+
 ## Where to work
 - Main app entry is `index.html -> src/main.tsx -> src/App.tsx`; prefer the `src/` tree.
 - Root-level `App.tsx` and `index.tsx` exist, but the Vite entrypoint is `src/main.tsx`.
