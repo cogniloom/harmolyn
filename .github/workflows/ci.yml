@@ -15,6 +15,8 @@ jobs:
     name: Lint & Test
     runs-on: self-hosted
     steps:
+      - name: Fix workspace permissions
+        run: sudo chown -R "$(id -u):$(id -g)" .
       - uses: actions/checkout@v5
 
       - uses: actions/setup-node@v5
@@ -38,6 +40,8 @@ jobs:
     name: Browser Smoke (E2E)
     runs-on: self-hosted
     steps:
+      - name: Fix workspace permissions
+        run: sudo chown -R "$(id -u):$(id -g)" .
       - uses: actions/checkout@v5
 
       - uses: actions/setup-node@v5
@@ -56,6 +60,8 @@ jobs:
     name: Tauri Debug Build (Linux)
     runs-on: self-hosted
     steps:
+      - name: Fix workspace permissions
+        run: sudo chown -R "$(id -u):$(id -g)" .
       - uses: actions/checkout@v5
 
       - name: Install system dependencies
