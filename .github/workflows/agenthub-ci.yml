@@ -40,7 +40,7 @@ jobs:
     runs-on: self-hosted
     steps:
       - name: Fix workspace permissions
-        run: sudo chown -R "$(id -u):$(id -g)" .
+        run: chown -R "$(id -u):$(id -g)" . 2>/dev/null || sudo chown -R "$(id -u):$(id -g)" . 2>/dev/null || true
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v5
@@ -62,7 +62,7 @@ jobs:
     runs-on: self-hosted
     steps:
       - name: Fix workspace permissions
-        run: sudo chown -R "$(id -u):$(id -g)" .
+        run: chown -R "$(id -u):$(id -g)" . 2>/dev/null || sudo chown -R "$(id -u):$(id -g)" . 2>/dev/null || true
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v5
@@ -84,7 +84,7 @@ jobs:
     runs-on: self-hosted
     steps:
       - name: Fix workspace permissions
-        run: sudo chown -R "$(id -u):$(id -g)" .
+        run: chown -R "$(id -u):$(id -g)" . 2>/dev/null || sudo chown -R "$(id -u):$(id -g)" . 2>/dev/null || true
       - uses: actions/checkout@v4
 
       - name: Install system dependencies
