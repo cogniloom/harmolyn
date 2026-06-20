@@ -29,15 +29,58 @@ COGNILOOM_REMOTE = "cogniloom"
 # Helpers
 # ---------------------------------------------------------------------------
 
-_REMOTE_TIMEOUT = 30  # seconds; prevents hanging indefinitely when the remote is unreachable
+_REMOTE_TIMEOUT = 15  # seconds; prevents hanging indefinitely when the remote is unreachable
+
+# Prevent git from waiting for credential input — fail fast instead.
+import os as _os
+_GIT_ENV = {
+    **_os.environ,
+    "GIT_TERMINAL_PROMPT": "0",
+    "GIT_ASKPASS": "/bin/true",
+}
+
+
+def _is_remote_configured():
+    """Return True if the cogniloom remote is listed in the local git config (no network call)."""
+    result = subprocess.run(
+        ["git", "remote"],
+        capture_output=True, text=True, cwd=str(REPO_ROOT),
+        stdin=subprocess.DEVNULL,
+        timeout=5,
+    )
+    return COGNILOOM_REMOTE in result.stdout.split()
 
 
 def _remote_branches():
-    """Return a set of short branch names on the cogniloom remote, or skip if unreachable."""
+    """Return a set of short branch names on the cogniloom remote, or skip if unreachable.
+
+    Uses `git ls-remote` (a network call) only when the remote is configured.
+    Falls back to locally-cached remote-tracking refs when the network is
+    unavailable — `git show cogniloom/development:FILE` works off those refs,
+    so the only test that genuinely needs a live ls-remote is AC1.
+    """
+    if not _is_remote_configured():
+        pytest.skip(f"{COGNILOOM_REMOTE} remote not configured in this environment — skipping remote checks")
+    # Try the cached tracking refs first (no network required).
+    cached = subprocess.run(
+        ["git", "branch", "-r", "--list", f"{COGNILOOM_REMOTE}/*"],
+        capture_output=True, text=True, cwd=str(REPO_ROOT),
+        stdin=subprocess.DEVNULL,
+        timeout=5,
+    )
+    if cached.returncode == 0 and cached.stdout.strip():
+        branches = set()
+        for line in cached.stdout.splitlines():
+            name = line.strip().removeprefix(f"{COGNILOOM_REMOTE}/")
+            branches.add(name)
+        return branches
+    # Fall back to a live network call if local cache is empty.
     try:
         result = subprocess.run(
             ["git", "ls-remote", "--heads", COGNILOOM_REMOTE],
             capture_output=True, text=True, cwd=str(REPO_ROOT),
+            stdin=subprocess.DEVNULL,
+            env=_GIT_ENV,
             timeout=_REMOTE_TIMEOUT,
         )
     except subprocess.TimeoutExpired:
@@ -54,11 +97,19 @@ def _remote_branches():
 
 
 def _remote_file(branch, rel_path):
-    """Return the content of `rel_path` from the cogniloom remote at `branch`, or None."""
+    """Return content of rel_path from the cogniloom remote at branch, or None.
+
+    Uses locally-cached remote-tracking refs (git show cogniloom/<branch>:path).
+    No network call needed if git fetch has run at least once.
+    """
+    if not _is_remote_configured():
+        pytest.skip(f"{COGNILOOM_REMOTE} remote not configured — skipping remote file check")
     try:
         result = subprocess.run(
             ["git", "show", f"{COGNILOOM_REMOTE}/{branch}:{rel_path}"],
             capture_output=True, text=True, cwd=str(REPO_ROOT),
+            stdin=subprocess.DEVNULL,
+            env=_GIT_ENV,
             timeout=_REMOTE_TIMEOUT,
         )
     except subprocess.TimeoutExpired:
