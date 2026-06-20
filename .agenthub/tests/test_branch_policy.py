@@ -17,6 +17,7 @@ No live services beyond the cogniloom/harmolyn git remote are required.
 import pathlib
 import re
 import subprocess
+import pytest
 
 REPO_ROOT = pathlib.Path(__file__).parent.parent.parent
 CLAUDE_MD = REPO_ROOT / "CLAUDE.md"
@@ -28,12 +29,21 @@ COGNILOOM_REMOTE = "cogniloom"
 # Helpers
 # ---------------------------------------------------------------------------
 
+_REMOTE_TIMEOUT = 30  # seconds; prevents hanging indefinitely when the remote is unreachable
+
+
 def _remote_branches():
-    """Return a set of short branch names on the cogniloom remote."""
-    result = subprocess.run(
-        ["git", "ls-remote", "--heads", COGNILOOM_REMOTE],
-        capture_output=True, text=True, cwd=str(REPO_ROOT),
-    )
+    """Return a set of short branch names on the cogniloom remote, or skip if unreachable."""
+    try:
+        result = subprocess.run(
+            ["git", "ls-remote", "--heads", COGNILOOM_REMOTE],
+            capture_output=True, text=True, cwd=str(REPO_ROOT),
+            timeout=_REMOTE_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired:
+        pytest.skip(f"git ls-remote {COGNILOOM_REMOTE} timed out after {_REMOTE_TIMEOUT}s — remote unreachable in this environment")
+    if result.returncode != 0:
+        pytest.skip(f"git ls-remote {COGNILOOM_REMOTE} failed (rc={result.returncode}): {result.stderr.strip()}")
     branches = set()
     for line in result.stdout.splitlines():
         # format: <sha>\trefs/heads/<name>
@@ -44,11 +54,15 @@ def _remote_branches():
 
 
 def _remote_file(branch, rel_path):
-    """Return the content of `rel_path` from the cogniloom remote at `branch`."""
-    result = subprocess.run(
-        ["git", "show", f"{COGNILOOM_REMOTE}/{branch}:{rel_path}"],
-        capture_output=True, text=True, cwd=str(REPO_ROOT),
-    )
+    """Return the content of `rel_path` from the cogniloom remote at `branch`, or None."""
+    try:
+        result = subprocess.run(
+            ["git", "show", f"{COGNILOOM_REMOTE}/{branch}:{rel_path}"],
+            capture_output=True, text=True, cwd=str(REPO_ROOT),
+            timeout=_REMOTE_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired:
+        pytest.skip(f"git show {COGNILOOM_REMOTE}/{branch}:{rel_path} timed out — remote unreachable")
     if result.returncode != 0:
         return None
     return result.stdout
