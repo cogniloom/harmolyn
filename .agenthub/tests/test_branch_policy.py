@@ -14,8 +14,10 @@ Acceptance criteria:
 No live services beyond the cogniloom/harmolyn git remote are required.
 """
 
+import os as _os
 import pathlib
 import re
+import signal
 import subprocess
 import pytest
 
@@ -29,26 +31,62 @@ COGNILOOM_REMOTE = "cogniloom"
 # Helpers
 # ---------------------------------------------------------------------------
 
-_REMOTE_TIMEOUT = 15  # seconds; prevents hanging indefinitely when the remote is unreachable
+_REMOTE_TIMEOUT = 15  # seconds per subprocess call
 
 # Prevent git from waiting for credential input — fail fast instead.
-import os as _os
 _GIT_ENV = {
     **_os.environ,
     "GIT_TERMINAL_PROMPT": "0",
     "GIT_ASKPASS": "/bin/true",
+    "GIT_SSH_COMMAND": "ssh -o BatchMode=yes -o ConnectTimeout=10",
 }
+
+
+def _run_git(cmd, timeout, *, cwd=None, env=None):
+    """Run a git command with a hard per-process-group timeout.
+
+    Uses start_new_session=True so that when the timeout fires we can
+    os.killpg() the entire process group (git + any SSH/HTTPS credential
+    helpers it spawned).  subprocess.run(capture_output=True, timeout=N)
+    alone is insufficient: after killing the parent it calls communicate()
+    without a timeout, which blocks forever if a grandchild process still
+    holds stdout/stderr open.
+
+    Returns (returncode, stdout_str, stderr_str) or raises
+    subprocess.TimeoutExpired on timeout.
+    """
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        stdin=subprocess.DEVNULL,
+        cwd=str(cwd or REPO_ROOT),
+        env=env or _GIT_ENV,
+        start_new_session=True,  # new process group → killpg kills all children
+    )
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+        return proc.returncode, stdout.decode(errors="replace"), stderr.decode(errors="replace")
+    except subprocess.TimeoutExpired:
+        try:
+            _os.killpg(_os.getpgid(proc.pid), signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            proc.kill()
+        # Pipes are now closed (process group dead) — drain safely.
+        try:
+            proc.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+        raise
 
 
 def _is_remote_configured():
     """Return True if the cogniloom remote is listed in the local git config (no network call)."""
-    result = subprocess.run(
-        ["git", "remote"],
-        capture_output=True, text=True, cwd=str(REPO_ROOT),
-        stdin=subprocess.DEVNULL,
-        timeout=5,
-    )
-    return COGNILOOM_REMOTE in result.stdout.split()
+    try:
+        rc, out, _ = _run_git(["git", "remote"], timeout=5)
+    except subprocess.TimeoutExpired:
+        return False
+    return COGNILOOM_REMOTE in out.split()
 
 
 def _remote_branches():
@@ -62,33 +100,31 @@ def _remote_branches():
     if not _is_remote_configured():
         pytest.skip(f"{COGNILOOM_REMOTE} remote not configured in this environment — skipping remote checks")
     # Try the cached tracking refs first (no network required).
-    cached = subprocess.run(
-        ["git", "branch", "-r", "--list", f"{COGNILOOM_REMOTE}/*"],
-        capture_output=True, text=True, cwd=str(REPO_ROOT),
-        stdin=subprocess.DEVNULL,
-        timeout=5,
-    )
-    if cached.returncode == 0 and cached.stdout.strip():
+    try:
+        rc, out, _ = _run_git(
+            ["git", "branch", "-r", "--list", f"{COGNILOOM_REMOTE}/*"],
+            timeout=5,
+        )
+    except subprocess.TimeoutExpired:
+        rc, out = 1, ""
+    if rc == 0 and out.strip():
         branches = set()
-        for line in cached.stdout.splitlines():
+        for line in out.splitlines():
             name = line.strip().removeprefix(f"{COGNILOOM_REMOTE}/")
             branches.add(name)
         return branches
     # Fall back to a live network call if local cache is empty.
     try:
-        result = subprocess.run(
+        rc, out, err = _run_git(
             ["git", "ls-remote", "--heads", COGNILOOM_REMOTE],
-            capture_output=True, text=True, cwd=str(REPO_ROOT),
-            stdin=subprocess.DEVNULL,
-            env=_GIT_ENV,
             timeout=_REMOTE_TIMEOUT,
         )
     except subprocess.TimeoutExpired:
         pytest.skip(f"git ls-remote {COGNILOOM_REMOTE} timed out after {_REMOTE_TIMEOUT}s — remote unreachable in this environment")
-    if result.returncode != 0:
-        pytest.skip(f"git ls-remote {COGNILOOM_REMOTE} failed (rc={result.returncode}): {result.stderr.strip()}")
+    if rc != 0:
+        pytest.skip(f"git ls-remote {COGNILOOM_REMOTE} failed (rc={rc}): {err.strip()}")
     branches = set()
-    for line in result.stdout.splitlines():
+    for line in out.splitlines():
         # format: <sha>\trefs/heads/<name>
         if "\t" in line:
             ref = line.split("\t", 1)[1]
@@ -105,18 +141,15 @@ def _remote_file(branch, rel_path):
     if not _is_remote_configured():
         pytest.skip(f"{COGNILOOM_REMOTE} remote not configured — skipping remote file check")
     try:
-        result = subprocess.run(
+        rc, out, _ = _run_git(
             ["git", "show", f"{COGNILOOM_REMOTE}/{branch}:{rel_path}"],
-            capture_output=True, text=True, cwd=str(REPO_ROOT),
-            stdin=subprocess.DEVNULL,
-            env=_GIT_ENV,
             timeout=_REMOTE_TIMEOUT,
         )
     except subprocess.TimeoutExpired:
         pytest.skip(f"git show {COGNILOOM_REMOTE}/{branch}:{rel_path} timed out — remote unreachable")
-    if result.returncode != 0:
+    if rc != 0:
         return None
-    return result.stdout
+    return out
 
 
 # ---------------------------------------------------------------------------
