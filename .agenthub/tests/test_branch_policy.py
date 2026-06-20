@@ -282,20 +282,14 @@ def _workflow_text(filename):
     return path.read_text()
 
 
-def _jobs_missing_pre_checkout_cleanup(wf_text):
+def _self_hosted_pre_checkout_blocks(wf_text):
     """
-    Parse the workflow YAML text line-by-line to find self-hosted jobs that lack
-    a sudo chown/chmod/rm step before their first actions/checkout step.
-
-    Returns a list of job ids (strings) that are missing the cleanup.
+    Parse the workflow YAML and return {job_id: pre_checkout_text} for every
+    self-hosted job that has an actions/checkout step.
     """
-    missing = []
     lines = wf_text.splitlines()
-
-    # Split into per-job blocks by finding top-level "  <job_id>:" lines under "jobs:"
-    # We look for lines at exactly 2-space indent (job keys) after we see "jobs:".
     in_jobs = False
-    job_blocks = {}  # job_id -> list of lines
+    job_blocks = {}
     current_job = None
 
     for line in lines:
@@ -304,7 +298,6 @@ def _jobs_missing_pre_checkout_cleanup(wf_text):
             continue
         if not in_jobs:
             continue
-        # top-level key inside jobs (2-space indent, no deeper)
         m = re.match(r'^  (\w[\w-]*):\s*$', line)
         if m:
             current_job = m.group(1)
@@ -313,23 +306,44 @@ def _jobs_missing_pre_checkout_cleanup(wf_text):
         if current_job is not None:
             job_blocks[current_job].append(line)
 
+    result = {}
     for jid, block in job_blocks.items():
         block_text = "\n".join(block)
         if "self-hosted" not in block_text:
             continue
-        # Find the position of the first actions/checkout line
         checkout_pos = None
         for i, ln in enumerate(block):
             if re.search(r"actions/checkout", ln):
                 checkout_pos = i
                 break
         if checkout_pos is None:
-            continue  # no checkout step — not our concern
-        pre_block = "\n".join(block[:checkout_pos])
-        has_cleanup = bool(re.search(r"(chown|chmod|rm\s+-rf)", pre_block))
-        if not has_cleanup:
-            missing.append(jid)
+            continue
+        result[jid] = "\n".join(block[:checkout_pos])
+    return result
 
+
+def _jobs_missing_pre_checkout_cleanup(wf_text):
+    """
+    Return job ids of self-hosted jobs that lack a chown/chmod/rm step before checkout.
+    """
+    missing = []
+    for jid, pre_block in _self_hosted_pre_checkout_blocks(wf_text).items():
+        if not re.search(r"(chown|chmod|rm\s+-rf)", pre_block):
+            missing.append(jid)
+    return missing
+
+
+def _jobs_missing_safe_directory(wf_text):
+    """
+    Return job ids of self-hosted jobs that lack a git safe.directory config before checkout.
+
+    Without this, actions/checkout@v4 fails on self-hosted runners when the workspace
+    directory is owned by a different user (git raises 'dubious ownership').
+    """
+    missing = []
+    for jid, pre_block in _self_hosted_pre_checkout_blocks(wf_text).items():
+        if not re.search(r"safe\.directory", pre_block):
+            missing.append(jid)
     return missing
 
 
@@ -355,6 +369,32 @@ def test_agenthub_ci_yml_self_hosted_jobs_have_pre_checkout_cleanup():
     )
 
 
+def test_ci_yml_self_hosted_jobs_have_safe_directory():
+    """Every self-hosted job in ci.yml must set git safe.directory before checkout.
+
+    Without this, actions/checkout@v4 fails with 'dubious ownership' when the workspace
+    is owned by a different uid than the runner process.
+    """
+    wf_text = _workflow_text("ci.yml")
+    missing = _jobs_missing_safe_directory(wf_text)
+    assert not missing, (
+        f"ci.yml self-hosted job(s) {missing} are missing 'git config --global --add "
+        "safe.directory' before actions/checkout. This causes checkout to fail with "
+        "'fatal: detected dubious ownership in repository' on self-hosted runners."
+    )
+
+
+def test_agenthub_ci_yml_self_hosted_jobs_have_safe_directory():
+    """Every self-hosted job in agenthub-ci.yml must set git safe.directory before checkout."""
+    wf_text = _workflow_text("agenthub-ci.yml")
+    missing = _jobs_missing_safe_directory(wf_text)
+    assert not missing, (
+        f"agenthub-ci.yml self-hosted job(s) {missing} are missing 'git config --global --add "
+        "safe.directory' before actions/checkout. This causes checkout to fail with "
+        "'fatal: detected dubious ownership in repository' on self-hosted runners."
+    )
+
+
 # ---------------------------------------------------------------------------
 # Manual runner
 # ---------------------------------------------------------------------------
@@ -373,6 +413,8 @@ if __name__ == "__main__":
         test_agents_md_policy_committed_on_development,
         test_ci_yml_self_hosted_jobs_have_pre_checkout_cleanup,
         test_agenthub_ci_yml_self_hosted_jobs_have_pre_checkout_cleanup,
+        test_ci_yml_self_hosted_jobs_have_safe_directory,
+        test_agenthub_ci_yml_self_hosted_jobs_have_safe_directory,
     ]
     passed = 0
     failed = 0
