@@ -39,7 +39,7 @@ jobs:
     if: needs.trust-gate.outputs.ok == 'true'
     runs-on: self-hosted
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-node@v5
         with:
@@ -59,7 +59,7 @@ jobs:
     if: needs.trust-gate.outputs.ok == 'true'
     runs-on: self-hosted
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-node@v5
         with:
@@ -79,7 +79,7 @@ jobs:
     if: needs.trust-gate.outputs.ok == 'true'
     runs-on: self-hosted
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install system dependencies
         run: |
