@@ -4,6 +4,11 @@ import path from "path";
 
 export default defineConfig({
   plugins: [react()],
+  // Mirror vite.config.ts's build-time define so components referencing the
+  // injected app version compile under Vitest too.
+  define: {
+    __APP_VERSION__: JSON.stringify("1.0.0-rc.1-test"),
+  },
   test: {
     environment: "jsdom",
     globals: true,

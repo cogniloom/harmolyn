@@ -2,9 +2,9 @@ import React from 'react';
 import { Bell, Volume2, AtSign, BellOff } from 'lucide-react';
 import { usePersistentState } from '@/hooks/usePersistentState';
 
-type NotifLevel = 'all' | 'mentions' | 'none';
+export type NotifLevel = 'all' | 'mentions' | 'none';
 
-interface NotificationPreferences {
+export interface NotificationPreferences {
   globalLevel: NotifLevel;
   desktopEnabled: boolean;
   soundEnabled: boolean;
@@ -13,7 +13,8 @@ interface NotificationPreferences {
   suppressRoles: boolean;
 }
 
-const STORAGE_KEY = 'harmolyn:settings:notifications';
+export const NOTIFICATION_SETTINGS_STORAGE_KEY = 'harmolyn:settings:notifications';
+const STORAGE_KEY = NOTIFICATION_SETTINGS_STORAGE_KEY;
 
 const DEFAULT_PREFERENCES: NotificationPreferences = {
   globalLevel: 'mentions',
@@ -119,6 +120,21 @@ export const NotificationSettings: React.FC = () => {
     </>
   );
 };
+
+/**
+ * Read the saved notification preferences synchronously from storage. Used by the
+ * notification delivery path (Layout) so the user's choices — "Nothing", "Mentions
+ * only", suppress @everyone/@role — are actually honored, not just stored.
+ */
+export function readNotificationPreferences(): NotificationPreferences {
+  try {
+    if (typeof localStorage === 'undefined') return DEFAULT_PREFERENCES;
+    const raw = localStorage.getItem(STORAGE_KEY);
+    return raw ? normalizeNotificationPreferences(JSON.parse(raw)) : DEFAULT_PREFERENCES;
+  } catch {
+    return DEFAULT_PREFERENCES;
+  }
+}
 
 function normalizeNotificationPreferences(value: unknown): NotificationPreferences {
   if (!isPlainObject(value)) {

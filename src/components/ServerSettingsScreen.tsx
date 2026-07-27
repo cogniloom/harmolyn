@@ -1333,12 +1333,12 @@ const AutoModSection: React.FC<{
     </div>
 
     <div className="mt-8">
-      <div className="micro-label text-white/30 mb-3">QUARANTINE // STATS // 30 DAYS</div>
+      <div className="micro-label text-white/30 mb-3">AUTOMOD // RULES</div>
       <div className="grid grid-cols-3 gap-3">
         {[
-          { label: 'BLOCKED', value: '0', icon: <Ban size={14} /> },
-          { label: 'TIMEOUTS', value: '0', icon: <Clock size={14} /> },
-          { label: 'ALERTS', value: '0', icon: <AlertTriangle size={14} /> },
+          { label: 'ACTIVE', value: String(rules.filter((r) => r.enabled).length), icon: <ShieldAlert size={14} /> },
+          { label: 'TOTAL', value: String(rules.length), icon: <Ban size={14} /> },
+          { label: 'ENFORCING', value: String(rules.filter((r) => r.enabled && r.actions.some((a) => /block|delete|timeout/i.test(a))).length), icon: <Clock size={14} /> },
         ].map((stat) => (
           <div key={stat.label} className="glass-card rounded-r2 p-4 border border-white/5 text-center">
             <div className="text-white/20 mb-2 flex justify-center">{stat.icon}</div>

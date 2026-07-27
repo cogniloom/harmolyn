@@ -104,12 +104,6 @@ interface SettingsScreenProps {
   /** Open directly on this section (e.g. 'audio-video' from the voice cog). */
   initialSection?: string;
   onClose: () => void;
-  onOpenDonations?: () => void;
-  onOpenShop?: () => void;
-  onOpenQuests?: () => void;
-  onOpenBoost?: () => void;
-  onOpenEvents?: () => void;
-  hasActiveServer?: boolean;
   onLogOut?: () => void;
   messageLayout?: MessageLayout;
   onSetMessageLayout?: (layout: MessageLayout) => void;
@@ -155,7 +149,7 @@ const AUTH_TOKEN_STORAGE_KEYS = [
 ] as const;
 
 const SOURCE_URL = import.meta.env.VITE_SOURCE_URL ?? 'https://github.com/xorein/hybrid';
-const APP_VERSION = '0.0.0';
+const APP_VERSION = __APP_VERSION__;
 const LICENSE_URL = 'https://www.gnu.org/licenses/agpl-3.0.html';
 const SPEC_LICENSE_URL = 'https://creativecommons.org/licenses/by-sa/4.0/';
 
@@ -191,12 +185,6 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
   user,
   initialSection,
   onClose,
-  onOpenDonations,
-  onOpenShop,
-  onOpenQuests,
-  onOpenBoost,
-  onOpenEvents,
-  hasActiveServer = false,
   onLogOut,
   messageLayout = 'modern',
   onSetMessageLayout,
@@ -212,11 +200,6 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
   const [logoutConfirmOpen, setLogoutConfirmOpen] = useState(false);
   const registerRelayMutation = useRegisterRelay();
   const removeRelayMutation = useRemoveRelay();
-  const hasDonations = useFeature('donations');
-  const hasShop = useFeature('shop');
-  const hasQuests = useFeature('quests');
-  const hasServerBoost = useFeature('serverBoost');
-  const hasScheduledEvents = useFeature('scheduledEvents');
 
   useEffect(() => {
     if (!feedback) {
@@ -228,15 +211,6 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
   }, [feedback]);
 
   const showFeedback = (tone: FeedbackTone, message: string) => setFeedback({ tone, message });
-
-  const handleOpenSupport = (label: string, action?: () => void) => {
-    if (action) {
-      action();
-      return;
-    }
-
-    showFeedback('info', `${label} is not available from this browser session.`);
-  };
 
   const performLogout = () => {
     setLogoutConfirmOpen(false);
@@ -282,14 +256,6 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
           <SettingsItem icon={<Eye size={16} />} label="Streamer Mode" active={activeSection === 'streamer'} onClick={() => setActiveSection('streamer')} />
           <SettingsItem icon={<Smartphone size={16} />} label="Mobile Sync" active={activeSection === 'mobile'} onClick={() => setActiveSection('mobile')} />
           <SettingsItem icon={<Info size={16} />} label="About & Legal" active={activeSection === 'about'} onClick={() => setActiveSection('about')} />
-
-          <div className="h-6" />
-          <div className="micro-label text-white/20 px-3 mb-3">Support</div>
-          {hasDonations && <SettingsItem icon={<Heart size={16} />} label="Donate" active={false} onClick={() => handleOpenSupport('Donate', onOpenDonations)} />}
-          {hasShop && <SettingsItem icon={<ShoppingBag size={16} />} label="Shop" active={false} onClick={() => handleOpenSupport('Shop', onOpenShop)} />}
-          {hasQuests && <SettingsItem icon={<Trophy size={16} />} label="Quests" active={false} onClick={() => handleOpenSupport('Quests', onOpenQuests)} />}
-          {hasServerBoost && hasActiveServer && <SettingsItem icon={<Zap size={16} />} label="Boost Server" active={false} onClick={() => handleOpenSupport('Boost Server', onOpenBoost)} />}
-          {hasScheduledEvents && hasActiveServer && <SettingsItem icon={<Calendar size={16} />} label="Events" active={false} onClick={() => handleOpenSupport('Events', onOpenEvents)} />}
 
           <div className="h-6" />
           <div className="border-t border-white/5 my-3 mx-3" />

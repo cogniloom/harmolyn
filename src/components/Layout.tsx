@@ -57,6 +57,7 @@ import { safeLocationSearch } from '@/lib/browserLocation';
 import { safeViewportSize } from '@/lib/browserViewport';
 import { normalizeLayoutUsers, normalizeRuntimePeerId, normalizeRuntimeVoiceSession, resolveLayoutDirectMessageUser } from './layoutRuntime';
 import { useRuntimeBootstrapState } from '@/lib/xoreinRuntimeContext';
+import { readNotificationPreferences } from './NotificationSettings';
 
 const MESSAGE_LAYOUT_STORAGE_KEY = 'harmolyn:settings:message-layout';
 
@@ -159,9 +160,21 @@ export const Layout: React.FC = () => {
     const handler = (event: Event) => {
       const detail = (event as CustomEvent).detail as { kind?: string; title?: string; body?: string } | undefined;
       if (!detail || !detail.body) return;
+      // Honor the user's notification preferences (previously stored but never read):
+      //  • "Nothing" mutes everything;
+      //  • "Mentions only" keeps direct events (DMs, friend requests, direct
+      //    mentions) but drops broadcast @everyone/@role notices;
+      //  • suppressEveryone/suppressRoles drop those broadcast pings specifically.
+      const prefs = readNotificationPreferences();
+      if (prefs.globalLevel === 'none') return;
+      const kind = detail.kind ?? '';
+      if (prefs.suppressEveryone && kind === 'everyone') return;
+      if (prefs.suppressRoles && kind === 'role') return;
+      if (prefs.globalLevel === 'mentions' && (kind === 'everyone' || kind === 'role' || kind === 'channel')) return;
       toast.info(detail.body, detail.title || 'Harmolyn');
       if (
         desktopNotifications &&
+        prefs.desktopEnabled &&
         typeof Notification !== 'undefined' &&
         Notification.permission === 'granted' &&
         typeof document !== 'undefined' &&
