@@ -160,6 +160,27 @@ export interface XoreinRuntimePeer {
   identity_changed?: boolean;
 }
 
+/**
+ * An abuse report. Reports about a server are delivered P2P to that server's owner
+ * (the moderator who can act); reports about a DM are kept locally. Stored encrypted
+ * at rest like the rest of the native state.
+ */
+export interface XoreinReport {
+  id: string;
+  reason: string;
+  details?: string;
+  target_kind: 'message' | 'user';
+  target_id: string;           // message id or reported peer id
+  reported_peer_id?: string;   // the author/user being reported
+  server_id?: string;
+  channel_id?: string;
+  content_excerpt?: string;    // short context snippet (owner can already read server content)
+  reporter_peer_id: string;    // local peer (outbound) or authenticated remote (inbound, owner side)
+  created_at: string;
+  /** True on the server owner's copy of a report received from a member. */
+  inbound?: boolean;
+}
+
 export interface XoreinRuntimeChannel {
   id: string;
   server_id: string;
@@ -407,6 +428,8 @@ export interface XoreinRuntimeSnapshot {
   presence?: Record<string, XoreinPresenceEntry>;
   /** Per-scope unread message counts, keyed by channel id or DM id. */
   unread?: Record<string, number>;
+  /** Abuse reports (owner-received + local outbound copies). */
+  reports?: XoreinReport[];
 }
 
 export interface XoreinSessionSnapshot {

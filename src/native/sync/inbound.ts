@@ -7,7 +7,7 @@ import {
   decodePeerStreamRequest, encodePeerStreamResponse,
 } from '../families/peerstream.js';
 import { PROTOCOLS } from '../families/families.js';
-import { addMessage, editMessage as storeEditMessage, deleteMessage as storeDeleteMessage, pinMessage as storePinMessage, updatePresenceEntry, addReaction, removeReaction, getState, updateServer, upsertPeer, addFriendRequest, acceptFriendByPeer, ensureDm, bumpUnread, getActiveScope, removeServerMembership, removeServerMember, addPollVote, memberHasPermission } from '../state/store.js';
+import { addMessage, editMessage as storeEditMessage, deleteMessage as storeDeleteMessage, pinMessage as storePinMessage, updatePresenceEntry, addReaction, removeReaction, getState, updateServer, upsertPeer, addFriendRequest, acceptFriendByPeer, ensureDm, bumpUnread, getActiveScope, removeServerMembership, removeServerMember, addPollVote, memberHasPermission, addReport } from '../state/store.js';
 import { nativeAnnouncePresence, broadcastServerUpdate, rotateCrowdEpoch } from '../state/mutations.js';
 import { publishNativeSnapshot } from '../state/snapshot.js';
 import { decryptInboundEnvelope, getScopeCrypto, applyCrowdRoot, type DecryptedMessage } from './secureEnvelope.js';
@@ -295,6 +295,31 @@ function handleNotifyPush(payload: Record<string, unknown>, remotePeerId: string
     const optionIndex = Number(payload.option_index ?? -1);
     if (!messageId || optionIndex < 0) return;
     addPollVote(messageId, optionIndex, fromPeerId);
+    publishNativeSnapshot();
+    return;
+  }
+
+  if (payload.kind === 'report') {
+    // Abuse report delivered to us as a server OWNER. Only accept it for a server we
+    // actually own (the moderator who can act on it); ignore reports for anything else.
+    const serverId = String(payload.server_id ?? '');
+    const server = getState().servers[serverId];
+    if (!serverId || !server || server.owner_peer_id !== (getState().identity?.peer_id ?? '')) return;
+    addReport({
+      id: String(payload.report_id ?? crypto.randomUUID()),
+      reason: String(payload.reason ?? 'other'),
+      details: payload.details ? String(payload.details) : undefined,
+      target_kind: payload.target_kind === 'user' ? 'user' : 'message',
+      target_id: String(payload.target_id ?? ''),
+      reported_peer_id: payload.reported_peer_id ? String(payload.reported_peer_id) : undefined,
+      server_id: serverId,
+      channel_id: payload.channel_id ? String(payload.channel_id) : undefined,
+      content_excerpt: payload.content_excerpt ? String(payload.content_excerpt) : undefined,
+      reporter_peer_id: fromPeerId,
+      created_at: new Date().toISOString(),
+      inbound: true,
+    });
+    emitNotify({ kind: 'server', title: 'New report', body: `A member reported content in “${server.name}”` });
     publishNativeSnapshot();
     return;
   }

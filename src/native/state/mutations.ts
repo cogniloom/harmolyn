@@ -23,8 +23,9 @@ import {
   addRelay, removeRelay,
   updatePresenceEntry,
   addServerRole, updateServerRole, removeServerRole, setMemberRoles, addPollVote,
-  memberHasPermission, setPeerVerified,
+  memberHasPermission, setPeerVerified, addReport,
 } from './store.js';
+import type { XoreinReport } from '../../types.js';
 import { publishNativeSnapshot } from './snapshot.js';
 import { markStateDirty } from './stateSync.js';
 import type { NativeState } from './store.js';
@@ -644,6 +645,62 @@ export function nativeMarkScopeRead(scopeId: string): void {
 export function nativeSetPeerVerified(peerId: string, verified: boolean): void {
   setPeerVerified(peerId, verified);
   publishNativeSnapshot();
+}
+
+export interface ReportInput {
+  targetKind: 'message' | 'user';
+  targetId: string;
+  reportedPeerId?: string;
+  serverId?: string;
+  channelId?: string;
+  contentExcerpt?: string;
+  reason: string;
+  details?: string;
+}
+
+/**
+ * Submit an abuse report. A local copy is always kept. When the report concerns a
+ * server, it is delivered P2P to that server's OWNER (the moderator who can act) via
+ * notify.push — the owner already has access to that server's content, so sharing a
+ * short excerpt with them leaks nothing new. DM reports stay local (no owner exists;
+ * the Community Guidelines route serious/illegal matters to the operator contact).
+ */
+export function nativeSubmitReport(input: ReportInput): XoreinReport {
+  const report: XoreinReport = {
+    id: uid(),
+    reason: input.reason,
+    details: input.details,
+    target_kind: input.targetKind,
+    target_id: input.targetId,
+    reported_peer_id: input.reportedPeerId,
+    server_id: input.serverId,
+    channel_id: input.channelId,
+    content_excerpt: input.contentExcerpt ? input.contentExcerpt.slice(0, 280) : undefined,
+    reporter_peer_id: localPeerId(),
+    created_at: nowISO(),
+  };
+  addReport(report);
+  publishNativeSnapshot();
+
+  if (input.serverId) {
+    const server = getState().servers[input.serverId];
+    const owner = server?.owner_peer_id;
+    if (owner && owner !== localPeerId()) {
+      void getPeerSync()?.sendToPeer(owner, PROTOCOLS.notify, 'notify.push', {
+        kind: 'report',
+        report_id: report.id,
+        reason: report.reason,
+        details: report.details ?? '',
+        target_kind: report.target_kind,
+        target_id: report.target_id,
+        reported_peer_id: report.reported_peer_id ?? '',
+        server_id: report.server_id,
+        channel_id: report.channel_id ?? '',
+        content_excerpt: report.content_excerpt ?? '',
+      });
+    }
+  }
+  return report;
 }
 
 // ── Friends ────────────────────────────────────────────────────────────────

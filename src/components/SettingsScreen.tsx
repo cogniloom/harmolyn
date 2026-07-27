@@ -42,10 +42,12 @@ import {
   Edit3,
   Camera,
   Speaker,
+  FileText,
 } from 'lucide-react';
 import QRCode from 'qrcode';
 import { User as UserType, type MessageLayout } from '@/types';
 import { NotificationSettings } from '@/components/NotificationSettings';
+import { LegalDocViewer } from '@/components/legal/LegalDocViewer';
 import { useFeature } from '@/hooks/useFeature';
 import { usePerformanceMode } from '@/hooks/usePerformanceMode';
 import { usePersistentState } from '@/hooks/usePersistentState';
@@ -2548,14 +2550,44 @@ function normalizeRelayAddrs(value: unknown): string[] {
   return normalized;
 }
 
-const AboutSection: React.FC = () => (
+const AboutSection: React.FC = () => {
+  const [openDoc, setOpenDoc] = useState<'terms' | 'privacy' | 'guidelines' | null>(null);
+  const legalLinks: { id: 'terms' | 'privacy' | 'guidelines'; title: string; desc: string }[] = [
+    { id: 'terms', title: 'Terms of Service', desc: 'The agreement for using this instance' },
+    { id: 'privacy', title: 'Privacy Policy', desc: 'What is (and isn’t) collected' },
+    { id: 'guidelines', title: 'Community Guidelines', desc: 'Acceptable use — the rules for everyone' },
+  ];
+  return (
   <>
     <header className="mb-10">
       <h2 className="text-[26px] font-bold text-white mb-2 font-display tracking-tight">ABOUT // LEGAL</h2>
-      <p className="micro-label text-white/30">LICENSE // SOURCE // ATTRIBUTION</p>
+      <p className="micro-label text-white/30">TERMS // PRIVACY // LICENSE</p>
     </header>
 
+    {openDoc && <LegalDocViewer docId={openDoc} onClose={() => setOpenDoc(null)} />}
+
     <div className="space-y-4">
+      <div className="grid gap-3">
+        {legalLinks.map((link) => (
+          <button
+            key={link.id}
+            onClick={() => setOpenDoc(link.id)}
+            className="focus-ring text-left glass-card rounded-r2 p-5 border border-white/10 flex items-center justify-between group hover:border-primary/30 transition-all"
+          >
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center text-primary">
+                <FileText size={18} />
+              </div>
+              <div>
+                <div className="text-white font-bold text-sm">{link.title}</div>
+                <div className="text-[10px] text-white/40">{link.desc}</div>
+              </div>
+            </div>
+            <ExternalLink size={16} className="text-white/30 group-hover:text-primary" />
+          </button>
+        ))}
+      </div>
+
       <div className="glass-card rounded-r2 p-5 border border-white/10">
         <div className="flex items-center gap-3 mb-3">
           <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center text-primary">
@@ -2616,7 +2648,8 @@ const AboutSection: React.FC = () => (
       </div>
     </div>
   </>
-);
+  );
+};
 
 const ToggleCard: React.FC<{ label: string; desc: string; checked: boolean; onToggle: () => void }> = ({ label, desc, checked, onToggle }) => (
   <div className="glass-card rounded-r2 p-4 border border-white/10 flex items-center justify-between">

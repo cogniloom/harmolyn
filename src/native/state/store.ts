@@ -16,6 +16,7 @@ import type {
   XoreinRuntimePeer,
   XoreinPresenceEntry,
   XoreinRuntimeIdentity,
+  XoreinReport,
 } from '../../types.js';
 
 const STORAGE_KEY = 'harmolyn:native:state';
@@ -85,6 +86,8 @@ export interface NativeState {
   presence: Record<string, XoreinPresenceEntry>;
   /** Per-scope unread counts (channel id / dm id → count). Persisted. */
   unread: Record<string, number>;
+  /** Abuse reports (outbound copies + inbound ones received as a server owner). */
+  reports: XoreinReport[];
   /**
    * The scope (channel/dm) the user is currently viewing. In-memory only — never
    * restored from storage, so a reload doesn't suppress unread for a scope the
@@ -106,6 +109,7 @@ const EMPTY: NativeState = {
   relay_addrs: [],
   presence: {},
   unread: {},
+  reports: [],
   active_scope: null,
 };
 
@@ -162,6 +166,7 @@ function load(): NativeState {
         relay_addrs: [],
         presence: parsed.presence ?? {},
         unread: parsed.unread ?? {},
+        reports: parsed.reports ?? [],
         // active_scope is view state, not persisted — start with none selected.
         active_scope: null,
       };
@@ -359,6 +364,14 @@ export function pinPeerIdentity(peerId: string, identityKey: string): void {
       ...(changed ? { identity_changed: true, identity_verified: false } : {}),
     };
     return { peers: { ...s.peers, [peerId]: merged } };
+  });
+}
+
+/** Append an abuse report (deduped by id). Newest first. */
+export function addReport(report: XoreinReport): void {
+  updateState(s => {
+    if (s.reports.some(r => r.id === report.id)) return {};
+    return { reports: [report, ...s.reports].slice(0, 500) };
   });
 }
 
@@ -819,6 +832,7 @@ export function toRuntimeSnapshot(): XoreinRuntimeSnapshot {
     relay_addrs: s.relay_addrs,
     presence: s.presence,
     unread: s.unread,
+    reports: s.reports,
     // Reachable peers, including the always-on bootstrap relay (seeded by the
     // engine once the transport connects) so deriveConnectionState can see that
     // the support node is reachable instead of reporting every server no-peer.

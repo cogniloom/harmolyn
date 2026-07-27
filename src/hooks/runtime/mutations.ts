@@ -86,6 +86,14 @@ export function useSetPeerVerified() {
   });
 }
 
+/** Submit an abuse report (delivered P2P to the server owner for server-scoped content). */
+export function useSubmitReport() {
+  const m = useRuntimeMutations();
+  return useMutation({
+    mutationFn: (input: Parameters<typeof m.submitReport>[0]) => m.submitReport(input),
+  });
+}
+
 export function useUnpinMessage() {
   const m = useRuntimeMutations();
   return useMutation({

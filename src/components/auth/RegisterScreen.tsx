@@ -2,6 +2,8 @@ import React, { useState } from 'react';
 import { ArrowRight, Shield, UserPlus, KeyRound, X } from 'lucide-react';
 import { useCreateIdentity } from '@/hooks/runtime/mutations';
 import { SecurityNote } from '@/components/SecurityNote';
+import { LegalDocViewer } from '@/components/legal/LegalDocViewer';
+import { AGE_REQUIREMENT_TEXT } from '@/components/legal/legalDocs';
 
 interface RegisterScreenProps {
   /** Account created — hands back the new peer_id + nickname for the key reveal. */
@@ -20,6 +22,8 @@ export const RegisterScreen: React.FC<RegisterScreenProps> = ({ onCreated, onSwi
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [feedback, setFeedback] = useState<{ tone: 'error' | 'info'; message: string } | null>(null);
+  const [consented, setConsented] = useState(false);
+  const [openDoc, setOpenDoc] = useState<'terms' | 'privacy' | 'guidelines' | null>(null);
   const createMutation = useCreateIdentity();
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -28,6 +32,10 @@ export const RegisterScreen: React.FC<RegisterScreenProps> = ({ onCreated, onSwi
     const name = displayName.trim();
     if (!name) {
       setFeedback({ tone: 'error', message: 'A display name is required to create your identity.' });
+      return;
+    }
+    if (!consented) {
+      setFeedback({ tone: 'error', message: 'Please confirm your age and agree to the Terms and Community Guidelines to continue.' });
       return;
     }
     if (password.length < MIN_PASSWORD_LENGTH) {
@@ -143,9 +151,27 @@ export const RegisterScreen: React.FC<RegisterScreenProps> = ({ onCreated, onSwi
             the next step.
           </SecurityNote>
 
+          <label className="flex items-start gap-3 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={consented}
+              onChange={(e) => setConsented(e.target.checked)}
+              className="mt-0.5 h-4 w-4 shrink-0 accent-primary"
+              aria-label="Confirm age and agree to the Terms and Community Guidelines"
+            />
+            <span className="text-caption text-text-secondary leading-relaxed">
+              {AGE_REQUIREMENT_TEXT} I agree to the{' '}
+              <button type="button" onClick={() => setOpenDoc('terms')} className="text-primary hover:underline font-semibold">Terms of Service</button>,{' '}
+              <button type="button" onClick={() => setOpenDoc('privacy')} className="text-primary hover:underline font-semibold">Privacy Policy</button>, and{' '}
+              <button type="button" onClick={() => setOpenDoc('guidelines')} className="text-primary hover:underline font-semibold">Community Guidelines</button>.
+            </span>
+          </label>
+
+          {openDoc && <LegalDocViewer docId={openDoc} onClose={() => setOpenDoc(null)} />}
+
           <button
             type="submit"
-            disabled={createMutation.isPending}
+            disabled={createMutation.isPending || !consented}
             className="w-full h-14 rounded-full bg-primary text-bg-0 font-bold text-body-strong flex items-center justify-center gap-2 hover:shadow-glow transition-all disabled:opacity-40 mt-2"
           >
             {createMutation.isPending ? (

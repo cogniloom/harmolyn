@@ -22,8 +22,9 @@ import { InboxPanel } from '@/components/InboxPanel';
 import { MentionAutocomplete } from '@/components/MentionAutocomplete';
 import { useToast } from '@/lib/toastBus';
 import { useFeature } from '@/hooks/useFeature';
-import { useSendChannelMessage, useSendDmMessage, useEditMessage, useDeleteMessage, useAddReaction, useRemoveReaction, usePinMessage, useUnpinMessage, useCastPollVote, useSetPeerVerified } from '@/hooks/runtime/mutations';
+import { useSendChannelMessage, useSendDmMessage, useEditMessage, useDeleteMessage, useAddReaction, useRemoveReaction, usePinMessage, useUnpinMessage, useCastPollVote, useSetPeerVerified, useSubmitReport } from '@/hooks/runtime/mutations';
 import { KeyVerification } from '@/components/KeyVerification';
+import { ReportModal, type ReportSubmission } from '@/components/ReportModal';
 import { markNotificationsRead, searchNotifications } from '@/lib/xoreinControl';
 import { uploadEncryptedAttachment } from '@/native/blobs/blobs';
 import { useContextMenu } from '@/components/GlobalContextMenuContext';
@@ -33,7 +34,7 @@ import {
   readPersistedChatScopeState,
   writePersistedChatScopeState,
 } from '@/protocol/client';
-import { Hash, Bell, Pin, Users, Search, MoreHorizontal, MessageSquare, AtSign, Smile, Sticker, PlusCircle, X, Send, LayoutTemplate, Menu, Trash2, MicOff, Image, FileText, Reply, CornerUpRight, Pencil, Check, PanelRightClose, Forward, BarChart3, Link2, ArrowDown, MessageCircle, Inbox, Star, Lock, AlertTriangle, Clock, WifiOff } from 'lucide-react';
+import { Hash, Bell, Pin, Users, Search, MoreHorizontal, MessageSquare, AtSign, Smile, Sticker, PlusCircle, X, Send, LayoutTemplate, Menu, Trash2, MicOff, Image, FileText, Reply, CornerUpRight, Pencil, Check, PanelRightClose, Forward, BarChart3, Link2, ArrowDown, MessageCircle, Inbox, Star, Lock, AlertTriangle, Clock, WifiOff, Flag } from 'lucide-react';
 import { useEscapeKey } from '@/hooks/useEscapeKey';
 import { usePersistentState } from '@/hooks/usePersistentState';
 import { PREVIEW_STORAGE_KEYS } from '@/config/storageKeys';
@@ -420,6 +421,8 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   const [showSecuritySummary, setShowSecuritySummary] = useState(false);
   const [showKeyVerification, setShowKeyVerification] = useState(false);
   const setPeerVerified = useSetPeerVerified();
+  const submitReport = useSubmitReport();
+  const [reportTarget, setReportTarget] = useState<{ messageId: string; userId: string; content: string; label: string } | null>(null);
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [showStickerPicker, setShowStickerPicker] = useState(false);
   const [hoveredMessageId, setHoveredMessageId] = useState<string | null>(null);
@@ -581,10 +584,18 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
     if (hasThreads) mainItems.push({ label: 'Create Thread', icon: <MessageCircle size={13} />, onClick: () => setThreadMessage(msg) });
     if (hasMessageLinks) mainItems.push({ label: 'Copy Message Link', icon: <Link2 size={13} />, onClick: () => copyMessageLink(msg.id) });
 
-    const moderationItems = [
+    const moderationItems: { label: string; icon: React.ReactNode; onClick: () => void; danger?: boolean }[] = [
       { label: isMuted ? 'Unmute User' : 'Mute User', icon: <MicOff size={13} />, onClick: () => toggleMuteUser(msg.userId) },
-      { label: 'Delete Message', icon: <Trash2 size={13} />, onClick: () => deleteMessage(msg.id), danger: true },
     ];
+    if (!isMe) {
+      const author = normalizedUsers.find((u) => u.id === msg.userId);
+      moderationItems.push({
+        label: 'Report Message',
+        icon: <Flag size={13} />,
+        onClick: () => setReportTarget({ messageId: msg.id, userId: msg.userId, content: msg.content, label: `message from ${author?.username ?? 'this user'}` }),
+      });
+    }
+    moderationItems.push({ label: 'Delete Message', icon: <Trash2 size={13} />, onClick: () => deleteMessage(msg.id), danger: true });
 
     showMenu(e.clientX, e.clientY, [
       { items: mainItems },
@@ -1941,6 +1952,30 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
             )}
           </div>
         </>
+      )}
+
+      {reportTarget && (
+        <ReportModal
+          targetLabel={reportTarget.label}
+          onClose={() => setReportTarget(null)}
+          onSubmit={(report: ReportSubmission) => {
+            const serverId = isDM
+              ? undefined
+              : runtimeSnapshot?.servers?.find((s) => Object.prototype.hasOwnProperty.call(s.channels ?? {}, channel?.id ?? ''))?.id;
+            submitReport.mutate({
+              targetKind: 'message',
+              targetId: reportTarget.messageId,
+              reportedPeerId: reportTarget.userId,
+              serverId,
+              channelId: isDM ? undefined : channel?.id,
+              contentExcerpt: reportTarget.content,
+              reason: report.reason,
+              details: report.details || undefined,
+            });
+            setReportTarget(null);
+            toast.success('Report submitted', serverId ? 'The server owner has been notified.' : 'Thanks — your report was recorded.');
+          }}
+        />
       )}
 
       {showKeyVerification && dmVerification && (

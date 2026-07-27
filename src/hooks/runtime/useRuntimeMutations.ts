@@ -26,7 +26,7 @@ import {
   nativeJoinServer,
   nativeEnsureDirectMessage,
   nativeCreateRole, nativeUpdateRole, nativeDeleteRole, nativeAssignRole, nativeCastPollVote,
-  nativeSearchMessages, nativeSetPeerVerified,
+  nativeSearchMessages, nativeSetPeerVerified, nativeSubmitReport, type ReportInput,
 } from '@/native/state/mutations';
 import { saveCurrentToVault } from '@/native/identity/storage';
 import { mergeNativeIdentityProfile, getState } from '@/native/state/store';
@@ -167,6 +167,8 @@ export function useRuntimeMutations() {
 
         // Identity verification (safety numbers) — native
         setPeerVerified: (peerId: string, verified: boolean) => Promise.resolve(nativeSetPeerVerified(peerId, verified)),
+        // Abuse reporting — native (delivered P2P to the server owner for server scope)
+        submitReport: (input: ReportInput) => Promise.resolve(nativeSubmitReport(input)),
 
         // Presence — native
         updatePresence: (opts: { status: string; status_text?: string; typing_in_scope?: string }) =>
@@ -273,6 +275,7 @@ export function useRuntimeMutations() {
       setActiveScope: (scopeId: string | null) => Promise.resolve(nativeSetActiveScope(scopeId)),
       markScopeRead: (scopeId: string) => Promise.resolve(nativeMarkScopeRead(scopeId)),
       setPeerVerified: (peerId: string, verified: boolean) => Promise.resolve(nativeSetPeerVerified(peerId, verified)),
+      submitReport: (input: ReportInput) => Promise.resolve(nativeSubmitReport(input)),
       updatePresence: (opts: { status: string; status_text?: string; typing_in_scope?: string }) =>
         updatePresence(snap, opts),
       joinVoiceChannel: (channelId: string) => joinVoiceChannel(snap, channelId),
