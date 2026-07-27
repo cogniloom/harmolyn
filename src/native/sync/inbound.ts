@@ -7,7 +7,7 @@ import {
   decodePeerStreamRequest, encodePeerStreamResponse,
 } from '../families/peerstream.js';
 import { PROTOCOLS } from '../families/families.js';
-import { addMessage, editMessage as storeEditMessage, deleteMessage as storeDeleteMessage, pinMessage as storePinMessage, updatePresenceEntry, addReaction, removeReaction, getState, updateServer, upsertPeer, addFriendRequest, acceptFriendByPeer, ensureDm, bumpUnread, getActiveScope, removeServerMembership, removeServerMember, addPollVote } from '../state/store.js';
+import { addMessage, editMessage as storeEditMessage, deleteMessage as storeDeleteMessage, pinMessage as storePinMessage, updatePresenceEntry, addReaction, removeReaction, getState, updateServer, upsertPeer, addFriendRequest, acceptFriendByPeer, ensureDm, bumpUnread, getActiveScope, removeServerMembership, removeServerMember, addPollVote, memberHasPermission } from '../state/store.js';
 import { nativeAnnouncePresence, broadcastServerUpdate, rotateCrowdEpoch } from '../state/mutations.js';
 import { publishNativeSnapshot } from '../state/snapshot.js';
 import { decryptInboundEnvelope, getScopeCrypto, applyCrowdRoot, type DecryptedMessage } from './secureEnvelope.js';
@@ -252,7 +252,12 @@ function handlePresenceUpdate(payload: Record<string, unknown>, remotePeerId: st
 // ── Reaction inbound (via notify.push) ────────────────────────────────────
 
 function handleNotifyPush(payload: Record<string, unknown>, remotePeerId: string, _operation?: string): void {
-  // SECURITY: use the Noise-authenticated connection peer for all sender fields.
+  // SECURITY: use the Noise-authenticated connection peer for all sender fields, so
+  // a member cannot attribute a reaction/pin/vote to someone else. These metadata
+  // ops travel as plaintext (the relay can see that a reaction/pin/vote happened,
+  // though not message bodies); wrapping them in the Crowd envelope for full metadata
+  // privacy is a tracked follow-up. Authorization for privileged ops (pin) is
+  // enforced per-kind below.
   const fromPeerId = remotePeerId;
 
   if (payload.kind === 'reaction') {
@@ -272,6 +277,13 @@ function handleNotifyPush(payload: Record<string, unknown>, remotePeerId: string
   if (payload.kind === 'pin') {
     const messageId = String(payload.message_id ?? '');
     if (!messageId) return;
+    // AUTHORIZATION: a pin/unpin is a moderator action, not something any member may
+    // do. Apply it only when the authenticated sender actually has MANAGE_MESSAGES on
+    // the message's server — connection authentication proves *who* sent it, not that
+    // they were *allowed* to. Resolve the server from the message we hold locally.
+    const msg = getState().messages.find(m => m.id === messageId);
+    const serverId = msg?.server_id;
+    if (!serverId || !memberHasPermission(serverId, fromPeerId, 'MANAGE_MESSAGES')) return;
     const pinned = payload.pinned !== false;
     storePinMessage(messageId, pinned);
     publishNativeSnapshot();

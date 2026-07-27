@@ -440,6 +440,26 @@ export function setMessageDeliveryStatus(
   }));
 }
 
+/**
+ * Whether `peerId` holds `permission` on `serverId`. The owner implicitly has every
+ * permission; other members have it if any of their assigned roles grants it (or the
+ * catch-all ADMINISTRATOR). Used to authorize privileged actions — e.g. pinning —
+ * both when broadcasting locally and when APPLYING an inbound op, so a member cannot
+ * forge a privileged action just because the transport authenticated them as a peer.
+ */
+export function memberHasPermission(serverId: string, peerId: string, permission: string): boolean {
+  const server = _state.servers[serverId];
+  if (!server || !peerId) return false;
+  if (server.owner_peer_id === peerId) return true;
+  const roleIds = server.member_roles?.[peerId] ?? [];
+  if (roleIds.length === 0) return false;
+  const roles = server.roles ?? [];
+  return roleIds.some(rid => {
+    const role = roles.find(r => r.id === rid);
+    return !!role && (role.permissions.includes(permission) || role.permissions.includes('ADMINISTRATOR'));
+  });
+}
+
 export function addServerRole(serverId: string, role: import('../../types.js').ServerRole): void {
   updateState(s => {
     const server = s.servers[serverId];

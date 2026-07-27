@@ -23,6 +23,7 @@ import {
   addRelay, removeRelay,
   updatePresenceEntry,
   addServerRole, updateServerRole, removeServerRole, setMemberRoles, addPollVote,
+  memberHasPermission,
 } from './store.js';
 import { publishNativeSnapshot } from './snapshot.js';
 import { markStateDirty } from './stateSync.js';
@@ -331,6 +332,11 @@ export function nativeRemoveReaction(messageId: string, emoji: string): void {
 }
 
 export function nativePinMessage(channelId: string, messageId: string): void {
+  // AUTHORIZATION: only a member with MANAGE_MESSAGES may pin. Gate locally so an
+  // unauthorized user neither sees an optimistic pin nor broadcasts one (inbound
+  // handlers reject it anyway, but this keeps the local view honest).
+  const target = getState().messages.find(m => m.id === messageId);
+  if (target?.server_id && !memberHasPermission(target.server_id, localPeerId(), 'MANAGE_MESSAGES')) return;
   storePinMessage(messageId, true);
   publishNativeSnapshot();
 
@@ -351,6 +357,8 @@ export function nativePinMessage(channelId: string, messageId: string): void {
 }
 
 export function nativeUnpinMessage(channelId: string, messageId: string): void {
+  const target = getState().messages.find(m => m.id === messageId);
+  if (target?.server_id && !memberHasPermission(target.server_id, localPeerId(), 'MANAGE_MESSAGES')) return;
   storePinMessage(messageId, false);
   publishNativeSnapshot();
 
