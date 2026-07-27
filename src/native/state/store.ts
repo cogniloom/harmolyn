@@ -17,6 +17,7 @@ import type {
   XoreinPresenceEntry,
   XoreinRuntimeIdentity,
   XoreinReport,
+  XoreinOutboxEntry,
 } from '../../types.js';
 
 const STORAGE_KEY = 'harmolyn:native:state';
@@ -88,6 +89,8 @@ export interface NativeState {
   unread: Record<string, number>;
   /** Abuse reports (outbound copies + inbound ones received as a server owner). */
   reports: XoreinReport[];
+  /** Durable outbound queue: encrypted envelopes awaiting a live transport. */
+  outbox: XoreinOutboxEntry[];
   /**
    * The scope (channel/dm) the user is currently viewing. In-memory only — never
    * restored from storage, so a reload doesn't suppress unread for a scope the
@@ -110,6 +113,7 @@ const EMPTY: NativeState = {
   presence: {},
   unread: {},
   reports: [],
+  outbox: [],
   active_scope: null,
 };
 
@@ -167,6 +171,7 @@ function load(): NativeState {
         presence: parsed.presence ?? {},
         unread: parsed.unread ?? {},
         reports: parsed.reports ?? [],
+        outbox: parsed.outbox ?? [],
         // active_scope is view state, not persisted — start with none selected.
         active_scope: null,
       };
@@ -365,6 +370,25 @@ export function pinPeerIdentity(peerId: string, identityKey: string): void {
     };
     return { peers: { ...s.peers, [peerId]: merged } };
   });
+}
+
+/** Queue an encrypted envelope for delivery once the transport is back (deduped by id). */
+export function enqueueOutbox(entry: XoreinOutboxEntry): void {
+  updateState(s => {
+    if (s.outbox.some(e => e.id === entry.id)) return {};
+    // Bound the queue so a long offline stretch can't grow it without limit.
+    return { outbox: [...s.outbox, entry].slice(-500) };
+  });
+}
+
+/** Remove an outbox entry once it has been delivered (or given up on). */
+export function removeOutbox(id: string): void {
+  updateState(s => ({ outbox: s.outbox.filter(e => e.id !== id) }));
+}
+
+/** Snapshot the current outbox entries. */
+export function getOutbox(): XoreinOutboxEntry[] {
+  return _state.outbox;
 }
 
 /** Append an abuse report (deduped by id). Newest first. */

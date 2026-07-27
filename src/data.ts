@@ -1,4 +1,5 @@
 import { safeStorageGet } from '@/lib/browserStorage';
+import { formatDateTime } from '@/lib/locale';
 import { escapeSvgText } from '@/lib/svg';
 import { isSafeAvatarSource } from '@/lib/avatar';
 import type {
@@ -1294,10 +1295,10 @@ function formatMessageTimestamp(value?: string): string {
   if (!timestamp) {
     return '--:--';
   }
-  return new Intl.DateTimeFormat('en-US', {
+  return formatDateTime(new Date(timestamp), {
     hour: 'numeric',
     minute: '2-digit',
-  }).format(new Date(timestamp));
+  });
 }
 
 function formatShortTimestamp(value?: string): string {
@@ -1325,10 +1326,10 @@ function formatDate(value?: string): string | undefined {
   if (!timestamp) {
     return undefined;
   }
-  return new Intl.DateTimeFormat('en-US', {
+  return formatDateTime(new Date(timestamp), {
     month: 'short',
     year: 'numeric',
-  }).format(new Date(timestamp)).toUpperCase();
+  }).toUpperCase();
 }
 
 function compareTimestamps(left?: string, right?: string): number {

@@ -161,6 +161,28 @@ export interface XoreinRuntimePeer {
 }
 
 /**
+ * A durable outbound-queue entry: an ENCRYPTED envelope that could not be sent
+ * because the relay/transport was down at send time. Persisted (encrypted at rest)
+ * and replayed on reconnect, so a message shown as "queued" is genuinely queued and
+ * not silently discarded. The payload is already E2EE ciphertext (seal/crowd).
+ */
+export interface XoreinOutboxEntry {
+  id: string;
+  /** Peers this envelope still needs to reach. */
+  targets: string[];
+  /** PeerStream protocol id (e.g. the chat family). */
+  protocol: string;
+  /** Operation name (e.g. 'chat.send'). */
+  operation: string;
+  /** The encrypted wire payload to deliver verbatim. */
+  payload: Record<string, unknown>;
+  /** The local message this entry delivers, so its status can be updated on drain. */
+  message_id?: string;
+  created_at: string;
+  attempts: number;
+}
+
+/**
  * An abuse report. Reports about a server are delivered P2P to that server's owner
  * (the moderator who can act); reports about a DM are kept locally. Stored encrypted
  * at rest like the rest of the native state.

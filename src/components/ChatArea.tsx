@@ -4,6 +4,7 @@ import { Channel, Message, User, MessageLayout, XoreinAttachment } from '@/types
 import { AttachmentView } from '@/components/AttachmentView';
 import { generateTheme } from '@/utils/themeGenerator';
 import { resolveSecurityMode } from '@/lib/securityMode';
+import { formatDateTime } from '@/lib/locale';
 import { renderMarkdown } from '@/utils/markdown';
 import { EmojiPicker } from '@/components/EmojiPicker';
 import { StickerPicker } from '@/components/StickerPicker';
@@ -361,10 +362,10 @@ interface ComposerFeedback {
 
 const MESSAGE_ID_PREFIX = 'local-msg-';
 
-const formatTimestamp = (value = Date.now()) => new Intl.DateTimeFormat('en-US', {
+const formatTimestamp = (value = Date.now()) => formatDateTime(new Date(value), {
   hour: 'numeric',
   minute: '2-digit',
-}).format(new Date(value));
+});
 
 const buildMessageElementId = (messageId: string) => `chat-message-${messageId}`;
 
@@ -1297,7 +1298,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
           {/* Deletion tombstone — shown instead of the original content */}
           if (msg.deletedAt) {
             const deletedUser = msg.deletedBy ? getUser(msg.deletedBy) : null;
-            const deletedWhen = msg.deletedAt ? new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }).format(new Date(msg.deletedAt)) : '';
+            const deletedWhen = msg.deletedAt ? formatDateTime(new Date(msg.deletedAt), { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '';
             return (
               <React.Fragment key={msg.id}>
                 {showUnreadDivider && (

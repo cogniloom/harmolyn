@@ -24,6 +24,7 @@ import {
   updatePresenceEntry,
   addServerRole, updateServerRole, removeServerRole, setMemberRoles, addPollVote,
   memberHasPermission, setPeerVerified, addReport,
+  enqueueOutbox, removeOutbox, getOutbox,
 } from './store.js';
 import type { XoreinReport } from '../../types.js';
 import { publishNativeSnapshot } from './snapshot.js';
@@ -125,6 +126,18 @@ export function nativeSendChannelMessage(
         const sync = getPeerSync();
         const msgId = msg.id;
         if (!sync) {
+          // Relay/transport down: DURABLY queue the encrypted envelope so it is
+          // replayed on reconnect — not discarded behind a misleading "queued" badge.
+          enqueueOutbox({
+            id: uid(),
+            targets: members.filter(m => m !== msg.sender_peer_id),
+            protocol: PROTOCOLS.chat,
+            operation: 'chat.send',
+            payload: envelope,
+            message_id: msgId,
+            created_at: nowISO(),
+            attempts: 0,
+          });
           setMessageDeliveryStatus(msgId, 'offline_queued');
           publishNativeSnapshot();
           return;
@@ -195,11 +208,6 @@ export function nativeSendDmMessage(
     void (async () => {
       const msgId = msg.id;
       const sync = getPeerSync();
-      if (!sync) {
-        setMessageDeliveryStatus(msgId, 'offline_queued');
-        publishNativeSnapshot();
-        return;
-      }
       let anyDelivered = false;
       let anyQueued = false;
       for (const peerId of participants) {
@@ -210,8 +218,17 @@ export function nativeSendDmMessage(
           scope_type: 'dm',
           sender_id: sender,
         };
+        // A built envelope requires a Seal session; when one already exists this
+        // resolves without the network even if the relay is down.
         const envelope = await encryptDmEnvelope(peerId, base, body, opts.media);
-        if (!envelope) { anyQueued = true; continue; } // no session — queued locally
+        if (!envelope) { anyQueued = true; continue; } // no session yet — can't encrypt offline
+        if (!sync) {
+          // Relay down but we could encrypt: DURABLY queue the sealed envelope for
+          // replay on reconnect instead of dropping it.
+          enqueueOutbox({ id: uid(), targets: [peerId], protocol: PROTOCOLS.chat, operation: 'chat.send', payload: envelope, message_id: msgId, created_at: nowISO(), attempts: 0 });
+          anyQueued = true;
+          continue;
+        }
         const delivered = await sync.sendToPeer(peerId, PROTOCOLS.chat, 'chat.send', envelope);
         if (delivered) {
           anyDelivered = true;
@@ -644,6 +661,54 @@ export function nativeMarkScopeRead(scopeId: string): void {
 /** Mark (or unmark) a peer's identity as verified after the user confirms the safety number. */
 export function nativeSetPeerVerified(peerId: string, verified: boolean): void {
   setPeerVerified(peerId, verified);
+  publishNativeSnapshot();
+}
+
+const MAX_OUTBOX_ATTEMPTS = 50;
+
+/**
+ * Replay the durable outbound queue after the transport reconnects. For each queued
+ * encrypted envelope, deliver it to its targets; any target still unreachable gets
+ * the envelope deposited in its zero-knowledge mailbox. Entries are removed once
+ * handled (delivered or mailboxed) and the originating message is marked sent. This
+ * is what makes the "queued" delivery state honest — the message really does go out
+ * on reconnect rather than being silently lost.
+ */
+export async function nativeDrainOutbox(): Promise<void> {
+  const sync = getPeerSync();
+  if (!sync) return;
+  const entries = [...getOutbox()];
+  for (const entry of entries) {
+    try {
+      let allHandled = true;
+      for (const target of entry.targets) {
+        const delivered = await sync.sendToPeer(target, entry.protocol, entry.operation, entry.payload);
+        if (!delivered) {
+          // Still unreachable → hand off to the recipient's offline mailbox so they
+          // pull it when they reconnect. Only the chat family is mailbox-eligible.
+          if (entry.operation === 'chat.send') {
+            try { await depositOfflineChat(target, entry.payload); } catch { allHandled = false; }
+          } else {
+            allHandled = false;
+          }
+        }
+      }
+      if (allHandled) {
+        removeOutbox(entry.id);
+        if (entry.message_id) setMessageDeliveryStatus(entry.message_id, 'sent');
+      } else if (entry.attempts + 1 >= MAX_OUTBOX_ATTEMPTS) {
+        // Give up after too many attempts so the queue can't wedge forever.
+        removeOutbox(entry.id);
+        if (entry.message_id) setMessageDeliveryStatus(entry.message_id, 'failed');
+      } else {
+        // Re-enqueue with a bumped attempt count (remove + add keeps it deduped).
+        removeOutbox(entry.id);
+        enqueueOutbox({ ...entry, attempts: entry.attempts + 1 });
+      }
+    } catch {
+      /* transient — leave the entry for the next drain */
+    }
+  }
   publishNativeSnapshot();
 }
 

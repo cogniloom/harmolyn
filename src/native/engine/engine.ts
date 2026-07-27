@@ -64,6 +64,7 @@ import {
   nativeAnnouncePresence,
   nativeEnsureDm,
   nativeEnsureDirectMessage,
+  nativeDrainOutbox,
 } from '../state/mutations.js';
 
 // Re-export all primitives for use by consumers.
@@ -328,6 +329,9 @@ export class XoreinNativeEngine {
           // resil-2: pull any messages deposited in our zero-knowledge mailbox
           // while we were offline.
           this.drainOfflineMailbox();
+          // Replay our own durable outbound queue: messages composed while the relay
+          // was down now go out (or into recipients' mailboxes) instead of being lost.
+          void nativeDrainOutbox();
           // Announce we're online to friends + co-members (and keep a light
           // heartbeat) so they don't show us — and we don't show them — as offline.
           this.startPresenceHeartbeat();
