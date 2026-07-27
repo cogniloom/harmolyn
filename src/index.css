@@ -55,8 +55,19 @@
 body {
   background-color: #050A0B;
   color: #F6F8F8;
-  font-family: 'Space Grotesk', sans-serif;
+  /* Latin display font first, then a broad system-font fallback so non-Latin
+     scripts (Cyrillic/Greek/CJK/Arabic/Hebrew/Thai/Devanagari) render natively
+     rather than as tofu. See tailwind.config.ts fontFamily for the full stack. */
+  font-family: 'Space Grotesk', system-ui, -apple-system, 'Segoe UI', 'Noto Sans', 'Noto Sans CJK SC', 'Noto Sans Arabic', 'Noto Sans Hebrew', 'Noto Sans Thai', 'Noto Sans Devanagari', Arial, sans-serif;
 }
+
+/* RTL: the app is built with physical Tailwind utilities today; until the logical-
+   property migration lands, mirror the most layout-critical horizontal paddings and
+   text alignment so RTL locales are usable rather than broken. Full logical-property
+   coverage is tracked follow-up. */
+[dir="rtl"] body { direction: rtl; }
+[dir="rtl"] .text-left { text-align: right; }
+[dir="rtl"] .text-right { text-align: left; }
 
 .shadow-glow-sm {
   box-shadow: var(--shadow-glow-sm);

@@ -1,0 +1,20 @@
+{
+  "actions": {
+    "next": "NEXT",
+    "back": "BACK",
+    "skip": "SKIP",
+    "gotIt": "GOT IT",
+    "save": "Save",
+    "cancel": "Cancel",
+    "close": "Close",
+    "done": "Done",
+    "continue": "Continue",
+    "learnMore": "Learn more"
+  },
+  "nav": {
+    "settings": "Settings",
+    "friends": "Friends",
+    "create": "CREATE"
+  },
+  "progress": "{current} / {total}"
+}

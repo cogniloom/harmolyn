@@ -74,6 +74,9 @@ import { SwitchingOverlay } from '@/components/SwitchingOverlay';
 import { PendingButton } from '@/components/ui/PendingButton';
 import { safeStorageRemove } from '@/lib/browserStorage';
 import { applyAccessibilityPrefs } from '@/lib/accessibility';
+import { useTranslation } from 'react-i18next';
+import { getLocale, setLocale } from '@/lib/locale';
+import i18n, { SUPPORTED_LANGUAGES, isRtlLocale } from '@/i18n';
 import { canCopyTextToClipboardSafely, copyTextToClipboardSafely } from '@/components/contextMenuUtils';
 import { resolveAvatarSrc } from '@/lib/avatar';
 import { useEscapeKey } from '@/hooks/useEscapeKey';
@@ -1481,6 +1484,56 @@ const LAYOUTS: { key: MessageLayout; label: string; desc: string }[] = [
   { key: 'terminal', label: 'Terminal', desc: 'IRC-style: time · name · message inline' },
 ];
 
+/**
+ * Language & region picker. Selecting a language changes i18next's active language
+ * (translating the UI where catalogs exist) AND persists the locale via setLocale,
+ * which drives all Intl date/time/number formatting app-wide — so it always has a
+ * real, visible effect, not just a stored preference.
+ */
+const LanguageSection: React.FC = () => {
+  const { t } = useTranslation('settings');
+  const [current, setCurrent] = useState<string>(() => getLocale() ?? 'system');
+  const isDev = Boolean(import.meta.env?.DEV);
+  const options = SUPPORTED_LANGUAGES.filter((l) => isDev || !l.devOnly);
+
+  const choose = (code: string) => {
+    if (code === 'system') {
+      setLocale(null);
+      const sys = (typeof navigator !== 'undefined' && navigator.language) || 'en';
+      void i18n.changeLanguage(sys);
+      setCurrent('system');
+      return;
+    }
+    setLocale(code);
+    void i18n.changeLanguage(code);
+    setCurrent(code);
+  };
+
+  const activeRtl = current !== 'system' && isRtlLocale(current);
+
+  return (
+    <section className="mb-8">
+      <h3 className="micro-label text-white/40 border-b border-white/5 pb-2 mb-4">{t('language.section')}</h3>
+      <div className="glass-card rounded-r2 p-4 border border-white/10">
+        <label htmlFor="language-select" className="text-white font-bold text-sm">{t('language.label')}</label>
+        <p className="text-[10px] text-white/40 mb-3">{t('language.desc')}</p>
+        <select
+          id="language-select"
+          value={current}
+          onChange={(e) => choose(e.target.value)}
+          className="w-full bg-bg-0/60 border border-white/10 rounded-r2 px-3 py-2 text-sm text-white focus:outline-none focus:border-primary/50"
+        >
+          <option value="system">{t('language.systemDefault')}</option>
+          {options.map((l) => (
+            <option key={l.code} value={l.code}>{l.label}</option>
+          ))}
+        </select>
+        {activeRtl && <p className="text-[10px] text-primary/70 mt-2">{t('language.rtlNote')}</p>}
+      </div>
+    </section>
+  );
+};
+
 const AppearanceSection: React.FC<{
   messageLayout: MessageLayout;
   onSetMessageLayout?: (layout: MessageLayout) => void;
@@ -1519,6 +1572,8 @@ const AppearanceSection: React.FC<{
         <h2 className="text-[26px] font-bold text-white mb-2 font-display tracking-tight">Appearance</h2>
         <p className="micro-label text-white/30">Layout, colors, and visual preferences</p>
       </header>
+
+      <LanguageSection />
 
       {/* ── LARGE LIVE PREVIEW ──────────────────────────────────── */}
       <div className="mb-8 rounded-r2 overflow-hidden border border-white/10 shadow-2xl" style={{ background: theme.background, minHeight: 300 }}>
@@ -1707,6 +1762,7 @@ const CB_MODE_LABELS: { key: AccessibilityPreferences['colorBlindMode']; label: 
 ];
 
 const AccessibilitySection: React.FC = () => {
+  const { t } = useTranslation('settings');
   const [preferences, setPreferences] = usePersistentState<AccessibilityPreferences>('harmolyn:settings:accessibility', ACCESSIBILITY_DEFAULTS);
   const { perfMode, togglePerfMode } = usePerformanceMode();
   const [ttsTestResult, setTtsTestResult] = useState<string | null>(null);
@@ -1775,16 +1831,16 @@ const AccessibilitySection: React.FC = () => {
   return (
     <>
       <header className="mb-8">
-        <h2 className="text-[26px] font-bold text-white mb-2 font-display tracking-tight">Accessibility</h2>
-        <p className="micro-label text-white/30">Vision · Motion · Voice · Font settings</p>
+        <h2 className="text-[26px] font-bold text-white mb-2 font-display tracking-tight">{t('accessibility.title')}</h2>
+        <p className="micro-label text-white/30">{t('accessibility.subtitle')}</p>
       </header>
 
       <div className="space-y-6">
         {/* ── SIMPLE MODE ───────────────────── */}
         <section>
-          <h3 className="micro-label text-white/40 border-b border-white/5 pb-2 mb-4">Simplicity</h3>
-          <ToggleCard label="Simple Mode"
-            desc="Calmer, plain-language interface — softens stylized labels and technical accents throughout the app. Recommended if you find the default look busy."
+          <h3 className="micro-label text-white/40 border-b border-white/5 pb-2 mb-4">{t('accessibility.simplicity')}</h3>
+          <ToggleCard label={t('accessibility.simpleMode')}
+            desc={t('accessibility.simpleModeDesc')}
             checked={preferences.simpleMode} onToggle={() => set('simpleMode', !preferences.simpleMode)} />
         </section>
 

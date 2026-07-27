@@ -2,6 +2,7 @@ import "@testing-library/jest-dom/vitest";
 import { afterEach, vi } from "vitest";
 import { cleanup } from "@testing-library/react";
 import { clearRuntime } from "./runtimeHarness";
+import "../i18n"; // initialize i18next so components using useTranslation render in tests
 
 Object.defineProperty(window, "matchMedia", {
   writable: true,

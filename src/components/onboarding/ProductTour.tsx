@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { safeStorageSet } from '@/lib/browserStorage';
 import { useEscapeKey } from '@/hooks/useEscapeKey';
 import {
@@ -6,6 +7,8 @@ import {
   UserPlus, Settings, ShieldCheck, Search,
   ArrowLeft, ArrowRight, X, CheckCircle2,
 } from 'lucide-react';
+
+type TFn = (key: string) => string;
 
 interface ProductTourProps {
   onClose: () => void;
@@ -39,112 +42,85 @@ const Row = ({ icon: I, title, children }: { icon: React.ElementType; title: str
 
 // Plain-language walkthrough of the core surfaces. Deliberately non-technical:
 // no crypto detail (that lives in SecurityOnboarding) — this answers "how do I
-// use this app?" for a first-time, possibly non-technical, visitor.
-const SCREENS = [
-  {
-    id: 'welcome',
-    title: 'Welcome to Harmolyn',
-    icon: <IconArea primary={Compass} accent={ShieldCheck} />,
-    content: (
-      <div className="flex flex-col gap-4">
-        <p className="text-sm text-[rgba(246,248,248,0.75)] text-center">
-          A private place to talk with friends and communities. Here's a quick tour of the main
-          parts — it takes less than a minute, and you can skip it any time.
-        </p>
-        <div className="glass-card rounded-xl p-3 text-xs text-[rgba(246,248,248,0.6)] text-center">
-          Everything you send is private by default. Look for the lock badge at the top of each chat.
+// use this app?" for a first-time, possibly non-technical, visitor. Built as a
+// (t)=>[…] factory so every string is localized (onboarding namespace).
+function buildScreens(t: TFn) {
+  return [
+    {
+      id: 'welcome',
+      title: t('tour.welcome.title'),
+      icon: <IconArea primary={Compass} accent={ShieldCheck} />,
+      content: (
+        <div className="flex flex-col gap-4">
+          <p className="text-sm text-[rgba(246,248,248,0.75)] text-center">{t('tour.welcome.body')}</p>
+          <div className="glass-card rounded-xl p-3 text-xs text-[rgba(246,248,248,0.6)] text-center">
+            {t('tour.welcome.privacyNote')}
+          </div>
         </div>
-      </div>
-    ),
-  },
-  {
-    id: 'servers',
-    title: 'Servers are communities',
-    icon: <IconArea primary={Server} accent={Users} />,
-    content: (
-      <div className="flex flex-col gap-3">
-        <Row icon={Server} title="The column on the left">
-          Each round icon is a server — a community you've joined or created. Tap one to open it.
-        </Row>
-        <Row icon={UserPlus} title="Joining and creating">
-          Use the <strong>+</strong> button to create your own server or paste an invite link a
-          friend shared with you.
-        </Row>
-      </div>
-    ),
-  },
-  {
-    id: 'channels',
-    title: 'Channels organize the talk',
-    icon: <IconArea primary={Hash} accent={MessageSquare} />,
-    content: (
-      <div className="flex flex-col gap-3">
-        <Row icon={Hash} title="Text channels">
-          Inside a server, channels split conversations by topic. Tap a channel name to read and
-          post in it.
-        </Row>
-        <Row icon={Search} title="Finding things">
-          Search looks through the messages already on your device — results show how complete they
-          are, so you're never misled.
-        </Row>
-      </div>
-    ),
-  },
-  {
-    id: 'dms',
-    title: 'Direct messages',
-    icon: <IconArea primary={MessageSquare} accent={ShieldCheck} />,
-    content: (
-      <div className="flex flex-col gap-3">
-        <Row icon={MessageSquare} title="One-to-one chats">
-          Direct messages are private conversations between you and one other person, end-to-end
-          encrypted.
-        </Row>
-        <Row icon={UserPlus} title="Adding friends">
-          Add someone as a friend to start a direct message. You only need their handle — no phone
-          number or email.
-        </Row>
-      </div>
-    ),
-  },
-  {
-    id: 'voice',
-    title: 'Voice and video',
-    icon: <IconArea primary={Mic} accent={Users} />,
-    content: (
-      <div className="flex flex-col gap-3">
-        <Row icon={Mic} title="Voice channels">
-          Tap a voice channel to join a live call. Others in the channel can hear you, and you can
-          turn your camera or screen-share on when you want.
-        </Row>
-        <div className="glass-card rounded-xl p-3 text-xs text-[rgba(246,248,248,0.6)]">
-          If your network can't connect a call directly, Harmolyn tells you plainly instead of
-          failing silently.
+      ),
+    },
+    {
+      id: 'servers',
+      title: t('tour.servers.title'),
+      icon: <IconArea primary={Server} accent={Users} />,
+      content: (
+        <div className="flex flex-col gap-3">
+          <Row icon={Server} title={t('tour.servers.leftColumn')}>{t('tour.servers.leftColumnBody')}</Row>
+          <Row icon={UserPlus} title={t('tour.servers.joining')}>{t('tour.servers.joiningBody')}</Row>
         </div>
-      </div>
-    ),
-  },
-  {
-    id: 'settings',
-    title: "You're all set",
-    icon: <IconArea primary={Settings} accent={CheckCircle2} />,
-    content: (
-      <div className="flex flex-col gap-3">
-        <Row icon={Settings} title="Make it yours">
-          Open <strong>Settings</strong> to change your name, pick a language, adjust text size, or
-          turn on <strong>Simple Mode</strong> for a calmer, plainer look.
-        </Row>
-        <Row icon={ShieldCheck} title="Keep your account safe">
-          Create an encrypted backup of your identity early — it's the only way to recover your
-          account if you lose your device.
-        </Row>
-      </div>
-    ),
-  },
-];
+      ),
+    },
+    {
+      id: 'channels',
+      title: t('tour.channels.title'),
+      icon: <IconArea primary={Hash} accent={MessageSquare} />,
+      content: (
+        <div className="flex flex-col gap-3">
+          <Row icon={Hash} title={t('tour.channels.text')}>{t('tour.channels.textBody')}</Row>
+          <Row icon={Search} title={t('tour.channels.finding')}>{t('tour.channels.findingBody')}</Row>
+        </div>
+      ),
+    },
+    {
+      id: 'dms',
+      title: t('tour.dms.title'),
+      icon: <IconArea primary={MessageSquare} accent={ShieldCheck} />,
+      content: (
+        <div className="flex flex-col gap-3">
+          <Row icon={MessageSquare} title={t('tour.dms.oneToOne')}>{t('tour.dms.oneToOneBody')}</Row>
+          <Row icon={UserPlus} title={t('tour.dms.friends')}>{t('tour.dms.friendsBody')}</Row>
+        </div>
+      ),
+    },
+    {
+      id: 'voice',
+      title: t('tour.voice.title'),
+      icon: <IconArea primary={Mic} accent={Users} />,
+      content: (
+        <div className="flex flex-col gap-3">
+          <Row icon={Mic} title={t('tour.voice.channels')}>{t('tour.voice.channelsBody')}</Row>
+          <div className="glass-card rounded-xl p-3 text-xs text-[rgba(246,248,248,0.6)]">{t('tour.voice.note')}</div>
+        </div>
+      ),
+    },
+    {
+      id: 'settings',
+      title: t('tour.settings.title'),
+      icon: <IconArea primary={Settings} accent={CheckCircle2} />,
+      content: (
+        <div className="flex flex-col gap-3">
+          <Row icon={Settings} title={t('tour.settings.customize')}>{t('tour.settings.customizeBody')}</Row>
+          <Row icon={ShieldCheck} title={t('tour.settings.safety')}>{t('tour.settings.safetyBody')}</Row>
+        </div>
+      ),
+    },
+  ];
+}
 
 export const ProductTour: React.FC<ProductTourProps> = ({ onClose }) => {
+  const { t } = useTranslation(['onboarding', 'common']);
   const [step, setStep] = useState(0);
+  const SCREENS = buildScreens(t as unknown as TFn);
 
   const screen = SCREENS[step];
   const isLast = step === SCREENS.length - 1;
@@ -213,7 +189,7 @@ export const ProductTour: React.FC<ProductTourProps> = ({ onClose }) => {
               onClick={handleClose}
               className="text-xs font-semibold text-[rgba(246,248,248,0.4)] hover:text-[rgba(246,248,248,0.7)] transition-colors px-4 py-2"
             >
-              SKIP
+              {t('common:actions.skip')}
             </button>
 
             <div className="flex gap-2">
@@ -223,14 +199,14 @@ export const ProductTour: React.FC<ProductTourProps> = ({ onClose }) => {
                   className="h-10 px-4 rounded-full border border-white/10 text-sm font-semibold text-[rgba(246,248,248,0.7)] hover:border-[rgba(19,221,236,0.3)] hover:text-primary transition-colors flex items-center gap-1.5"
                 >
                   <ArrowLeft size={14} />
-                  BACK
+                  {t('common:actions.back')}
                 </button>
               )}
               <button
                 onClick={isLast ? handleClose : () => setStep(s => s + 1)}
                 className="h-10 px-5 rounded-full bg-primary text-[#050A0B] text-sm font-bold hover:brightness-110 transition-all flex items-center gap-1.5 shadow-[0_0_5px_rgba(19,221,236,0.4)]"
               >
-                {isLast ? 'START USING HARMOLYN' : 'NEXT'}
+                {isLast ? t('tour.start') : t('common:actions.next')}
                 {!isLast && <ArrowRight size={14} />}
               </button>
             </div>

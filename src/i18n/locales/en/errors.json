@@ -1,0 +1,5 @@
+{
+  "generic": "Something went wrong. Please try again.",
+  "offline": "You're offline. We'll retry when the connection returns.",
+  "unreachable": "Couldn't reach the other peer right now."
+}
