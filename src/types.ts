@@ -126,6 +126,11 @@ export interface XoreinRuntimeIdentity {
   profile?: XoreinRuntimeProfile;
   /** True when this is an ephemeral guest identity (no password, not persisted). */
   is_guest?: boolean;
+  /**
+   * Base64 of this identity's HYBRID public key (Ed25519 ‖ ML-DSA-65), used to
+   * compute the safety number a contact verifies against. Public material only.
+   */
+  identity_key?: string;
 }
 
 export interface XoreinRuntimePeer {
@@ -139,6 +144,20 @@ export interface XoreinRuntimePeer {
   display_name?: string;
   /** Opportunistically learned avatar data: URI from presence broadcasts. */
   avatar?: string;
+  /**
+   * Base64 of the peer's HYBRID public identity (Ed25519 ‖ ML-DSA-65), TOFU-pinned
+   * the first time we verify their signed prekey bundle. Used for safety-number
+   * computation and change detection.
+   */
+  identity_key?: string;
+  /** True once the user has confirmed this peer's safety number out of band. */
+  identity_verified?: boolean;
+  /**
+   * True when a later bundle presented a DIFFERENT identity key than the pinned one
+   * — a re-key or a relay swap. Surfaces a "safety number changed" warning and
+   * clears the verified flag until re-confirmed.
+   */
+  identity_changed?: boolean;
 }
 
 export interface XoreinRuntimeChannel {

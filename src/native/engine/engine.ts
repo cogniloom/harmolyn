@@ -18,7 +18,8 @@ import { newPeerKey, encryptFrame, decryptFrame, type PeerKey } from '../voice/m
 import { uploadBlob, downloadBlob, type BlobRef } from '../blobs/blobs.js';
 import { deliverOffline, drainDeliveries } from '../delivery/mailbox.js';
 import { serverRendezvousCID } from '../transport/rendezvous.js';
-import { initStore, setNativeIdentity, getState, updateState, upsertPeer, resetNativeStore, configureNativeStore, applyJoinedServer, setStateEncryptionKey } from '../state/store.js';
+import { initStore, setNativeIdentity, getState, updateState, upsertPeer, resetNativeStore, configureNativeStore, applyJoinedServer, setStateEncryptionKey, pinPeerIdentity } from '../state/store.js';
+import { identityKeyBlob } from '../identity/safetyNumber.js';
 import { parseInviteMetadata } from '../../protocol/deeplink.js';
 import type { XoreinRuntimeServer, XoreinRuntimeMessage } from '../../types.js';
 import { publishNativeSnapshot } from '../state/snapshot.js';
@@ -250,6 +251,9 @@ export class XoreinNativeEngine {
       peer_id: this._identity.peerId,
       created_at: new Date().toISOString(),
       ...(persistedProfile ? { profile: persistedProfile } : {}),
+      // Our own hybrid public identity, so the UI can render the safety number a
+      // contact verifies against.
+      identity_key: identityKeyBlob(this._identity.edPub, this._identity.mldsaPub),
     });
     // If we just recovered this identity on a new device, a guardian delivered an
     // encrypted snapshot of the account state — decrypt it with the identity key
@@ -273,6 +277,9 @@ export class XoreinNativeEngine {
     const seal = new SealSessions(identity.peerId, identitySigningKey(identity), {
       persisted: persistedSeal,
       onChange: guestMode ? undefined : (state) => saveSealState(identity, state),
+      // TOFU-pin each contact's verified hybrid identity so the UI can show a
+      // safety number and warn if it ever changes (relay swap / re-key).
+      onPeerIdentity: (peerId, identityKeyB64) => pinPeerIdentity(peerId, identityKeyB64),
     });
     const channels = new ChannelCrypto();
     registerScopeCrypto({ seal, channels, fetchBundle: (peerId) => this.peerSync.fetchBundle(peerId) });

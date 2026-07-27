@@ -339,6 +339,43 @@ export function upsertPeer(peer: XoreinRuntimePeer): void {
   });
 }
 
+/**
+ * TOFU-pin a peer's hybrid identity key (b64 of Ed25519 ‖ ML-DSA-65), learned from
+ * their verified prekey bundle. First sighting pins it silently. A LATER sighting
+ * with a different key sets `identity_changed` and clears `identity_verified` — the
+ * "safety number changed" alarm — so a relay can't quietly swap a contact's identity.
+ */
+export function pinPeerIdentity(peerId: string, identityKey: string): void {
+  if (!peerId || !identityKey) return;
+  updateState(s => {
+    const existing = s.peers[peerId];
+    if (existing?.identity_key === identityKey) return {}; // unchanged — no-op
+    const changed = !!existing?.identity_key && existing.identity_key !== identityKey;
+    const merged: XoreinRuntimePeer = {
+      peer_id: peerId,
+      role: 'peer',
+      ...existing,
+      identity_key: identityKey,
+      ...(changed ? { identity_changed: true, identity_verified: false } : {}),
+    };
+    return { peers: { ...s.peers, [peerId]: merged } };
+  });
+}
+
+/** Mark (or unmark) a peer's identity as user-verified out of band; clears the change flag. */
+export function setPeerVerified(peerId: string, verified: boolean): void {
+  updateState(s => {
+    const existing = s.peers[peerId];
+    if (!existing) return {};
+    return {
+      peers: {
+        ...s.peers,
+        [peerId]: { ...existing, identity_verified: verified, ...(verified ? { identity_changed: false } : {}) },
+      },
+    };
+  });
+}
+
 export function updateServer(serverId: string, patch: Partial<XoreinRuntimeServer>): void {
   updateState(s => {
     const existing = s.servers[serverId];

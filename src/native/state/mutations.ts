@@ -23,7 +23,7 @@ import {
   addRelay, removeRelay,
   updatePresenceEntry,
   addServerRole, updateServerRole, removeServerRole, setMemberRoles, addPollVote,
-  memberHasPermission,
+  memberHasPermission, setPeerVerified,
 } from './store.js';
 import { publishNativeSnapshot } from './snapshot.js';
 import { markStateDirty } from './stateSync.js';
@@ -637,6 +637,12 @@ export function nativeSetActiveScope(scopeId: string | null): void {
 /** Explicitly clear a scope's unread badge. */
 export function nativeMarkScopeRead(scopeId: string): void {
   storeClearUnread(scopeId);
+  publishNativeSnapshot();
+}
+
+/** Mark (or unmark) a peer's identity as verified after the user confirms the safety number. */
+export function nativeSetPeerVerified(peerId: string, verified: boolean): void {
+  setPeerVerified(peerId, verified);
   publishNativeSnapshot();
 }
 

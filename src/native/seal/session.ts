@@ -17,6 +17,7 @@ import {
 import { ratchetEncrypt, ratchetDecrypt, type RatchetState } from './ratchet.js';
 import type { HybridSigningKey } from '../crypto/hybrid.js';
 import { peerIdToEdPub } from '../delivery/offline.js';
+import { identityKeyBlob } from '../identity/safetyNumber.js';
 
 /** Rebuild the whole prekey bundle when unconsumed OPKs drop to this many or fewer. */
 const OPK_LOW_WATERMARK = 5;
@@ -72,6 +73,12 @@ export interface SealSessionsOptions {
   persisted?: SerializedSealState | null;
   /** Called after every state change so the caller can re-persist (encrypted). */
   onChange?: (state: SerializedSealState) => void;
+  /**
+   * Called with a peer's verified hybrid identity key (b64 Ed25519 ‖ ML-DSA-65) the
+   * first time we establish a session with them, so the caller can TOFU-pin it for
+   * safety-number verification and change detection.
+   */
+  onPeerIdentity?: (peerId: string, identityKeyB64: string) => void;
 }
 
 function b64(b: Uint8Array): string {
@@ -127,6 +134,7 @@ export class SealSessions {
   private readonly sessions = new Map<string, RatchetState>();
   private readonly consumedOpks: Set<number>;
   private readonly onChange?: (state: SerializedSealState) => void;
+  private readonly onPeerIdentity?: (peerId: string, identityKeyB64: string) => void;
 
   constructor(peerId: string, signingKey: HybridSigningKey, opts: SealSessionsOptions = {}) {
     this.signingKey = signingKey;
@@ -134,6 +142,7 @@ export class SealSessions {
     this.edSeed = signingKey.edSecret;
     this.edPub = signingKey.edPublic;
     this.onChange = opts.onChange;
+    this.onPeerIdentity = opts.onPeerIdentity;
     this.consumedOpks = new Set(opts.persisted?.consumedOpks ?? []);
     if (opts.persisted) {
       // Restore the SAME bundle (so peers who cached it can still handshake) and
@@ -241,6 +250,11 @@ export class SealSessions {
       // key must hash to this peer's libp2p id (checked when the id is parseable;
       // fake ids in unit tests skip the second check, Noise still authenticates).
       assertBundleBinding(peerId, bundle);
+      // TOFU-pin the peer's verified hybrid identity for safety-number verification.
+      this.onPeerIdentity?.(
+        peerId,
+        identityKeyBlob(new Uint8Array(bundle.identity_key_ed25519), new Uint8Array(bundle.identity_key_ml_dsa_65)),
+      );
       const init = x3dhInitiate(this.edSeed, bundle);
       rs = init.rs;
       im = init.im;

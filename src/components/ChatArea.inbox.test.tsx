@@ -68,6 +68,7 @@ vi.mock('@/hooks/runtime/mutations', () => ({
   usePinMessage: () => ({ mutateAsync: vi.fn() }),
   useUnpinMessage: () => ({ mutateAsync: vi.fn() }),
   useCastPollVote: () => ({ mutate: vi.fn(), mutateAsync: vi.fn() }),
+  useSetPeerVerified: () => ({ mutate: vi.fn(), mutateAsync: vi.fn() }),
 }));
 
 vi.mock('@/lib/xoreinControl', async () => {

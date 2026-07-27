@@ -77,6 +77,15 @@ export function usePinMessage() {
   });
 }
 
+/** Mark or unmark a peer's identity as verified after confirming the safety number. */
+export function useSetPeerVerified() {
+  const m = useRuntimeMutations();
+  return useMutation({
+    mutationFn: ({ peerId, verified }: { peerId: string; verified: boolean }) =>
+      m.setPeerVerified(peerId, verified),
+  });
+}
+
 export function useUnpinMessage() {
   const m = useRuntimeMutations();
   return useMutation({

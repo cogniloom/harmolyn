@@ -22,7 +22,8 @@ import { InboxPanel } from '@/components/InboxPanel';
 import { MentionAutocomplete } from '@/components/MentionAutocomplete';
 import { useToast } from '@/lib/toastBus';
 import { useFeature } from '@/hooks/useFeature';
-import { useSendChannelMessage, useSendDmMessage, useEditMessage, useDeleteMessage, useAddReaction, useRemoveReaction, usePinMessage, useUnpinMessage, useCastPollVote } from '@/hooks/runtime/mutations';
+import { useSendChannelMessage, useSendDmMessage, useEditMessage, useDeleteMessage, useAddReaction, useRemoveReaction, usePinMessage, useUnpinMessage, useCastPollVote, useSetPeerVerified } from '@/hooks/runtime/mutations';
+import { KeyVerification } from '@/components/KeyVerification';
 import { markNotificationsRead, searchNotifications } from '@/lib/xoreinControl';
 import { uploadEncryptedAttachment } from '@/native/blobs/blobs';
 import { useContextMenu } from '@/components/GlobalContextMenuContext';
@@ -417,6 +418,8 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   const scrollRef = useRef<HTMLDivElement>(null);
   const [showPinned, setShowPinned] = useState(false);
   const [showSecuritySummary, setShowSecuritySummary] = useState(false);
+  const [showKeyVerification, setShowKeyVerification] = useState(false);
+  const setPeerVerified = useSetPeerVerified();
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [showStickerPicker, setShowStickerPicker] = useState(false);
   const [hoveredMessageId, setHoveredMessageId] = useState<string | null>(null);
@@ -1011,6 +1014,25 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   const liveShellData = readShellRuntimeData();
   const runtimeSnapshot = liveShellData.runtimeSnapshot ?? null;
   const currentUserName = liveShellData.currentUser.username.toLowerCase();
+
+  // Safety-number verification data for a DM: the other participant's pinned hybrid
+  // identity + our own, resolved from the runtime snapshot. Undefined for channels.
+  const dmVerification = useMemo(() => {
+    if (!isDM || !channel || !runtimeSnapshot) return null;
+    const localPeerId = runtimeSnapshot.identity?.peer_id ?? '';
+    const dm = runtimeSnapshot.dms?.find((d) => d.id === channel.id);
+    const remotePeerId = dm?.participants?.find((p) => p !== localPeerId) ?? '';
+    if (!remotePeerId) return null;
+    const remotePeer = runtimeSnapshot.known_peers?.find((p) => p.peer_id === remotePeerId);
+    return {
+      localPeerId,
+      localIdentityKey: runtimeSnapshot.identity?.identity_key,
+      remotePeerId,
+      remoteIdentityKey: remotePeer?.identity_key,
+      verified: !!remotePeer?.identity_verified,
+      changed: !!remotePeer?.identity_changed,
+    };
+  }, [isDM, channel, runtimeSnapshot]);
 
   const forwardDestinations = useMemo<ForwardDestination[]>(() => buildForwardDestinations(liveShellData, normalizedUsers), [liveShellData, normalizedUsers]);
 
@@ -1899,11 +1921,42 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                 Do not share anything sensitive in this conversation.
               </p>
             )}
-            <p className="text-[9px] leading-relaxed text-white/35 mt-3 font-mono">
-              Per-contact key verification is not exposed by the engine yet.
-            </p>
+            {isDM && dmVerification && (
+              <button
+                onClick={() => { setShowSecuritySummary(false); setShowKeyVerification(true); }}
+                className={`focus-ring mt-3 w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-full text-[11px] font-bold transition-all ${
+                  dmVerification.changed
+                    ? 'bg-accent-danger/15 text-accent-danger hover:brightness-110'
+                    : dmVerification.verified
+                      ? 'border border-accent-success/30 text-accent-success hover:bg-accent-success/10'
+                      : 'border border-white/10 text-white/70 hover:bg-white/5'
+                }`}
+              >
+                {dmVerification.changed
+                  ? 'Safety number changed — review'
+                  : dmVerification.verified
+                    ? 'Verified — view safety number'
+                    : 'Verify safety number'}
+              </button>
+            )}
           </div>
         </>
+      )}
+
+      {showKeyVerification && dmVerification && (
+        <KeyVerification
+          peerName={channel?.name?.trim() || 'this contact'}
+          localPeerId={dmVerification.localPeerId}
+          localIdentityKey={dmVerification.localIdentityKey}
+          remotePeerId={dmVerification.remotePeerId}
+          remoteIdentityKey={dmVerification.remoteIdentityKey}
+          verified={dmVerification.verified}
+          changed={dmVerification.changed}
+          onSetVerified={(verified) => {
+            setPeerVerified.mutate({ peerId: dmVerification.remotePeerId, verified });
+          }}
+          onClose={() => setShowKeyVerification(false)}
+        />
       )}
 
       {/* Inbox Panel */}
