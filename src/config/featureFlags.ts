@@ -176,6 +176,13 @@ export const FEATURES = {
   // Override via localStorage 'harmolyn:feature-overrides' to revert to
   // full HTTP for one release if issues are found in production.
   nativeEngine: true,
+  // directTransport: opt-in direct browser↔browser WebRTC transport + DCUtR
+  // hole-punching, upgrading relayed circuits to direct connections when the NAT
+  // allows. Ships DARK: it needs a 2nd relay + gateway rendezvous to be useful, and
+  // hole-punch success is a live smoketest (2 relays + real browsers). Turning it on
+  // only ADDS the /webrtc transport + dcutr service + rendezvous discovery; the
+  // relayed path is unaffected, so it degrades cleanly.
+  directTransport: false,
 } as const;
 
 /** Union type of all feature flag keys */

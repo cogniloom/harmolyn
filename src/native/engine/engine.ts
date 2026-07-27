@@ -17,7 +17,7 @@ import { newGroup as newTreeGroup, addMember, treeEncrypt, treeDecrypt, type Gro
 import { newPeerKey, encryptFrame, decryptFrame, type PeerKey } from '../voice/mediashield.js';
 import { uploadBlob, downloadBlob, type BlobRef } from '../blobs/blobs.js';
 import { deliverOffline, drainDeliveries } from '../delivery/mailbox.js';
-import { serverRendezvousCID } from '../transport/rendezvous.js';
+import { serverRendezvousCID, rendezvousRegister, rendezvousDiscover } from '../transport/rendezvous.js';
 import { initStore, setNativeIdentity, getState, updateState, upsertPeer, resetNativeStore, configureNativeStore, applyJoinedServer, mergeHistoryMessages, setStateEncryptionKey, pinPeerIdentity } from '../state/store.js';
 import { identityKeyBlob } from '../identity/safetyNumber.js';
 import { parseInviteMetadata } from '../../protocol/deeplink.js';
@@ -335,6 +335,11 @@ export class XoreinNativeEngine {
           // Announce we're online to friends + co-members (and keep a light
           // heartbeat) so they don't show us — and we don't show them — as offline.
           this.startPresenceHeartbeat();
+          // Register ourselves in each joined server's rendezvous namespace so other
+          // members can discover our circuit addresses for a direct WebRTC upgrade.
+          // Gated on directTransport (dark by default) — the endpoint is the external
+          // gateway, so this never fires on the default path.
+          void this.registerServerRendezvous();
         } else if (s === 'disconnected') {
           this.stopPresenceHeartbeat();
           this.emitActivity(
@@ -667,6 +672,67 @@ export class XoreinNativeEngine {
       }
     }
     return { added: 0, hasMore: false };
+  }
+
+  /**
+   * Register this node in the rendezvous namespace of each joined server so other
+   * members can discover our circuit addresses for a direct WebRTC upgrade. The
+   * namespace is derived from a member-shared secret (the crowd_root), so it is not
+   * enumerable by non-members (spec 31 §3.5). Gated on `directTransport` — the
+   * endpoint is the external gateway, so nothing fires on the default path.
+   */
+  private async registerServerRendezvous(): Promise<void> {
+    if (!resolveFeatureFlag('directTransport')) return;
+    const me = this._identity?.peerId;
+    if (!me) return;
+    const addrs = this.peerSync.localCircuitAddrs();
+    if (!addrs.length) return;
+    const state = getState();
+    for (const serverId of state.joined_server_ids) {
+      const server = state.servers[serverId];
+      const rootB64 = server?.crowd_root;
+      if (!rootB64) continue;
+      try {
+        const secret = Uint8Array.from(atob(rootB64), c => c.charCodeAt(0));
+        const namespace = serverRendezvousCID(secret);
+        if (!namespace) continue;
+        await rendezvousRegister(namespace, me, addrs);
+      } catch { /* gateway unavailable / bad root — best effort, dark feature */ }
+    }
+  }
+
+  /**
+   * Discover other members' circuit addresses for a server via rendezvous and
+   * record them as known peers, so a direct WebRTC upgrade (DCUtR) has addresses to
+   * dial. Gated on `directTransport`. Returns the number of peers learned.
+   */
+  async discoverServerPeers(serverId: string): Promise<number> {
+    if (!resolveFeatureFlag('directTransport')) return 0;
+    const server = getState().servers[serverId];
+    const rootB64 = server?.crowd_root;
+    if (!rootB64) return 0;
+    const me = this._identity?.peerId;
+    try {
+      const secret = Uint8Array.from(atob(rootB64), c => c.charCodeAt(0));
+      const namespace = serverRendezvousCID(secret);
+      if (!namespace) return 0;
+      const peers = await rendezvousDiscover(namespace);
+      let learned = 0;
+      for (const p of peers) {
+        if (!p.peer_id || p.peer_id === me) continue;
+        upsertPeer({
+          peer_id: p.peer_id,
+          role: 'peer',
+          addresses: Array.isArray(p.addrs) ? p.addrs : [],
+          last_seen_at: new Date().toISOString(),
+        });
+        learned++;
+      }
+      if (learned) publishNativeSnapshot();
+      return learned;
+    } catch {
+      return 0;
+    }
   }
 
   /** Record the always-on bootstrap relay as a reachable known peer. */
