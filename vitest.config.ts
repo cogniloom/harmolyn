@@ -15,11 +15,14 @@ export default defineConfig({
     setupFiles: ["./src/test/setup.ts"],
     include: ["src/**/*.{test,spec}.{ts,tsx}"],
     // Post-quantum crypto tests (ML-KEM-768 / ML-DSA-65 keygen+sign, X3DH, double
-    // ratchet) are CPU-heavy and, on shared CI runners under worker contention,
-    // legitimately exceed Vitest's 5s default — even light render tests get starved.
-    // Give real headroom so a slow runner doesn't flake the suite (green locally).
-    testTimeout: 20000,
-    hookTimeout: 20000,
+    // ratchet) are CPU-heavy. With Vitest fanning ~100 files across many workers on a
+    // 2-core CI runner, a single crypto file's wall-clock balloons under contention
+    // and blows the 5s default (one file even exceeded 20s). Two independent knobs fix
+    // it: cap workers on CI so each heavy test actually gets a core, and keep a
+    // generous timeout as headroom. Locally (uncapped) the full suite stays ~fast.
+    testTimeout: 30000,
+    hookTimeout: 30000,
+    ...(process.env.CI ? { maxWorkers: 2, minWorkers: 1 } : {}),
     coverage: {
       provider: "v8",
       include: ["src/**/*.{ts,tsx}"],
