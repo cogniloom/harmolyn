@@ -103,6 +103,31 @@ describe('handleSyncRequest — cursor pagination (WS-D)', () => {
     expect(res.has_more).toBe(false);
   });
 
+  it('pages messages that share a created_at via the (created_at, id) cursor', () => {
+    // 6 messages, ALL at the same timestamp — a created_at-only cursor would skip the
+    // rest of the batch after the first page. The composite (before, before_id) cursor
+    // keeps them pageable.
+    const TS = '2026-01-01T00:00:05.000Z';
+    addServer({ id: SRV, name: 'S', owner_peer_id: OWNER, members: [OWNER, MEMBER],
+      channels: { [CHAN]: { id: CHAN, server_id: SRV, name: 'general', voice: false } },
+      invite_secret: 'sekret', manifest: { history_retention_messages: 100, join_history_messages: 0 } as never });
+    for (const id of ['e', 'd', 'c', 'b', 'a']) {
+      addMessage({ id, scope_type: 'channel', scope_id: CHAN, server_id: SRV, sender_peer_id: OWNER, body: id, created_at: TS } as XoreinRuntimeMessage);
+    }
+    // First page: cursor after everything at TS (high id sentinel), limit 2 → last two by id order (d,e).
+    const p1 = handleSyncRequest('sync.pull', { server_id: SRV, channel_id: CHAN, before: TS, before_id: '￿', limit: 2 }, MEMBER);
+    const ids1 = (p1.messages as XoreinRuntimeMessage[]).map(m => m.id);
+    expect(ids1).toEqual(['d', 'e']);
+    expect(p1.has_more).toBe(true);
+    // Next page: cursor before the oldest we got ('d') → same timestamp, id < 'd' (b,c).
+    const p2 = handleSyncRequest('sync.pull', { server_id: SRV, channel_id: CHAN, before: TS, before_id: 'd', limit: 2 }, MEMBER);
+    expect((p2.messages as XoreinRuntimeMessage[]).map(m => m.id)).toEqual(['b', 'c']);
+    // Final page reaches 'a' — nothing older remains at this timestamp.
+    const p3 = handleSyncRequest('sync.pull', { server_id: SRV, channel_id: CHAN, before: TS, before_id: 'b', limit: 2 }, MEMBER);
+    expect((p3.messages as XoreinRuntimeMessage[]).map(m => m.id)).toEqual(['a']);
+    expect(p3.has_more).toBe(false);
+  });
+
   it('a non-owner member serves a read copy (initial full window)', () => {
     // Local identity is the MEMBER, server owned by someone else.
     setNativeIdentity({ id: MEMBER, peer_id: MEMBER });

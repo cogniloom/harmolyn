@@ -652,11 +652,19 @@ export class XoreinNativeEngine {
     const me = this._identity?.peerId;
     if (!server) return { added: 0, hasMore: false };
 
-    // Oldest local message for this channel is our cursor (exclusive).
+    // Oldest local message for this channel is our cursor (exclusive). The cursor is
+    // (created_at, id) — a total order — so a page boundary that lands on a timestamp
+    // shared by several messages doesn't skip the rest of them on the next pull.
     const scopeMsgs = state.messages
       .filter(m => m.server_id === serverId && m.scope_id === channelId && m.created_at)
-      .sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
-    const before = scopeMsgs.length ? String(scopeMsgs[0].created_at) : new Date().toISOString();
+      .sort((a, b) =>
+        String(a.created_at).localeCompare(String(b.created_at)) ||
+        String(a.id).localeCompare(String(b.id)));
+    const oldest = scopeMsgs[0];
+    const before = oldest ? String(oldest.created_at) : new Date().toISOString();
+    // A high id sentinel puts the first (no-local-history) pull after everything at
+    // that timestamp; once we hold messages, the oldest's own id bounds the next page.
+    const beforeId = oldest ? String(oldest.id) : '￿';
 
     // Authoritative history comes from the OWNER only: served message copies are not
     // individually signed, so trusting an arbitrary member's page would let it inject
@@ -669,7 +677,7 @@ export class XoreinNativeEngine {
     for (const peer of candidates) {
       // Paging is a member operation — the responder exempts existing members from
       // the invite-token check, so none is needed here.
-      const data = await this.peerSync.pullHistory(peer, serverId, channelId, before, 50);
+      const data = await this.peerSync.pullHistory(peer, serverId, channelId, before, beforeId, 50);
       if (data?.ok && Array.isArray(data.messages)) {
         // Defense-in-depth: only merge messages actually scoped to THIS server+channel,
         // so a compromised/buggy responder can't smuggle records into other scopes.

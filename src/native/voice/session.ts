@@ -51,7 +51,10 @@ function insertableStreamsCapability(): InsertableCap {
   return 'none';
 }
 
-function attachSenderTransform(sender: RTCRtpSender, pk: PeerKey, cap: Exclude<InsertableCap, 'none'>): void {
+// Returns true only if the SFrame transform was actually installed. A false return
+// means media falls back to DTLS-only, so the caller must NOT keep claiming Crowd
+// protection (badge honesty — never overclaim encryption the pipeline didn't apply).
+function attachSenderTransform(sender: RTCRtpSender, pk: PeerKey, cap: Exclude<InsertableCap, 'none'>): boolean {
   try {
     if (cap === 'scriptTransform') {
       const worker = new Worker(new URL('./mediashield-worker.ts', import.meta.url), { type: 'module' });
@@ -63,10 +66,11 @@ function attachSenderTransform(sender: RTCRtpSender, pk: PeerKey, cap: Exclude<I
       const ts = new TransformStream({ transform: createEncryptTransform(pk) });
       readable.pipeThrough(ts).pipeTo(writable);
     }
-  } catch { /* SFrame is defense-in-depth; DTLS already protects mesh media */ }
+    return true;
+  } catch { return false; }
 }
 
-function attachReceiverTransform(receiver: RTCRtpReceiver, pk: PeerKey, cap: Exclude<InsertableCap, 'none'>): void {
+function attachReceiverTransform(receiver: RTCRtpReceiver, pk: PeerKey, cap: Exclude<InsertableCap, 'none'>): boolean {
   try {
     if (cap === 'scriptTransform') {
       const worker = new Worker(new URL('./mediashield-worker.ts', import.meta.url), { type: 'module' });
@@ -78,7 +82,8 @@ function attachReceiverTransform(receiver: RTCRtpReceiver, pk: PeerKey, cap: Exc
       const ts = new TransformStream({ transform: createDecryptTransform(pk) });
       readable.pipeThrough(ts).pipeTo(writable);
     }
-  } catch { /* see attachSenderTransform */ }
+    return true;
+  } catch { return false; }
 }
 
 // ── AV preference helpers ─────────────────────────────────────────────────────
@@ -890,7 +895,24 @@ export class VoiceSession {
     const sender = entry.pc.addTrack(track, ...(stream ? [stream] : []));
     const transceiver = entry.pc.getTransceivers().find(t => t.sender === sender);
     if (transceiver?.mid) entry.localKinds[transceiver.mid] = kind;
-    if (this.useSframe && this.localKey) attachSenderTransform(sender, this.localKey, this.cap as Exclude<InsertableCap, 'none'>);
+    if (this.useSframe && this.localKey) {
+      const ok = attachSenderTransform(sender, this.localKey, this.cap as Exclude<InsertableCap, 'none'>);
+      if (!ok) this.downgradeSframe();
+    }
+  }
+
+  /**
+   * The SFrame pipeline could not be installed on a track (probe said supported, but
+   * constructing the worker/transform threw). Media is now DTLS-only, so stop claiming
+   * Crowd protection and republish the honest `clear` badge — never overclaim what the
+   * pipeline didn't actually apply.
+   */
+  private downgradeSframe(): void {
+    if (!this.useSframe && this.securityMode === 'clear') return;
+    this.useSframe = false;
+    this.securityMode = 'clear';
+    setVoiceSecurityMode(this.channelId, 'clear');
+    publishNativeSnapshot();
   }
 
   /** Add a freshly-acquired local track (camera/screen) to every peer + renegotiate. */
@@ -957,7 +979,10 @@ export class VoiceSession {
       if (rk) { this.remoteKeys.set(remotePeerId, rk); }
     }
     const rk = this.remoteKeys.get(remotePeerId);
-    if (this.useSframe && rk) attachReceiverTransform(e.receiver, rk, this.cap as Exclude<InsertableCap, 'none'>);
+    if (this.useSframe && rk) {
+      const ok = attachReceiverTransform(e.receiver, rk, this.cap as Exclude<InsertableCap, 'none'>);
+      if (!ok) this.downgradeSframe();
+    }
 
     // Nudge the jitter buffer toward interactivity. Network propagation is the
     // floor (speed of light, ~tens of ms intercontinental) and not ours to set;

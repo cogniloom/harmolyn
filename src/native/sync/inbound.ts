@@ -359,24 +359,28 @@ export function handleSyncRequest(operation: string, payload: Record<string, unk
       // Apply the owner-authoritative fields. CRITICAL: this must include
       // crowd_root/crowd_epoch (channel-key rotation) and roles/member_roles —
       // previously they were silently dropped here, so kicks never revoked keys
-      // and role changes never reached members. crowd_epoch is monotonic, so
-      // installing an equal/older root is a safe no-op in the crypto layer.
+      // and role changes never reached members.
       const nextRoot = typeof incoming.crowd_root === 'string' ? incoming.crowd_root : undefined;
       const nextEpoch = typeof incoming.crowd_epoch === 'number' ? incoming.crowd_epoch : undefined;
+      // crowd_epoch is monotonic. Because broadcastServerUpdate is fire-and-forget on
+      // independent streams, an OLDER update can arrive after a newer rotation — persist
+      // the root/epoch only when it advances (>= stored), or the store would regress to
+      // an obsolete key and fail to decrypt current-epoch traffic after a reload.
+      const storedEpoch = typeof server.crowd_epoch === 'number' ? server.crowd_epoch : -1;
+      const applyCrowd = nextRoot !== undefined && nextEpoch !== undefined && nextEpoch >= storedEpoch;
       updateServer(serverId, {
         ...(incoming.channels ? { channels: incoming.channels } : {}),
         ...(Array.isArray(incoming.members) ? { members: incoming.members } : {}),
         ...(incoming.manifest ? { manifest: incoming.manifest } : {}),
         ...(typeof incoming.name === 'string' && incoming.name ? { name: incoming.name } : {}),
         ...(typeof incoming.description === 'string' ? { description: incoming.description } : {}),
-        ...(nextRoot ? { crowd_root: nextRoot } : {}),
-        ...(nextEpoch !== undefined ? { crowd_epoch: nextEpoch } : {}),
+        ...(applyCrowd ? { crowd_root: nextRoot, crowd_epoch: nextEpoch } : {}),
         ...(Array.isArray(incoming.roles) ? { roles: incoming.roles } : {}),
         ...(incoming.member_roles && typeof incoming.member_roles === 'object' ? { member_roles: incoming.member_roles } : {}),
       });
       // Install the (possibly rotated) root into the live crypto so the new epoch
-      // takes effect immediately, not only on the next message.
-      if (nextRoot) applyCrowdRoot(serverId);
+      // takes effect immediately — only when we actually persisted an advancing root.
+      if (applyCrowd) applyCrowdRoot(serverId);
       publishNativeSnapshot();
     }
     return { ok: true };
@@ -444,11 +448,15 @@ export function handleSyncRequest(operation: string, payload: Record<string, unk
 
   const current = getState().servers[serverId] ?? server;
   // Chronological order (oldest → newest) so cursor paging is deterministic across
-  // peers regardless of local store insertion order.
+  // peers regardless of local store insertion order. Tie-break equal timestamps by id
+  // so the (created_at, id) cursor is a total order — otherwise a page ending on a
+  // timestamp shared by many messages would skip the rest of them on the next pull.
   const allMessages = getState().messages
     .filter(m => !m.deleted && m.server_id === serverId)
     .slice()
-    .sort((a, b) => String(a.created_at ?? '').localeCompare(String(b.created_at ?? '')));
+    .sort((a, b) =>
+      String(a.created_at ?? '').localeCompare(String(b.created_at ?? '')) ||
+      String(a.id).localeCompare(String(b.id)));
   const retention = current.manifest?.history_retention_messages ?? 100;
   // History policy: an existing member re-pulling gets the full retention window; a
   // brand-new joiner gets only `join_history_messages` (default 0 = zero pre-join
@@ -460,9 +468,11 @@ export function handleSyncRequest(operation: string, payload: Record<string, unk
 
   // Cursor pagination (`sync.pull` with `before`): serve the page of messages that
   // precede the cursor, so a member can lazily scroll further back than the initial
-  // window. `before` is a created_at ISO cursor (exclusive); `limit` bounds the page;
-  // `channel_id` scopes the page to one channel (the UI pages a single channel).
+  // window. The cursor is (`before` created_at, `before_id`) — a total order — so
+  // messages sharing a timestamp across a page boundary stay pageable; `limit` bounds
+  // the page; `channel_id` scopes it to one channel (the UI pages a single channel).
   const before = typeof payload.before === 'string' ? payload.before : undefined;
+  const beforeId = typeof payload.before_id === 'string' ? payload.before_id : '';
   const pullChannelId = typeof payload.channel_id === 'string' ? payload.channel_id : undefined;
   const requestedLimit = Number(payload.limit);
   const pageLimit = Number.isFinite(requestedLimit) && requestedLimit > 0
@@ -480,7 +490,12 @@ export function handleSyncRequest(operation: string, payload: Record<string, unk
       ? (pullChannelId ? allMessages.filter(m => m.scope_id === pullChannelId) : allMessages)
       : [];
     const windowed = scoped.slice(-retention);
-    const older = windowed.filter(m => String(m.created_at ?? '') < before);
+    // Older than the (created_at, id) cursor: strictly-earlier timestamp, OR same
+    // timestamp with a strictly-smaller id (matches the total-order sort above).
+    const older = windowed.filter(m => {
+      const ts = String(m.created_at ?? '');
+      return ts < before || (ts === before && String(m.id) < beforeId);
+    });
     messages = older.slice(-pageLimit);
     hasMore = older.length > messages.length;
   } else {

@@ -945,8 +945,11 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
     scrollToBottom();
   }, [channel, messageLayout, normalizedMessages, searchQuery, scrollToBottom]);
 
-  // Reset the "more history" belief when switching channels.
-  useEffect(() => { setHasMoreHistory(true); }, [channel?.id]);
+  // Reset the "more history" belief when switching channels, and track the active
+  // channel id in a ref so an in-flight history pull can detect a switch and discard
+  // its stale result rather than clobbering the new channel's state.
+  const channelRef = useRef(channel?.id);
+  useEffect(() => { channelRef.current = channel?.id; setHasMoreHistory(true); }, [channel?.id]);
 
   // Auto-expand the composer up to a capped max-height as the draft grows, then
   // let it scroll internally. Driven off inputValue so emoji/sticker/mention
@@ -1076,9 +1079,14 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
 
   const handleLoadOlder = useCallback(async () => {
     if (!channel || !historyServerId || loadOlderMutation.isPending) return;
+    // Capture the channel this pull is for. If the user switches channels before it
+    // resolves, discard the stale result — otherwise channel A's response would clobber
+    // channel B's hasMoreHistory / scroll-preservation (shared state).
+    const requestedChannelId = channel.id;
     preserveScrollRef.current = scrollRef.current?.scrollHeight ?? null;
     try {
-      const res = await loadOlderMutation.mutateAsync({ serverId: historyServerId, channelId: channel.id }) as { added: number; hasMore: boolean; unavailable?: boolean };
+      const res = await loadOlderMutation.mutateAsync({ serverId: historyServerId, channelId: requestedChannelId }) as { added: number; hasMore: boolean; unavailable?: boolean };
+      if (channelRef.current !== requestedChannelId) { preserveScrollRef.current = null; return; }
       // A transient "unavailable" (owner/members unreachable) must NOT hide the button —
       // keep it so the user can retry when connectivity returns. Only a definitive
       // answer (has_more, or a real empty page) updates the exhausted state.
@@ -1088,7 +1096,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
     } catch {
       // Network/exception is also transient — keep the retry affordance visible.
       preserveScrollRef.current = null;
-      setHasMoreHistory(true);
+      if (channelRef.current === requestedChannelId) setHasMoreHistory(true);
     }
   }, [channel, historyServerId, loadOlderMutation]);
 

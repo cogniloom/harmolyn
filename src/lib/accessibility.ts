@@ -58,7 +58,11 @@ export function applyStoredAccessibilityPrefs(): void {
   try {
     const raw = localStorage.getItem(ACCESSIBILITY_STORAGE_KEY);
     if (!raw) return;
-    applyAccessibilityPrefs(JSON.parse(raw) as AppliedAccessibilityPrefs);
+    // Apply the saturation filter on <html>, the SAME element the live Accessibility
+    // Settings effect uses. If boot put it on <body> and the live effect on <html>,
+    // the two CSS filters would compound (a saved 50% would render ~25%). Keeping
+    // saturation on <html> leaves <body> free for the color-blind matrix (they stack).
+    applyAccessibilityPrefs(JSON.parse(raw) as AppliedAccessibilityPrefs, { applySaturationOnHtml: true });
   } catch {
     /* best effort */
   }

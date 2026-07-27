@@ -167,6 +167,7 @@ export class PeerSync {
     serverId: string,
     channelId: string,
     before: string,
+    beforeId: string,
     limit: number,
     inviteToken?: string,
   ): Promise<{ ok?: boolean; messages?: unknown[]; has_more?: boolean } | null> {
@@ -182,6 +183,7 @@ export class PeerSync {
           channel_id: channelId,
           peer_id: this.localPeerId,
           before,
+          before_id: beforeId,
           limit,
           invite_token: inviteToken,
           addresses: this.localCircuitAddrs(),
