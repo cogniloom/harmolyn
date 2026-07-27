@@ -41,11 +41,26 @@
 > `--mode` flag, `RelayQueue` unwired, plaintext control send-path, missing rendezvous/mailbox
 > endpoints).
 >
-> **Still open (largest remaining GA items):** full i18n string sweep across ~120 components
-> (framework/locale-dates started); WebRTC (`@libp2p/webrtc`) + DCUtR direct transport +
-> DHT/rendezvous discovery (needs a 2nd relay `[INFRA]`); member-served history + pagination;
-> voice trickle-ICE/ICE-restart/reconnect + peer-SFU for large calls; onboarding product tour +
-> "simple mode" + backup-nudge at registration.
+> **Delivered since:** member-served history fallback + cursor pagination (WS-D); onboarding
+> product tour + "simple mode" (WS-F); voice trickle-ICE / ICE-restart / reconnect-with-backoff
+> + peer-SFU election behind `voiceScaleSfu` (WS-B); WebRTC (`@libp2p/webrtc`) + DCUtR direct
+> transport + rendezvous register/discover behind `directTransport` (WS-C, ships dark until a
+> 2nd relay `[INFRA]` exists); i18n runtime (react-i18next + ICU), language picker, RTL
+> direction, and non-Latin font fallbacks (WS-E foundation).
+>
+> **Still open:**
+> - **i18n long-tail string sweep.** The runtime, per-namespace catalogs, pseudo-locale test
+>   guard, language picker, and RTL/direction are in place, and the first-run product tour +
+>   Settings language/accessibility surfaces are localized. The remaining ~55 components
+>   (hotspots: `ChatArea`, `ServerSettingsScreen`, the rest of `SettingsScreen`, `AuthFlow`,
+>   `SecurityOnboarding`, `legalDocs`) still carry English literals and fall back to English at
+>   runtime. This is mechanical `t('…')` wrapping + catalog authoring per file, best done with
+>   per-file review (much of it rich instructional JSX needing `<Trans>`); track it as staged
+>   work, not a blocker — the picker already localizes all date/number/time formatting app-wide.
+> - **Live smoketests (need infra, not code):** WebRTC hole-punch (2 relays + real browsers),
+>   voice media/trickle/SFU forwarding (coturn + browsers), relay-container CGO build (podman/CI).
+> - **Self-hosted subsetted webfonts.** Today non-Latin scripts use the OS system-font stack
+>   (no tofu); shipping subsetted Noto webfonts for pixel-consistent rendering is follow-up.
 
 This document tracks Harmolyn UI features that **cannot be fully wired yet** because
 the xorein local control API does not expose the required endpoints. Each gap lists
