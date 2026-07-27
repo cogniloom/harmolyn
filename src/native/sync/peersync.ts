@@ -165,6 +165,7 @@ export class PeerSync {
   async pullHistory(
     fromPeerId: string,
     serverId: string,
+    channelId: string,
     before: string,
     limit: number,
     inviteToken?: string,
@@ -178,6 +179,7 @@ export class PeerSync {
         'sync.pull',
         jsonBytes({
           server_id: serverId,
+          channel_id: channelId,
           peer_id: this.localPeerId,
           before,
           limit,

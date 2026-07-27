@@ -62,6 +62,39 @@ describe('handleSyncRequest — cursor pagination (WS-D)', () => {
     expect(res.has_more).toBe(true);
   });
 
+  it('scopes a cursor page to the requested channel (WS-D hardening)', () => {
+    seed(10);
+    // Add a second channel with its own messages interleaved in time.
+    const CHAN2 = 'chan2';
+    for (let i = 0; i < 10; i++) {
+      const n = String(i).padStart(4, '0');
+      addMessage({ id: `c2-${n}`, scope_type: 'channel', scope_id: CHAN2, server_id: SRV,
+        sender_peer_id: OWNER, body: `c2 ${n}`, created_at: `2026-01-01T00:00:${n.slice(-2)}.500Z` } as XoreinRuntimeMessage);
+    }
+    const res = handleSyncRequest('sync.pull', { server_id: SRV, channel_id: CHAN, before: '2026-01-01T00:00:09.000Z', limit: 50 }, MEMBER);
+    const msgs = res.messages as XoreinRuntimeMessage[];
+    // Only CHAN messages come back — none from chan2.
+    expect(msgs.every(m => m.scope_id === CHAN)).toBe(true);
+    expect(msgs.some(m => m.id.startsWith('c2-'))).toBe(false);
+  });
+
+  it('clamps a cursor page to the retention window (WS-D hardening)', () => {
+    // 30 messages but retention of only 5: paging can never reach beyond the last 5.
+    addServer({ id: SRV, name: 'S', owner_peer_id: OWNER, members: [OWNER, MEMBER],
+      channels: { [CHAN]: { id: CHAN, server_id: SRV, name: 'general', voice: false } },
+      invite_secret: 'sekret', manifest: { history_retention_messages: 5, join_history_messages: 0 } as never });
+    for (let i = 0; i < 30; i++) {
+      const n = String(i).padStart(4, '0');
+      addMessage({ id: `r-${n}`, scope_type: 'channel', scope_id: CHAN, server_id: SRV,
+        sender_peer_id: OWNER, body: `r ${n}`, created_at: `2026-01-01T00:00:${n.slice(-2)}.000Z` } as XoreinRuntimeMessage);
+    }
+    // Cursor at the very end; even with a huge limit only the retained window is served.
+    const res = handleSyncRequest('sync.pull', { server_id: SRV, channel_id: CHAN, before: '2026-01-01T00:00:59.000Z', limit: 50 }, MEMBER);
+    const msgs = res.messages as XoreinRuntimeMessage[];
+    // Only the last 5 (retention) messages — never the older 25.
+    expect(msgs.map(m => m.id)).toEqual(['r-0025', 'r-0026', 'r-0027', 'r-0028', 'r-0029']);
+  });
+
   it('reports has_more false once the earliest messages are reached', () => {
     seed(10);
     const res = handleSyncRequest('sync.pull', { server_id: SRV, before: '2026-01-01T00:00:03.000Z', limit: 50 }, MEMBER);

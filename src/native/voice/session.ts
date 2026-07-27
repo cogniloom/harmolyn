@@ -320,11 +320,13 @@ interface PeerConn {
   remoteKinds: Record<string, TrackKind>;
   // Trickle-ICE candidate buffer (applies early candidates once the remote SDP is set).
   iceBuffer: IceCandidateBuffer;
-  // Per-peer reconnect scheduler (backoff) for recoverable connection loss.
-  reconnect: ReconnectScheduler;
   // Grace timer started on 'disconnected' — cancelled if it recovers, else escalates.
   disconnectTimer: ReturnType<typeof setTimeout> | null;
 }
+
+// Cap on ICE candidates buffered for a peer that has no PeerConn yet (pre-offer),
+// so a flood of trickled candidates can't grow memory unbounded before the offer.
+const MAX_PREOFFER_ICE = 32;
 
 // ── VoiceSession ─────────────────────────────────────────────────────────────
 
@@ -356,6 +358,14 @@ export class VoiceSession {
   private iceServers: RTCIceServer[] = [];
 
   private peers = new Map<string, PeerConn>();
+  // Reconnect schedulers live OUTSIDE PeerConn, keyed by peerId, so a scheduled full
+  // redial (which replaces the PeerConn) preserves the exponential-backoff attempt
+  // count instead of resetting to zero and looping forever at the initial delay.
+  private reconnectSchedulers = new Map<string, ReconnectScheduler>();
+  // ICE candidates that arrived before this peer's offer (no PeerConn yet). Drained
+  // into the connection's buffer once handleOffer/connectToPeer creates it — otherwise
+  // a TURN/srflx candidate that races ahead of the SDP is lost, breaking restrictive NATs.
+  private preOfferIce = new Map<string, RTCIceCandidateInit[]>();
   private remoteStreams = new Map<string, MediaStream>();   // audio + camera
   private remoteScreens = new Map<string, MediaStream>();    // screen share
   private remoteKeys = new Map<string, PeerKey>();
@@ -514,9 +524,11 @@ export class VoiceSession {
 
     for (const entry of this.peers.values()) {
       if (entry.disconnectTimer) { clearTimeout(entry.disconnectTimer); entry.disconnectTimer = null; }
-      entry.reconnect.cancel();
       try { entry.pc.close(); } catch { /* already closed */ }
     }
+    for (const s of this.reconnectSchedulers.values()) s.cancel();
+    this.reconnectSchedulers.clear();
+    this.preOfferIce.clear();
     this.peers.clear();
     for (const peerId of this.remoteStreams.keys()) this.callbacks.onParticipantLeft?.(peerId);
     this.remoteStreams.clear();
@@ -736,10 +748,17 @@ export class VoiceSession {
       localKinds: {},
       remoteKinds: {},
       iceBuffer: new IceCandidateBuffer(),
-      reconnect: new ReconnectScheduler(),
       disconnectTimer: null,
     };
     this.peers.set(remotePeerId, entry);
+
+    // Adopt any ICE candidates that arrived before this connection existed (they were
+    // buffered pre-offer). They queue in the iceBuffer and flush once the remote SDP lands.
+    const early = this.preOfferIce.get(remotePeerId);
+    if (early) {
+      this.preOfferIce.delete(remotePeerId);
+      for (const c of early) entry.iceBuffer.accept(c);
+    }
 
     // Add our current local tracks (mic + camera + screen if active).
     this.localStream?.getTracks().forEach(track => this.addTrackToPc(entry, track, track.kind === 'video' ? 'camera' : 'audio'));
@@ -778,7 +797,7 @@ export class VoiceSession {
       if (st === 'connected' || st === 'completed') {
         // Recovered: clear any grace timer + reconnect budget.
         if (entry.disconnectTimer) { clearTimeout(entry.disconnectTimer); entry.disconnectTimer = null; }
-        entry.reconnect.reset();
+        this.schedulerFor(remotePeerId).reset();
       } else if (st === 'failed') {
         this.recoverPeer(remotePeerId, entry);
       } else if (st === 'disconnected') {
@@ -802,15 +821,29 @@ export class VoiceSession {
     return entry;
   }
 
+  /** Per-peer reconnect scheduler, created on demand and preserved across redials. */
+  private schedulerFor(peerId: string): ReconnectScheduler {
+    let s = this.reconnectSchedulers.get(peerId);
+    if (!s) { s = new ReconnectScheduler(); this.reconnectSchedulers.set(peerId, s); }
+    return s;
+  }
+
   /** Apply a trickled ICE candidate from a peer (buffering pre-remote-description). */
   handleIce(req: VoiceIceRequest, remotePeerId: string): { ok: boolean } {
-    const entry = this.peers.get(remotePeerId);
-    if (!entry || this.stopped) return { ok: false };
+    if (this.stopped) return { ok: false };
     const init: RTCIceCandidateInit = {
       candidate: req.candidate,
       sdpMid: req.sdp_mid ?? undefined,
       sdpMLineIndex: req.sdp_mline_index ?? undefined,
     };
+    const entry = this.peers.get(remotePeerId);
+    if (!entry) {
+      // No connection yet — the candidate raced ahead of the offer. Buffer it (bounded)
+      // so createPeerConn can adopt it, instead of dropping a possibly-only-viable route.
+      const buf = this.preOfferIce.get(remotePeerId) ?? [];
+      if (buf.length < MAX_PREOFFER_ICE) { buf.push(init); this.preOfferIce.set(remotePeerId, buf); }
+      return { ok: true };
+    }
     for (const c of entry.iceBuffer.accept(init)) {
       void entry.pc.addIceCandidate(c).catch(() => { /* stale/duplicate candidate */ });
     }
@@ -842,10 +875,12 @@ export class VoiceSession {
         return;
       } catch { /* fall through to full reconnect */ }
     }
-    // Otherwise schedule a backed-off full reconnect (redial from scratch).
-    entry.reconnect.schedule(() => {
+    // Otherwise schedule a backed-off full reconnect (redial from scratch). The
+    // scheduler is keyed by peerId (not the PeerConn) so the attempt count and backoff
+    // survive the redial's connection replacement — no infinite retry at the base delay.
+    this.schedulerFor(remotePeerId).schedule(() => {
       if (this.stopped || !this.peers.has(remotePeerId)) return;
-      this.dropPeer(remotePeerId, { keepScheduler: false });
+      this.dropPeer(remotePeerId, { keepScheduler: true });
       void this.connectToPeer(remotePeerId);
     });
   }
@@ -961,10 +996,15 @@ export class VoiceSession {
     const entry = this.peers.get(remotePeerId);
     if (entry) {
       if (entry.disconnectTimer) { clearTimeout(entry.disconnectTimer); entry.disconnectTimer = null; }
-      // A redial keeps the scheduler (it owns the reconnect); a real teardown cancels it.
-      if (!opts.keepScheduler) entry.reconnect.cancel();
       try { entry.pc.close(); } catch { /* gone */ }
       this.peers.delete(remotePeerId);
+    }
+    // A scheduled redial keeps the scheduler (it owns the in-flight reconnect + backoff
+    // count); a real teardown cancels and forgets it, and drops any pre-offer ICE buffer.
+    if (!opts.keepScheduler) {
+      this.reconnectSchedulers.get(remotePeerId)?.cancel();
+      this.reconnectSchedulers.delete(remotePeerId);
+      this.preOfferIce.delete(remotePeerId);
     }
     this.activity.removeStream(remotePeerId);
     this.remoteStreams.delete(remotePeerId);

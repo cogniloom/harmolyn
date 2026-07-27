@@ -601,10 +601,15 @@ export class XoreinNativeEngine {
     }
 
     // Member-served fallback: the owner is offline/unreachable. Try each seed member
-    // carried in the invite — any member can serve a READ copy of the server (it
-    // still verifies the invite token). Membership stays authoritative to the owner,
-    // so we keep the pending-owner-sync sentinel and reconcile when the owner returns.
-    const seeds = (meta.seeds ?? []).filter(s => s && s !== me && s !== meta.ownerPeerId);
+    // carried in the invite. DARK by default (memberServedHistory): a joined member's
+    // server record has the owner-only invite_secret stripped, so the seed's
+    // verifyInviteToken always fails for a new joiner — the fallback can't actually be
+    // granted without a delegatable capability — and served history isn't individually
+    // authenticated. Until owner-signed invites/history exist, skip seeds and fall
+    // through to the local stub (membership reconciles when the owner returns).
+    const seeds = resolveFeatureFlag('memberServedHistory')
+      ? (meta.seeds ?? []).filter(s => s && s !== me && s !== meta.ownerPeerId)
+      : [];
     for (const seed of seeds) {
       try {
         const data = await this.peerSync.joinServer(
@@ -653,17 +658,25 @@ export class XoreinNativeEngine {
       .sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
     const before = scopeMsgs.length ? String(scopeMsgs[0].created_at) : new Date().toISOString();
 
-    // Try the owner first, then the rest of the roster (member-served history).
-    const candidates = [server.owner_peer_id, ...server.members]
-      .filter((p, i, arr) => p && p !== me && arr.indexOf(p) === i);
+    // Authoritative history comes from the OWNER only: served message copies are not
+    // individually signed, so trusting an arbitrary member's page would let it inject
+    // forged messages into permanent channel history. Member-served fallback is opt-in
+    // (memberServedHistory, dark) until history carries owner signatures.
+    const candidates = resolveFeatureFlag('memberServedHistory')
+      ? [server.owner_peer_id, ...server.members].filter((p, i, arr) => p && p !== me && arr.indexOf(p) === i)
+      : [server.owner_peer_id].filter(p => p && p !== me);
 
     for (const peer of candidates) {
       // Paging is a member operation — the responder exempts existing members from
       // the invite-token check, so none is needed here.
-      const data = await this.peerSync.pullHistory(peer, serverId, before, 50);
+      const data = await this.peerSync.pullHistory(peer, serverId, channelId, before, 50);
       if (data?.ok && Array.isArray(data.messages)) {
-        const added = mergeHistoryMessages(data.messages as XoreinRuntimeMessage[]);
-        if (added > 0 || data.messages.length > 0) {
+        // Defense-in-depth: only merge messages actually scoped to THIS server+channel,
+        // so a compromised/buggy responder can't smuggle records into other scopes.
+        const scoped = (data.messages as XoreinRuntimeMessage[])
+          .filter(m => m && m.server_id === serverId && m.scope_id === channelId);
+        const added = mergeHistoryMessages(scoped);
+        if (added > 0 || scoped.length > 0) {
           publishNativeSnapshot();
           return { added, hasMore: Boolean(data.has_more) };
         }

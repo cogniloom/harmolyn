@@ -305,6 +305,12 @@ function handleNotifyPush(payload: Record<string, unknown>, remotePeerId: string
     const serverId = String(payload.server_id ?? '');
     const server = getState().servers[serverId];
     if (!serverId || !server || server.owner_peer_id !== (getState().identity?.peer_id ?? '')) return;
+    // The authenticated sender must be a member of the server — otherwise any peer that
+    // learns a server id could spam the owner with forged reports/notifications.
+    if (!fromPeerId || !server.members.includes(fromPeerId)) return;
+    // Reject references that don't belong to this server (channel must be one of ours).
+    const reportChannelId = payload.channel_id ? String(payload.channel_id) : undefined;
+    if (reportChannelId && !Object.prototype.hasOwnProperty.call(server.channels ?? {}, reportChannelId)) return;
     addReport({
       id: String(payload.report_id ?? crypto.randomUUID()),
       reason: String(payload.reason ?? 'other'),
@@ -313,7 +319,7 @@ function handleNotifyPush(payload: Record<string, unknown>, remotePeerId: string
       target_id: String(payload.target_id ?? ''),
       reported_peer_id: payload.reported_peer_id ? String(payload.reported_peer_id) : undefined,
       server_id: serverId,
-      channel_id: payload.channel_id ? String(payload.channel_id) : undefined,
+      channel_id: reportChannelId,
       content_excerpt: payload.content_excerpt ? String(payload.content_excerpt) : undefined,
       reporter_peer_id: fromPeerId,
       created_at: new Date().toISOString(),
@@ -376,11 +382,14 @@ export function handleSyncRequest(operation: string, payload: Record<string, unk
     return { ok: true };
   }
 
-  // Member leaving: the owner drops them from the member list and re-broadcasts the
-  // updated roster so everyone's view converges. Only the owner mutates membership.
+  // Member leaving: the owner drops them from the member list, ROTATES the Crowd
+  // epoch (same forward-secrecy rule as a kick — a departed member must not keep a
+  // usable channel key for future ciphertext), and re-broadcasts the updated roster +
+  // fresh root so everyone's view converges. Only the owner mutates membership.
   if (operation === 'sync.leave') {
     if (isOwner && remotePeerId && server.members.includes(remotePeerId)) {
       removeServerMember(serverId, remotePeerId);
+      rotateCrowdEpoch(serverId);
       publishNativeSnapshot();
       broadcastServerUpdate(serverId);
     }
@@ -451,10 +460,10 @@ export function handleSyncRequest(operation: string, payload: Record<string, unk
 
   // Cursor pagination (`sync.pull` with `before`): serve the page of messages that
   // precede the cursor, so a member can lazily scroll further back than the initial
-  // window. `before` is a created_at ISO cursor (exclusive); `limit` bounds the page.
-  // Cursor paging is member-history and always clamped to the retention window — a
-  // non-member (joinWindow) can never page past their allowed slice.
+  // window. `before` is a created_at ISO cursor (exclusive); `limit` bounds the page;
+  // `channel_id` scopes the page to one channel (the UI pages a single channel).
   const before = typeof payload.before === 'string' ? payload.before : undefined;
+  const pullChannelId = typeof payload.channel_id === 'string' ? payload.channel_id : undefined;
   const requestedLimit = Number(payload.limit);
   const pageLimit = Number.isFinite(requestedLimit) && requestedLimit > 0
     ? Math.min(Math.floor(requestedLimit), retention)
@@ -464,7 +473,13 @@ export function handleSyncRequest(operation: string, payload: Record<string, unk
   let hasMore = false;
   if (operation === 'sync.pull' && before) {
     // Only members may page (cursor pull is not a join); non-members get nothing.
-    const windowed = alreadyMember ? allMessages : [];
+    // Scope to the requested channel so a busy server's other channels can't fill the
+    // page, and clamp to the retention window BEFORE cursoring so repeated pulls can
+    // never exfiltrate history older than the manifest's advertised limit.
+    const scoped = alreadyMember
+      ? (pullChannelId ? allMessages.filter(m => m.scope_id === pullChannelId) : allMessages)
+      : [];
+    const windowed = scoped.slice(-retention);
     const older = windowed.filter(m => String(m.created_at ?? '') < before);
     messages = older.slice(-pageLimit);
     hasMore = older.length > messages.length;

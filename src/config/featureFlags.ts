@@ -176,6 +176,13 @@ export const FEATURES = {
   // Override via localStorage 'harmolyn:feature-overrides' to revert to
   // full HTTP for one release if issues are found in production.
   nativeEngine: true,
+  // memberServedHistory: opt-in fallback that pulls a server's read-copy history from
+  // ordinary MEMBERS (invite seeds / cursor paging) when the owner is offline. Ships
+  // DARK: served messages aren't individually authenticated, so a malicious member
+  // could serve forged history, and seeds can't verify the owner-only invite secret
+  // anyway. Until history carries owner signatures, only the owner serves authoritative
+  // history; with this flag off, paging/join fall back to owner-only + a local stub.
+  memberServedHistory: false,
   // directTransport: opt-in direct browser↔browser WebRTC transport + DCUtR
   // hole-punching, upgrading relayed circuits to direct connections when the NAT
   // allows. Ships DARK: it needs a 2nd relay + gateway rendezvous to be useful, and
