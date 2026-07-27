@@ -44,6 +44,7 @@ export interface InitialMessage {
   ekPub: Uint8Array;   // 32 B ephemeral X25519 pub
   ctMlkem: Uint8Array; // ML-KEM-768 ciphertext (1088 B)
   opkIndex: number;    // -1 if no OPK
+  opkPub?: Uint8Array; // 32 B pub of the OPK used — lets the responder bind/validate it
 }
 
 // ── Bundle generation ──────────────────────────────────────────────────────
@@ -102,6 +103,17 @@ export function buildBundle(
 
   const bundle: PrekeyBundle = { ...partial, bundle_signature: numArray(bundleSig) };
   return { bundle, priv: { spkPriv, opkPrivs, mlkemSk } };
+}
+
+/**
+ * Recompute a bundle's `bundle_signature` in place after its OPK set changes (e.g.
+ * a consumed one-time prekey is zeroed). Keeps the bundle self-verifiable so peers
+ * that fetch it after a consumption still pass verifyBundle.
+ */
+export function resignBundle(bundle: PrekeyBundle, signingKey: HybridSigningKey): void {
+  const { bundle_signature: _omit, ...partial } = bundle;
+  const canonPayload = new TextEncoder().encode(LABEL_BUNDLE_SIGN_PREFIX + JSON.stringify(partial));
+  bundle.bundle_signature = numArray(hybridSign(canonPayload, signingKey));
 }
 
 // ── Bundle verification ────────────────────────────────────────────────────
@@ -165,13 +177,23 @@ export function x3dhInitiate(
 
   let x3dhSecret = new Uint8Array([...dh1, ...dh2, ...dh3]);
   let opkIndex = -1;
+  let opkPubUsed: Uint8Array | undefined;
 
-  // DH4 (OPK) if available.
-  if (bundle.one_time_prekeys_x25519.length > 0) {
-    const opkPub = new Uint8Array(bundle.one_time_prekeys_x25519[0]);
+  // DH4 (OPK) if available. Pick a RANDOM unconsumed one-time prekey (a consumed
+  // slot is published as 32 zero bytes) rather than always index 0 — this spreads
+  // usage across the pool so no single OPK backs many sessions, and reduces the
+  // chance two concurrent initiators pick the same slot.
+  const available: number[] = [];
+  for (let i = 0; i < bundle.one_time_prekeys_x25519.length; i++) {
+    if (bundle.one_time_prekeys_x25519[i].some(b => b !== 0)) available.push(i);
+  }
+  if (available.length > 0) {
+    const pick = available[Math.floor(Math.random() * available.length)];
+    const opkPub = new Uint8Array(bundle.one_time_prekeys_x25519[pick]);
     const dh4 = x25519.getSharedSecret(ekPriv, opkPub);
     x3dhSecret = new Uint8Array([...x3dhSecret, ...dh4]);
-    opkIndex = 0;
+    opkIndex = pick;
+    opkPubUsed = opkPub;
   }
 
   // ML-KEM encapsulation.
@@ -183,7 +205,7 @@ export function x3dhInitiate(
   const hybridMaster = combineKem(x3dhSecret, ssMlkem);
 
   const rs = initRatchetFromMaster(hybridMaster, ekPriv, ekPub, spkPub, true);
-  return { im: { ekPub, ctMlkem, opkIndex }, rs };
+  return { im: { ekPub, ctMlkem, opkIndex, ...(opkPubUsed ? { opkPub: opkPubUsed } : {}) }, rs };
 }
 
 /** X3DH responder side. Returns the initial RatchetState. */
