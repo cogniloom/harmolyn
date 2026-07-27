@@ -279,3 +279,26 @@ body {
   word-spacing: 0.1em;
   line-height: 1.6;
 }
+
+/* simple-mode class applied from AccessibilitySection / Layout boot.
+   Calms the stylized cyberpunk aesthetic for non-technical users: the shared
+   .micro-label (used ~160× for stylized ALL-CAPS section headers and accents)
+   becomes plain sentence-case text, and decorative scanline/grid overlays and
+   glow effects are toned down. This is purely presentational — no layout or
+   behavior changes. */
+.simple-mode .micro-label {
+  text-transform: none;
+  letter-spacing: normal;
+  font-weight: 500;
+  font-size: 11px;
+}
+.simple-mode .grid-overlay,
+.simple-mode .scanlines,
+.simple-mode .scanline {
+  display: none !important;
+}
+.simple-mode .text-glow,
+.simple-mode [class*="drop-shadow"] {
+  text-shadow: none !important;
+  filter: none !important;
+}

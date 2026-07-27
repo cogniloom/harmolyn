@@ -73,6 +73,7 @@ import { unlockAndActivateVaultIdentity, downloadIdentityBackup, downloadActiveI
 import { SwitchingOverlay } from '@/components/SwitchingOverlay';
 import { PendingButton } from '@/components/ui/PendingButton';
 import { safeStorageRemove } from '@/lib/browserStorage';
+import { applyAccessibilityPrefs } from '@/lib/accessibility';
 import { canCopyTextToClipboardSafely, copyTextToClipboardSafely } from '@/components/contextMenuUtils';
 import { resolveAvatarSrc } from '@/lib/avatar';
 import { useEscapeKey } from '@/hooks/useEscapeKey';
@@ -142,6 +143,7 @@ interface AccessibilityPreferences {
   colorBlindMode: 'none' | 'protanopia' | 'deuteranopia' | 'tritanopia';
   ttsEnabled: boolean;
   sttEnabled: boolean;
+  simpleMode: boolean;
 }
 
 const AUTH_TOKEN_STORAGE_KEYS = [
@@ -174,6 +176,7 @@ const ACCESSIBILITY_DEFAULTS: AccessibilityPreferences = {
   colorBlindMode: 'none',
   ttsEnabled: false,
   sttEnabled: false,
+  simpleMode: false,
 };
 
 const FONT_SIZES: Array<{ key: AccessibilityPreferences['fontSize']; label: string; size: string }> = [
@@ -1663,10 +1666,6 @@ const AppearanceSection: React.FC<{
   );
 };
 
-const FONT_SIZE_MAP: Record<AccessibilityPreferences['fontSize'], string> = {
-  small: '13px', default: '15px', large: '17px', xlarge: '19px',
-};
-
 const CB_FILTERS: Record<string, string> = {
   protanopia:   '0.567 0.433 0 0 0  0.558 0.442 0 0 0  0 0.242 0.758 0 0  0 0 0 1 0',
   deuteranopia: '0.625 0.375 0 0 0  0.7 0.3 0 0 0  0 0.3 0.7 0 0  0 0 0 1 0',
@@ -1714,16 +1713,16 @@ const AccessibilitySection: React.FC = () => {
   const [sttListening, setSttListening] = useState(false);
   const [sttPreview, setSttPreview] = useState('');
 
-  // Apply visual effects
+  // Apply visual effects. Saturation goes on the html element here (not body) so it
+  // stacks with the color-blind body filter without clobbering it. Destructured so the
+  // dep array covers exactly the fields applyAccessibilityPrefs reads (not tts/stt/cb).
+  const { fontSize, highContrast, reducedMotion, dyslexicFont, simpleMode, saturation } = preferences;
   useEffect(() => {
-    document.documentElement.style.fontSize = FONT_SIZE_MAP[preferences.fontSize] ?? '15px';
-    document.documentElement.classList.toggle('high-contrast', preferences.highContrast);
-    document.documentElement.classList.toggle('reduce-motion', preferences.reducedMotion);
-    document.documentElement.classList.toggle('dyslexic-font', preferences.dyslexicFont);
-    // Saturation stacks with color-blind filter; apply as CSS filter on html element
-    const satPart = preferences.saturation !== 100 ? `saturate(${preferences.saturation}%)` : '';
-    document.documentElement.style.filter = satPart;
-  }, [preferences.fontSize, preferences.highContrast, preferences.reducedMotion, preferences.dyslexicFont, preferences.saturation]);
+    applyAccessibilityPrefs(
+      { fontSize, highContrast, reducedMotion, dyslexicFont, simpleMode, saturation },
+      { applySaturationOnHtml: true },
+    );
+  }, [fontSize, highContrast, reducedMotion, dyslexicFont, simpleMode, saturation]);
 
   // Dyslexic font CDN load
   useEffect(() => {
@@ -1781,6 +1780,14 @@ const AccessibilitySection: React.FC = () => {
       </header>
 
       <div className="space-y-6">
+        {/* ── SIMPLE MODE ───────────────────── */}
+        <section>
+          <h3 className="micro-label text-white/40 border-b border-white/5 pb-2 mb-4">Simplicity</h3>
+          <ToggleCard label="Simple Mode"
+            desc="Calmer, plain-language interface — softens stylized labels and technical accents throughout the app. Recommended if you find the default look busy."
+            checked={preferences.simpleMode} onToggle={() => set('simpleMode', !preferences.simpleMode)} />
+        </section>
+
         {/* ── DYSLEXIA ──────────────────────── */}
         <section>
           <h3 className="micro-label text-white/40 border-b border-white/5 pb-2 mb-4">Reading</h3>

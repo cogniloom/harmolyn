@@ -52,6 +52,8 @@ import { Channel, AppState, ConnectionState, MessageLayout, XoreinRuntimeSnapsho
 import { AlertTriangle, Home, Compass, Users as UsersIcon, Settings as SettingsIcon, Menu, Loader2 } from 'lucide-react';
 import { generateTheme } from '@/utils/themeGenerator';
 import { safeStorageGet, safeStorageSet } from '@/lib/browserStorage';
+import { ProductTour, TOUR_DISMISSED_KEY } from '@/components/onboarding/ProductTour';
+import { applyStoredAccessibilityPrefs } from '@/lib/accessibility';
 import { usePersistentState } from '@/hooks/usePersistentState';
 import { safeLocationSearch } from '@/lib/browserLocation';
 import { safeViewportSize } from '@/lib/browserViewport';
@@ -79,18 +81,7 @@ export const Layout: React.FC = () => {
   // Apply saved accessibility preferences on startup so they take effect before
   // the user opens the settings page (e.g. font size persists across reloads).
   useEffect(() => {
-    try {
-      const raw = localStorage.getItem('harmolyn:settings:accessibility');
-      if (!raw) return;
-      const prefs = JSON.parse(raw) as { fontSize?: string; saturation?: number; highContrast?: boolean; reducedMotion?: boolean };
-      const sizeMap: Record<string, string> = { small: '13px', default: '15px', large: '17px', xlarge: '19px' };
-      if (prefs.fontSize) document.documentElement.style.fontSize = sizeMap[prefs.fontSize] ?? '15px';
-      if (typeof prefs.saturation === 'number' && prefs.saturation !== 100) {
-        document.body.style.filter = `saturate(${prefs.saturation}%)`;
-      }
-      if (prefs.highContrast) document.documentElement.classList.add('high-contrast');
-      if (prefs.reducedMotion) document.documentElement.classList.add('reduce-motion');
-    } catch { /* best effort */ }
+    applyStoredAccessibilityPrefs();
   }, []);
 
   const shellData = useSyncExternalStore(subscribeShellRuntimeData, readShellRuntimeData, readShellRuntimeData);
@@ -112,6 +103,8 @@ export const Layout: React.FC = () => {
   // It opens the AuthFlow on its friendly welcome step rather than dumping the
   // heavy security primer on load (the primer is one tap away via "learn more").
   const [showWelcome, setShowWelcome] = useState(() => !safeStorageGet(() => window.localStorage, 'harmolyn_onboarding_dismissed'));
+  const [showTour, setShowTour] = useState(false);
+  const hasProductTour = useFeature('communityOnboarding');
   const [showFriends, setShowFriends] = useState(initialUtilityScreen === 'friends');
   const [authScreen, setAuthScreen] = useState<'welcome' | 'login' | 'register' | null>(initialUtilityScreen === 'login' || initialUtilityScreen === 'register' ? initialUtilityScreen : null);
   const [showQuickSwitcher, setShowQuickSwitcher] = useState(false);
@@ -228,6 +221,19 @@ export const Layout: React.FC = () => {
       setAuthScreen('welcome');
     }
   }, [showWelcome, hasIdentity, identityLocked, authScreen]);
+
+  // Product tour: a plain-language walkthrough shown once, right after a new user
+  // has an identity and the auth flow has closed. Distinct from the security primer
+  // (that lives in AuthFlow) — this answers "how do I use the app?". Gated on the
+  // communityOnboarding flag and a one-time localStorage key.
+  useEffect(() => {
+    if (!hasProductTour) return;
+    if (hasIdentity && !identityLocked && authFlowStep === null && !state.showSettings) {
+      if (!safeStorageGet(() => window.localStorage, TOUR_DISMISSED_KEY)) {
+        setShowTour(true);
+      }
+    }
+  }, [hasProductTour, hasIdentity, identityLocked, authFlowStep, state.showSettings]);
 
   useEffect(() => {
     if (currentPeerId) {
@@ -939,6 +945,9 @@ export const Layout: React.FC = () => {
       {identityLocked && <UnlockScreen />}
       {!identityLocked && authFlowStep && (
         <AuthFlow initialStep={authFlowStep} onClose={closeAuthFlow} />
+      )}
+      {showTour && !identityLocked && !authFlowStep && (
+        <ProductTour onClose={() => setShowTour(false)} />
       )}
       <AnimatePresence mode="wait">
         {state.showSettings && (
