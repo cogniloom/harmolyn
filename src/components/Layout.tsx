@@ -58,6 +58,7 @@ import { safeViewportSize } from '@/lib/browserViewport';
 import { normalizeLayoutUsers, normalizeRuntimePeerId, normalizeRuntimeVoiceSession, resolveLayoutDirectMessageUser } from './layoutRuntime';
 import { useRuntimeBootstrapState } from '@/lib/xoreinRuntimeContext';
 import { readNotificationPreferences } from './NotificationSettings';
+import { useOnlineStatus } from '@/hooks/useOnlineStatus';
 
 const MESSAGE_LAYOUT_STORAGE_KEY = 'harmolyn:settings:message-layout';
 
@@ -140,15 +141,25 @@ export const Layout: React.FC = () => {
     .filter((r) => r.status === 'pending' && r.from_peer_id && r.from_peer_id !== currentPeerId).length;
 
   const desktopNotifications = useFeature('desktopNotifications');
+  const isOnline = useOnlineStatus();
 
-  // Request desktop Notification permission once when the flag is on and the
-  // browser supports it. We ask lazily (on first render, not on a user gesture)
-  // which is acceptable for notification permission — the browser will show its
-  // own prompt if needed; if the user denies we just stay toast-only.
+  // Request desktop Notification permission on the FIRST user gesture, never on
+  // cold load. A permission prompt before the user has interacted is a dark pattern
+  // and browsers tend to auto-block it; deferring to a real interaction is both
+  // more respectful and more likely to be granted.
   useEffect(() => {
-    if (desktopNotifications && typeof Notification !== 'undefined' && Notification.permission === 'default') {
-      void Notification.requestPermission();
-    }
+    if (!desktopNotifications || typeof Notification === 'undefined' || Notification.permission !== 'default') return;
+    const ask = () => {
+      window.removeEventListener('pointerdown', ask);
+      window.removeEventListener('keydown', ask);
+      if (Notification.permission === 'default') void Notification.requestPermission();
+    };
+    window.addEventListener('pointerdown', ask, { once: true });
+    window.addEventListener('keydown', ask, { once: true });
+    return () => {
+      window.removeEventListener('pointerdown', ask);
+      window.removeEventListener('keydown', ask);
+    };
   }, [desktopNotifications]);
 
   // Notifications: the native layer dispatches `harmolyn:notify` CustomEvents for
@@ -880,6 +891,11 @@ export const Layout: React.FC = () => {
     <div ref={mainRef} className="flex h-screen w-full bg-bg-0 overflow-hidden font-sans relative" style={themeStyle}>
       {/* Streamer mode: slim top-bar notification (no full-screen blocker). */}
       <StreamerTopBar />
+      {!isOnline && (
+        <div role="status" className="fixed top-0 inset-x-0 z-[300] bg-accent-warning/90 text-black text-center text-[12px] font-semibold py-1.5 px-3">
+          You’re offline. Messages you send will be delivered when your connection returns.
+        </div>
+      )}
       {bootstrapState.status !== 'idle' && bootstrapState.status !== 'ready' && (
         <div className="fixed top-4 left-1/2 -translate-x-1/2 z-[280] w-[min(720px,calc(100vw-24px))]">
           <div className={`glass-card rounded-r3 backdrop-blur-xl shadow-2xl px-4 py-3 flex items-center gap-3 ${
