@@ -49,11 +49,15 @@ export function newCrowdGroup(scopeId: string): CrowdState {
  * members (over the authenticated P2P join stream). Every member that seeds the
  * same root derives identical per-sender keys, enabling broadcast E2EE without
  * the support node ever seeing the root or any plaintext.
+ *
+ * `epochId` lets a late joiner start at the group's CURRENT epoch (the one the
+ * owner advertises alongside the root) rather than always at 0, so their message
+ * epoch ids line up with everyone else's.
  */
-export function newCrowdGroupFromRoot(scopeId: string, root: Uint8Array): CrowdState {
+export function newCrowdGroupFromRoot(scopeId: string, root: Uint8Array, epochId = 0): CrowdState {
   return {
     scopeId,
-    currentEpoch: epochFromRoot(root, 0),
+    currentEpoch: epochFromRoot(root, epochId),
     prevEpochs: [],
   };
 }
@@ -84,12 +88,33 @@ export function rotateEpochMembership(g: CrowdState): void {
   g.currentEpoch = epochFromRoot(freshRoot, nextId);
 }
 
+/**
+ * Install an EXTERNALLY-supplied epoch root (received from the owner over the
+ * authenticated sync stream) as the new current epoch. Idempotent and monotonic:
+ * a root whose epoch is not strictly newer than the installed one is ignored, so a
+ * replayed or stale rotation cannot roll the group back or desync it. The previous
+ * epoch is retained in the legacy window so in-flight messages under it still
+ * decrypt. This is the ONLY way a membership rotation reaches remaining members —
+ * the owner mints a fresh root, bumps the epoch, and broadcasts both.
+ */
+export function installEpochRoot(g: CrowdState, root: Uint8Array, epochId: number): void {
+  if (epochId <= g.currentEpoch.epochId) return; // stale / duplicate — never roll back
+  g.prevEpochs = [g.currentEpoch, ...g.prevEpochs].slice(0, LEGACY_WINDOW_SIZE);
+  g.currentEpoch = epochFromRoot(root, epochId);
+}
+
 // ── Encryption / decryption ────────────────────────────────────────────────
 
-/** Encrypt a message with the sender's ChaCha20-Poly1305 key. Auto-rotates epoch if needed. */
+/**
+ * Encrypt a message with the sender's ChaCha20-Poly1305 key.
+ *
+ * NOTE: epoch rotation is OWNER-DRIVEN only (installEpochRoot on membership change),
+ * never automatic. A per-instance count/TTL rotation would derive a new root that
+ * no other member learns — each member counts only its own sends — so peers would
+ * silently desync after ~1000 messages. Rotation therefore happens exclusively via
+ * the synchronized `crowd_root`/`crowd_epoch` the owner broadcasts.
+ */
 export function crowdEncrypt(g: CrowdState, senderId: string, plaintext: Uint8Array): CrowdCiphertext {
-  if (needsRotation(g.currentEpoch)) rotateEpochDeterministic(g);
-
   let sk = g.currentEpoch.senderKeys.get(senderId);
   if (!sk) { sk = deriveSenderKey(g.currentEpoch.epochRoot, senderId); }
 
@@ -116,17 +141,6 @@ export function crowdDecrypt(g: CrowdState, ct: CrowdCiphertext): Uint8Array {
 
 function epochFromRoot(root: Uint8Array, epochId: number): CrowdEpoch {
   return { epochId, epochRoot: new Uint8Array(root), senderKeys: new Map(), messageCount: 0, startedAt: Date.now() };
-}
-
-function rotateEpochDeterministic(g: CrowdState): void {
-  const nextRoot = deriveEpochRoot(g.currentEpoch.epochRoot);
-  const nextId = g.currentEpoch.epochId + 1;
-  g.prevEpochs = [g.currentEpoch, ...g.prevEpochs].slice(0, LEGACY_WINDOW_SIZE);
-  g.currentEpoch = epochFromRoot(nextRoot, nextId);
-}
-
-function needsRotation(e: CrowdEpoch): boolean {
-  return e.messageCount >= MAX_EPOCH_MESSAGES || Date.now() - e.startedAt > EPOCH_TTL_MS;
 }
 
 function findEpoch(g: CrowdState, epochId: number): CrowdEpoch | null {

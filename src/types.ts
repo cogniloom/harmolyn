@@ -43,6 +43,14 @@ export interface Message {
   delivery_status?: 'pending' | 'sent' | 'offline_queued' | 'failed';
   /** Poll votes from P2P notify.push events — option_index → peer_ids. */
   poll_votes?: Record<number, string[]>;
+  /**
+   * The real per-message security mode (stamped at the encrypt/decrypt site).
+   * Used to drive the security badge and per-message lock indicators from what
+   * actually happened on the wire, never from the scope type.
+   */
+  securityMode?: 'seal' | 'crowd' | 'clear';
+  /** True when this message was end-to-end encrypted on the wire. */
+  encrypted?: boolean;
 }
 
 export interface Channel {
@@ -156,6 +164,14 @@ export interface XoreinRuntimeManifest {
   capabilities?: string[];
   history_coverage?: string;
   history_retention_messages?: number;
+  /**
+   * How many recent messages the owner serves to a BRAND-NEW joiner. Default 0
+   * (zero pre-join history — forward secrecy on join): a new member sees only what
+   * is sent after they join. A server may opt into a bounded recent window by
+   * setting this > 0. Existing members re-pulling always receive the full
+   * `history_retention_messages` window.
+   */
+  join_history_messages?: number;
 }
 
 export interface ServerRole {
@@ -188,6 +204,15 @@ export interface XoreinRuntimeServer {
    * to key channel message encryption/decryption.
    */
   crowd_root?: string;
+  /**
+   * Monotonic epoch number for `crowd_root`. Bumped every time the owner rotates
+   * the root (on member join and on kick/leave), and carried alongside the root so
+   * every member installs the same epoch. Messages carry their epoch id, so a
+   * remaining member can still decrypt in-flight old-epoch traffic (kept in a small
+   * legacy window) while a removed member — who never receives the new root — is
+   * locked out of all traffic at the new epoch. Defaults to 0 when absent.
+   */
+  crowd_epoch?: number;
   /**
    * Base64 secret used to mint/verify invite tokens (owner-held, never sent to
    * the support node). A joiner must present HMAC(invite_secret, server_id) to be
@@ -248,6 +273,17 @@ export interface XoreinRuntimeMessage {
    * Key = option index (as string), value = array of peer_ids that voted for that option.
    */
   poll_votes?: Record<number, string[]>;
+  /**
+   * The security mode under which this specific message actually crossed the wire,
+   * stamped at the encrypt/decrypt site — NOT inferred from the scope type. Inbound
+   * messages are only stored after successful decryption, so they always carry the
+   * real mode; outbound messages carry `clear` only when encryption was impossible
+   * (e.g. no crowd_root seeded) and the message was kept local. Drives the security
+   * badge so the UI never claims encryption the wire did not provide.
+   */
+  security_mode?: 'seal' | 'crowd' | 'clear';
+  /** True when this message was end-to-end encrypted on the wire (see security_mode). */
+  encrypted?: boolean;
 }
 
 export interface XoreinRuntimeVoiceParticipant {

@@ -350,10 +350,12 @@ describe('polls — P2P poll vote accumulation (Goal 9)', () => {
 });
 
 describe('crowd epoch rotation on member kick', () => {
-  it('nativeRemoveMember rotates crowd_root when one is set', () => {
+  it('nativeRemoveMember rotates crowd_root AND bumps crowd_epoch when one is set', () => {
     setNativeIdentity({ id: 'owner', peer_id: 'owner' });
     const srv = nativeCreateServer('Crowd Test');
-    // Give the server a crowd_root (simulates a live crowded channel).
+    // nativeCreateServer seeds crowd_epoch = 0.
+    expect(getState().servers[srv.id]?.crowd_epoch).toBe(0);
+    // Give the server a known crowd_root (simulates a live crowded channel).
     const originalRoot = 'original-crowd-root-base64value==';
     getState().servers[srv.id]!.crowd_root = originalRoot;
     // Add a member to kick (nativeCreateServer only adds the owner).
@@ -364,6 +366,9 @@ describe('crowd epoch rotation on member kick', () => {
     const updatedRoot = getState().servers[srv.id]?.crowd_root;
     expect(updatedRoot).toBeDefined();
     expect(updatedRoot).not.toBe(originalRoot);
+    // The epoch MUST advance so the kicked member's old root can't decrypt new
+    // traffic — a rotated root without an epoch bump would not revoke anything.
+    expect(getState().servers[srv.id]?.crowd_epoch).toBe(1);
   });
 
   it('nativeRemoveMember does not rotate crowd_root when none is set (no crowd encryption)', () => {

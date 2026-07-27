@@ -18,6 +18,7 @@ import {
   leaveVoice as storeLeaveVoice,
   setVoiceParticipant,
   setVoiceConnectionState,
+  setVoiceSecurityMode,
   upsertPeer,
 } from '../state/store.js';
 import { publishNativeSnapshot } from '../state/snapshot.js';
@@ -338,6 +339,7 @@ export class VoiceSession {
   private cap: InsertableCap = 'none';
   private useSframe = false;
   private localKey: PeerKey | null = null;
+  private securityMode: 'crowd' | 'clear' = 'clear';
   private iceServers: RTCIceServer[] = [];
 
   private peers = new Map<string, PeerConn>();
@@ -366,10 +368,18 @@ export class VoiceSession {
    */
   async start(): Promise<void> {
     this.cap = insertableStreamsCapability();
-    // SFrame only for server (Crowd) channels where a real shared key exists;
-    // DM/other modes rely on DTLS (mesh has no forwarding intermediary).
-    this.useSframe = this.cap !== 'none' && voiceSecurityMode(this.channelId) === 'crowd';
-    if (this.useSframe) this.localKey = deriveVoicePeerKey(this.channelId, this.localPeerId);
+    // SFrame only for server (Crowd) channels where a REAL shared key can be
+    // derived. deriveVoicePeerKey fails closed (returns null) when no crowd_root
+    // exists, so useSframe hinges on an actual key — never a placeholder. Without
+    // one, media relies on DTLS (the mesh has no forwarding intermediary), which is
+    // honest rather than a false "encrypted" label.
+    this.localKey = voiceSecurityMode(this.channelId) === 'crowd'
+      ? deriveVoicePeerKey(this.channelId, this.localPeerId)
+      : null;
+    this.useSframe = this.cap !== 'none' && this.localKey !== null;
+    // Publish the honest media security mode: crowd only when SFrame is genuinely
+    // active (a real key), else clear (DTLS-only). The badge never overclaims.
+    this.securityMode = this.useSframe ? 'crowd' : 'clear';
 
     // 1) Capture the microphone. Failure does NOT block the join — you can join
     //    a voice channel without a working mic (you simply can't be heard).
@@ -400,6 +410,7 @@ export class VoiceSession {
     storeJoinVoice(this.channelId, this.localPeerId);
     setVoiceParticipant(this.channelId, this.localPeerId, { muted: false, video: false, screen_sharing: false });
     setVoiceConnectionState(this.channelId, 'connecting');
+    setVoiceSecurityMode(this.channelId, this.securityMode);
     publishNativeSnapshot();
 
     // 3) Speaking ring for self.

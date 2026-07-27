@@ -8,9 +8,9 @@ import {
 } from '../families/peerstream.js';
 import { PROTOCOLS } from '../families/families.js';
 import { addMessage, editMessage as storeEditMessage, deleteMessage as storeDeleteMessage, pinMessage as storePinMessage, updatePresenceEntry, addReaction, removeReaction, getState, updateServer, upsertPeer, addFriendRequest, acceptFriendByPeer, ensureDm, bumpUnread, getActiveScope, removeServerMembership, removeServerMember, addPollVote } from '../state/store.js';
-import { nativeAnnouncePresence, broadcastServerUpdate } from '../state/mutations.js';
+import { nativeAnnouncePresence, broadcastServerUpdate, rotateCrowdEpoch } from '../state/mutations.js';
 import { publishNativeSnapshot } from '../state/snapshot.js';
-import { decryptInboundEnvelope, getScopeCrypto, type DecryptedMessage } from './secureEnvelope.js';
+import { decryptInboundEnvelope, getScopeCrypto, applyCrowdRoot, type DecryptedMessage } from './secureEnvelope.js';
 import { verifyInviteToken } from './invite.js';
 import type { PeerSync } from './peersync.js';
 
@@ -56,8 +56,14 @@ async function readStream(stream: AsyncIterable<Uint8Array | { subarray(): Uint8
   return total;
 }
 
-function base64ToUtf8(b64: string): string {
-  try { return decodeURIComponent(escape(atob(b64))); } catch { return b64; }
+/**
+ * The encryption mode every message in a given scope MUST carry: DMs are Seal
+ * (X3DH + Double Ratchet), channels are Crowd (sender-key broadcast). This is the
+ * fail-closed policy — an inbound message whose `enc` does not match is rejected,
+ * never decoded as plaintext, so a peer cannot downgrade a conversation to cleartext.
+ */
+function requiredEnc(scopeType: 'channel' | 'dm'): 'seal' | 'crowd' {
+  return scopeType === 'dm' ? 'seal' : 'crowd';
 }
 
 // ── Chat inbound ────────────────────────────────────────────────────────────
@@ -76,7 +82,7 @@ function handleChatSend(payload: Record<string, unknown>, remotePeerId: string):
 
   const decoded = decodeInboundMessage(payload, remotePeerId, scopeId, scopeType);
   if (!scopeId || !decoded) return;
-  const { body, media } = decoded;
+  const { body, media, mode } = decoded;
   // Accept text-only, attachment-only, or both — but never an empty message.
   if (!(body && body.length > 0) && !(media && media.length > 0)) return;
 
@@ -116,6 +122,9 @@ function handleChatSend(payload: Record<string, unknown>, remotePeerId: string):
     sender_peer_id: senderId,
     body,
     ...(media && media.length ? { media } : {}),
+    // A message only reaches this point after successful decryption (requiredEnc
+    // rejects anything unencrypted), so it is genuinely E2EE — stamp the real mode.
+    ...(mode ? { security_mode: mode, encrypted: true } : {}),
     created_at: new Date().toISOString(),
   });
 
@@ -130,10 +139,12 @@ function handleChatSend(payload: Record<string, unknown>, remotePeerId: string):
 }
 
 /**
- * Decode an inbound chat message. Encrypted envelopes (enc: 'seal' | 'crowd') are
- * decrypted via the session layer and yield the text body + any E2EE attachments;
- * legacy base64 bodies are decoded directly. Returns null when an encrypted
- * envelope cannot be decrypted (dropped, not surfaced as garbage).
+ * Decode an inbound chat message. FAIL-CLOSED: the envelope MUST carry the exact
+ * encryption the scope requires (seal for DMs, crowd for channels) — anything else
+ * (a missing `enc`, a plaintext body, or a mode mismatch) is rejected with `null`
+ * and never decoded as cleartext. This is what makes the "verifiable security"
+ * promise real: a peer cannot downgrade a conversation to plaintext, and a message
+ * that survives to the store is provably E2EE.
  */
 function decodeInboundMessage(
   payload: Record<string, unknown>,
@@ -142,11 +153,8 @@ function decodeInboundMessage(
   scopeType: 'channel' | 'dm',
 ): DecryptedMessage | null {
   const enc = typeof payload.enc === 'string' ? payload.enc : '';
-  if (enc === 'seal' || enc === 'crowd') {
-    return decryptInboundEnvelope(enc, payload, remotePeerId, scopeId, scopeType);
-  }
-  const rawBody = payload.body;
-  return { body: typeof rawBody === 'string' ? base64ToUtf8(rawBody) : '' };
+  if (enc !== requiredEnc(scopeType)) return null;
+  return decryptInboundEnvelope(enc, payload, remotePeerId, scopeId, scopeType);
 }
 
 // ── Chat edit / delete inbound ─────────────────────────────────────────────
@@ -162,20 +170,13 @@ function handleChatEdit(payload: Record<string, unknown>, remotePeerId: string):
   // SECURITY: only the original sender may edit a message.
   if (msg.sender_peer_id !== remotePeerId) return;
 
-  // Decrypt if the payload carries an E2EE envelope; fall back to plaintext body
-  // (legacy / unencrypted path) for compatibility.
-  let body: string;
-  const enc = typeof payload.enc === 'string' ? payload.enc : '';
-  if (enc === 'seal' || enc === 'crowd') {
-    const decoded = decodeInboundMessage(payload, remotePeerId, msg.scope_id, msg.scope_type as 'channel' | 'dm');
-    if (!decoded?.body) return;
-    body = decoded.body;
-  } else {
-    body = typeof payload.body === 'string' ? payload.body : '';
-    if (!body) return;
-  }
+  // FAIL-CLOSED: an edit must carry the scope's required E2EE envelope, exactly
+  // like a fresh send. A plaintext edit is rejected — no cleartext fallback — so
+  // an edit can never downgrade a message the original send encrypted.
+  const decoded = decodeInboundMessage(payload, remotePeerId, msg.scope_id, msg.scope_type as 'channel' | 'dm');
+  if (!decoded?.body) return;
 
-  storeEditMessage(messageId, body);
+  storeEditMessage(messageId, decoded.body);
   publishNativeSnapshot();
 }
 
@@ -312,12 +313,27 @@ function handleSyncRequest(operation: string, payload: Record<string, unknown>, 
   if (operation === 'sync.update') {
     const incoming = payload.server as Partial<XoreinRuntimeServer> | undefined;
     if (incoming && remotePeerId === server.owner_peer_id && !isOwner) {
+      // Apply the owner-authoritative fields. CRITICAL: this must include
+      // crowd_root/crowd_epoch (channel-key rotation) and roles/member_roles —
+      // previously they were silently dropped here, so kicks never revoked keys
+      // and role changes never reached members. crowd_epoch is monotonic, so
+      // installing an equal/older root is a safe no-op in the crypto layer.
+      const nextRoot = typeof incoming.crowd_root === 'string' ? incoming.crowd_root : undefined;
+      const nextEpoch = typeof incoming.crowd_epoch === 'number' ? incoming.crowd_epoch : undefined;
       updateServer(serverId, {
         ...(incoming.channels ? { channels: incoming.channels } : {}),
         ...(Array.isArray(incoming.members) ? { members: incoming.members } : {}),
         ...(incoming.manifest ? { manifest: incoming.manifest } : {}),
         ...(typeof incoming.name === 'string' && incoming.name ? { name: incoming.name } : {}),
+        ...(typeof incoming.description === 'string' ? { description: incoming.description } : {}),
+        ...(nextRoot ? { crowd_root: nextRoot } : {}),
+        ...(nextEpoch !== undefined ? { crowd_epoch: nextEpoch } : {}),
+        ...(Array.isArray(incoming.roles) ? { roles: incoming.roles } : {}),
+        ...(incoming.member_roles && typeof incoming.member_roles === 'object' ? { member_roles: incoming.member_roles } : {}),
       });
+      // Install the (possibly rotated) root into the live crypto so the new epoch
+      // takes effect immediately, not only on the next message.
+      if (nextRoot) applyCrowdRoot(serverId);
       publishNativeSnapshot();
     }
     return { ok: true };
@@ -368,24 +384,35 @@ function handleSyncRequest(operation: string, payload: Record<string, unknown>, 
   }
 
   // Only the owner mutates membership; any member can still serve a read copy.
-  if (operation === 'sync.join' && isOwner && remotePeerId && !server.members.includes(remotePeerId)) {
+  // A brand-new joiner: add them, then ROTATE the Crowd epoch so they cannot derive
+  // the previous epoch's sender keys (forward secrecy on join). Existing members
+  // receive the fresh root via the broadcast below; the joiner gets it in this
+  // response's server record. Re-pulls by existing members do NOT rotate.
+  const isNewJoiner = operation === 'sync.join' && isOwner && remotePeerId && !alreadyMember;
+  if (isNewJoiner) {
     updateServer(serverId, { members: [...server.members, remotePeerId] });
+    rotateCrowdEpoch(serverId);
+    broadcastServerUpdate(serverId);
     publishNativeSnapshot();
   }
 
   const current = getState().servers[serverId] ?? server;
   const allMessages = getState().messages.filter(m => !m.deleted && m.server_id === serverId);
   const retention = current.manifest?.history_retention_messages ?? 100;
-  // Serve the most recent `retention` messages only — honour the manifest window.
-  const messages = allMessages.slice(-retention);
+  // History policy: an existing member re-pulling gets the full retention window; a
+  // brand-new joiner gets only `join_history_messages` (default 0 = zero pre-join
+  // history / forward secrecy on join). The owner holds DECRYPTED plaintext, so
+  // clamping here — not the epoch rotation alone — is what actually stops a new
+  // member from reading old conversations.
+  const joinWindow = current.manifest?.join_history_messages ?? 0;
+  const historyLimit = alreadyMember ? retention : joinWindow;
+  const messages = historyLimit > 0 ? allMessages.slice(-historyLimit) : [];
   // Advertise our own circuit addresses so the joiner can reach us on our relay.
   const addresses = (getState().relay_addrs ?? []).filter(a => a.includes('p2p-circuit'));
   // SECURITY: strip invite_secret before sending — it is an owner-only capability
-  // that grants invite-minting authority. crowd_root is intentionally distributed
-  // to joining members so they can decrypt channel messages; it is a shared epoch
-  // key. Known gap: there is currently no epoch rotation on member removal — a
-  // revoked member retains their copy of crowd_root until the owner rotates it
-  // manually. Epoch rotation is tracked in docs/xorein-native-roadmap.md.
+  // that grants invite-minting authority. crowd_root/crowd_epoch ARE distributed to
+  // joining members so they can decrypt channel messages at the current epoch; the
+  // root is rotated on join above so a joiner never learns a prior epoch's key.
   const { invite_secret: _omit, ...serverForJoiner } = current;
   return { ok: true, server: serverForJoiner, messages, addresses };
 }

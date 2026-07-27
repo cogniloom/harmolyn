@@ -570,6 +570,20 @@ export function setVoiceConnectionState(channelId: string, state: XoreinRuntimeV
   }));
 }
 
+/**
+ * Record the HONEST media security mode for a voice session so the UI badge
+ * reflects real protection: `crowd` = SFrame E2EE over DTLS (a real shared key),
+ * `clear` = DTLS-only (no SFrame — e.g. no crowd_root). Never claims SFrame the
+ * media pipeline isn't actually applying.
+ */
+export function setVoiceSecurityMode(channelId: string, mode: XoreinRuntimeVoiceSession['security_mode']): void {
+  updateState(s => ({
+    voice_sessions: s.voice_sessions.map(v =>
+      v.channel_id === channelId ? { ...v, security_mode: mode } : v,
+    ),
+  }));
+}
+
 export function leaveVoice(channelId: string, peerId: string): void {
   updateState(s => ({
     voice_sessions: s.voice_sessions

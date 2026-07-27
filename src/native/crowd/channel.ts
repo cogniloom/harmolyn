@@ -6,7 +6,7 @@
 // member can encrypt a broadcast that every other member can read, while the
 // relay/support node only ever sees ciphertext.
 import {
-  newCrowdGroupFromRoot, crowdEncrypt, crowdDecrypt,
+  newCrowdGroupFromRoot, crowdEncrypt, crowdDecrypt, installEpochRoot,
   type CrowdState, type CrowdCiphertext,
 } from './crowd.js';
 
@@ -37,17 +37,36 @@ export class ChannelCrypto {
   private readonly groups = new Map<string, CrowdState>();
 
   /**
-   * Seed the shared epoch root for a server. Idempotent: the first root wins so
-   * a late re-seed cannot desync an active group. `root` is the raw 32 bytes.
+   * Seed or ROTATE the shared epoch root for a server.
+   *
+   * `epoch` is the owner-authoritative epoch number carried alongside the root:
+   *   • first seed (no group yet)          → create the group at `epoch`.
+   *   • strictly-newer epoch (a rotation)  → install the new root as current,
+   *     retaining the previous epoch in the legacy window so in-flight messages
+   *     still decrypt. THIS is what makes a kick actually revoke keys: a removed
+   *     member never receives the new (root, epoch), so they cannot decrypt any
+   *     traffic at the new epoch.
+   *   • same-or-older epoch                → ignored (idempotent, no rollback).
+   *
+   * Previously this was first-root-wins, which silently dropped every rotation.
    */
-  setRoot(serverId: string, root: Uint8Array): void {
-    if (this.groups.has(serverId)) return;
+  setRoot(serverId: string, root: Uint8Array, epoch = 0): void {
     if (root.length !== 32) return;
-    this.groups.set(serverId, newCrowdGroupFromRoot(serverId, root));
+    const existing = this.groups.get(serverId);
+    if (!existing) {
+      this.groups.set(serverId, newCrowdGroupFromRoot(serverId, root, epoch));
+      return;
+    }
+    installEpochRoot(existing, root, epoch);
   }
 
   hasRoot(serverId: string): boolean {
     return this.groups.has(serverId);
+  }
+
+  /** The installed epoch for a server's channel group, or -1 if none seeded. */
+  epochOf(serverId: string): number {
+    return this.groups.get(serverId)?.currentEpoch.epochId ?? -1;
   }
 
   /** Encrypt a channel message for `serverId`. Throws if no root is seeded. */

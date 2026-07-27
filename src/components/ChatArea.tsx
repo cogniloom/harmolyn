@@ -385,14 +385,25 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   hasIdentity = false,
   onOpenAuth,
 }) => {
-  // When the native engine is the live data path, conversations are genuinely
-  // E2E-encrypted — Seal (X3DH + Double Ratchet) for DMs, Crowd (sender-key
-  // broadcast) for channels — so the badge reports that real mode instead of the
-  // HTTP bridge's "unspecified". Off the native path we defer to the negotiated
-  // value (never silently claiming encryption the wire doesn't provide).
+  // The security badge is derived from what ACTUALLY happened on the wire, never
+  // from the scope type. On the native path each message carries the real mode it
+  // was encrypted/decrypted under (`securityMode`): inbound messages only exist
+  // after successful decryption, and outbound messages are marked `clear` only when
+  // encryption was impossible and they were kept local. So: if any message in the
+  // conversation is `clear`, the badge downgrades to the danger state (warning the
+  // user their traffic isn't protected); otherwise it shows the real E2EE mode.
+  // An empty conversation shows its expected mode (the next message is guaranteed
+  // encrypted by the fail-closed send path). Off the native path we defer to the
+  // negotiated value and never claim encryption the wire didn't provide.
   const nativeActive = typeof window !== 'undefined'
     && (window as unknown as { __HARMOLYN_NATIVE_ACTIVE__?: boolean }).__HARMOLYN_NATIVE_ACTIVE__ === true;
-  const conversationMode = nativeActive ? (isDM ? 'seal' : 'crowd') : securityMode;
+  const anyClearMessage = useMemo(
+    () => messages.some((m) => !m.isSystem && (m.securityMode === 'clear' || m.encrypted === false)),
+    [messages],
+  );
+  const conversationMode = nativeActive
+    ? (anyClearMessage ? 'clear' : (isDM ? 'seal' : 'crowd'))
+    : securityMode;
   const securityBadge = resolveSecurityMode(conversationMode);
   const channelFollowingEnabled = useFeature('channelFollowing');
   const [followedChannels, setFollowedChannels] = usePersistentState<string[]>(PREVIEW_STORAGE_KEYS.channelFollows, []);

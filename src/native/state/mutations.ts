@@ -29,7 +29,7 @@ import { markStateDirty } from './stateSync.js';
 import type { NativeState } from './store.js';
 import { getState } from './store.js';
 import { getPeerSync } from '../sync/registry.js';
-import { encryptChannelEnvelope, encryptDmEnvelope } from '../sync/secureEnvelope.js';
+import { encryptChannelEnvelope, encryptDmEnvelope, channelSecurityMode, applyCrowdRoot } from '../sync/secureEnvelope.js';
 import { depositOfflineChat } from '../delivery/offline.js';
 import { addRelayOverride, removeRelayOverride } from '../transport/relays.js';
 import { PROTOCOLS } from '../families/families.js';
@@ -41,6 +41,24 @@ function freshCrowdRoot(): string {
   let s = '';
   for (let i = 0; i < r.length; i++) s += String.fromCharCode(r[i]);
   return btoa(s);
+}
+
+/**
+ * Owner-only: rotate a server's Crowd epoch — mint a fresh random root, bump the
+ * epoch number, and install both into the live crypto so we immediately encrypt at
+ * the new epoch. The caller is responsible for broadcasting the updated server
+ * record to remaining members (broadcastServerUpdate) so they install the same
+ * (root, epoch); anyone NOT in that broadcast (a kicked member) is thereby locked
+ * out of all future channel traffic. Returns true when a rotation happened.
+ */
+export function rotateCrowdEpoch(serverId: string): boolean {
+  const server = getState().servers[serverId];
+  if (!server || server.owner_peer_id !== localPeerId()) return false;
+  if (!server.crowd_root) return false; // no channel key to rotate
+  const nextEpoch = (server.crowd_epoch ?? 0) + 1;
+  updateServer(serverId, { crowd_root: freshCrowdRoot(), crowd_epoch: nextEpoch });
+  applyCrowdRoot(serverId); // encrypt under the new epoch from now on
+  return true;
 }
 
 function localPeerId(): string {
@@ -66,6 +84,10 @@ export function nativeSendChannelMessage(
   const server = Object.values(state.servers).find(s =>
     Object.keys(s.channels).includes(channelId),
   );
+  // The real mode this message will cross the wire under: crowd when the shared
+  // epoch root is seeded, else clear (encryption impossible → kept local). Stamped
+  // now so the security badge reflects what actually happens, not the scope type.
+  const chanMode = server ? channelSecurityMode(server.id) : 'clear';
   const msg: XoreinRuntimeMessage = {
     id: uid(),
     scope_type: 'channel',
@@ -75,6 +97,8 @@ export function nativeSendChannelMessage(
     body,
     created_at: nowISO(),
     delivery_status: 'pending',
+    security_mode: chanMode,
+    encrypted: chanMode !== 'clear',
     ...opts,
   };
   addMessage(msg);
@@ -141,6 +165,9 @@ export function nativeSendDmMessage(
   // user into thinking it was sent. The mutation facade calls nativeEnsureDirectMessage
   // before send, so this guard is a last-resort safety net.
   if (!dm) throw new Error(`nativeSendDmMessage: DM thread ${dmId} does not exist`);
+  // DM bodies are always Seal-encrypted (X3DH + Double Ratchet) per recipient; the
+  // send path never transmits plaintext (it queues locally on session failure), so
+  // the conversation is honestly Seal-mode.
   const msg: XoreinRuntimeMessage = {
     id: uid(),
     scope_type: 'dm',
@@ -149,6 +176,8 @@ export function nativeSendDmMessage(
     body,
     created_at: nowISO(),
     delivery_status: 'pending',
+    security_mode: 'seal',
+    encrypted: true,
     ...opts,
   };
   addMessage(msg);
@@ -358,8 +387,10 @@ export function nativeCreateServer(
     updated_at: nowISO(),
     members: [localPeerId()],
     // Shared Crowd epoch root for channel E2EE — distributed to members over the
-    // authenticated P2P join stream, never to the support node.
+    // authenticated P2P join stream, never to the support node. Starts at epoch 0;
+    // the owner bumps it on every membership change (join/kick/leave).
     crowd_root: freshCrowdRoot(),
+    crowd_epoch: 0,
     // Secret for minting/verifying invite tokens (owner-only; never leaves device).
     invite_secret: freshCrowdRoot(),
     channels: {
@@ -506,10 +537,11 @@ export function nativeUpdateServerMeta(serverId: string, patch: ServerMetaPatch)
 }
 
 /**
- * Owner kicks a member: drop them from the member list, tell that peer to forget
- * the server, and push the new member list to everyone else. (Crowd epoch rotation
- * on removal is a known gap — the kicked member retains their copy of crowd_root
- * until a manual rotation; tracked in docs/xorein-native-roadmap.md.)
+ * Owner kicks a member: drop them from the member list, ROTATE the Crowd epoch so
+ * the kicked member's copy of the root is dead, tell that peer to forget the
+ * server, and push the new server record (new root + epoch + member list) to
+ * everyone else. The kicked peer is not in that broadcast, so it can decrypt no
+ * message sent after the kick — real, cryptographic revocation.
  */
 export function nativeRemoveMember(serverId: string, peerId: string): void {
   const me = localPeerId();
@@ -517,11 +549,9 @@ export function nativeRemoveMember(serverId: string, peerId: string): void {
   if (!server || server.owner_peer_id !== me) return; // owner-only
   if (!peerId || peerId === me) return; // owner can't kick self — use delete
   removeServerMember(serverId, peerId);
-  // Crowd epoch rotation: generate a new crowd_root so the kicked member's
-  // copy is no longer valid. The new root is included in broadcastServerUpdate.
-  if (server.crowd_root) {
-    updateServer(serverId, { crowd_root: freshCrowdRoot() });
-  }
+  // Rotate the channel epoch so the removed member's root no longer decrypts new
+  // traffic. Remaining members receive the fresh root via broadcastServerUpdate.
+  rotateCrowdEpoch(serverId);
   publishNativeSnapshot();
   // Tell the kicked peer to drop the server from their rail.
   void getPeerSync()?.sendToPeer(peerId, PROTOCOLS.sync, 'sync.remove', { server_id: serverId });

@@ -446,6 +446,8 @@ function mapMessage(
       ...(message.pinned === true ? { pinned: true } : {}),
       ...(message.delivery_status ? { delivery_status: message.delivery_status } : {}),
       ...(message.poll_votes ? { poll_votes: message.poll_votes } : {}),
+      ...(message.security_mode ? { securityMode: message.security_mode } : {}),
+      ...(typeof message.encrypted === 'boolean' ? { encrypted: message.encrypted } : {}),
     },
   };
 }
