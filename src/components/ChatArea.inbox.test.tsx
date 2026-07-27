@@ -68,6 +68,7 @@ vi.mock('@/hooks/runtime/mutations', () => ({
   usePinMessage: () => ({ mutateAsync: vi.fn() }),
   useUnpinMessage: () => ({ mutateAsync: vi.fn() }),
   useCastPollVote: () => ({ mutate: vi.fn(), mutateAsync: vi.fn() }),
+  useLoadOlderHistory: () => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false }),
   useSetPeerVerified: () => ({ mutate: vi.fn(), mutateAsync: vi.fn() }),
   useSubmitReport: () => ({ mutate: vi.fn(), mutateAsync: vi.fn() }),
 }));

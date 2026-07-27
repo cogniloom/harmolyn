@@ -367,6 +367,10 @@ export interface XoreinRuntimeVoiceSession {
   security_mode?: 'seal' | 'crowd' | 'tree' | 'clear';
   connection_state?: 'connecting' | 'connected' | 'failed' | 'closed';
   self_muted?: boolean;
+  // True when no TURN relay is available (STUN-only): calls may fail to connect on
+  // restrictive/symmetric NATs. The UI surfaces this as a visible warning rather
+  // than letting the call silently never connect.
+  turn_unavailable?: boolean;
 }
 
 // SDP/ICE wire types for voice signaling over /aether/voice/0.1.0.

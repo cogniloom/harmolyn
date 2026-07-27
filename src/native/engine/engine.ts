@@ -33,7 +33,7 @@ import { registerScopeCrypto, resetScopeCrypto } from '../sync/secureEnvelope.js
 import { registerOfflineIdentity, resetOfflineIdentity, drainOfflineChat } from '../delivery/offline.js';
 import { PROTOCOLS, RECOVERY_OPS } from '../families/families.js';
 import { unframeMessage, frameMessage, decodePeerStreamRequest, encodePeerStreamResponse } from '../families/peerstream.js';
-import { VOICE_OPS, type VoicePresenceRequest, type VoiceOfferRequest } from '../voice/signaling.js';
+import { VOICE_OPS, type VoicePresenceRequest, type VoiceOfferRequest, type VoiceIceRequest } from '../voice/signaling.js';
 import {
   handleRecoveryStore, handleRecoveryRequest, handleRecoveryDeliver,
   distributeRecovery, sendRecoveryRequest, approveRecovery, denyRecovery,
@@ -413,6 +413,9 @@ export class XoreinNativeEngine {
             } else if (req.operation === VOICE_OPS.offer) {
               if (session) reply(await session.handleOffer(payload as unknown as VoiceOfferRequest, remotePeerId), req.requestId);
               else reply({ ok: false, error: 'not_in_channel' }, req.requestId);
+            } else if (req.operation === VOICE_OPS.ice) {
+              if (session) reply(session.handleIce(payload as unknown as VoiceIceRequest, remotePeerId), req.requestId);
+              else reply({ ok: false }, req.requestId);
             } else if (req.operation === VOICE_OPS.leave) {
               session?.handlePresence({ session_id: channelId, action: 'leave' }, remotePeerId);
               reply({ ok: true }, req.requestId);

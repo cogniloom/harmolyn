@@ -20,8 +20,22 @@
 export const VOICE_OPS = {
   presence: 'voice.presence',
   offer: 'voice.offer',
+  ice: 'voice.ice',
   leave: 'voice.leave',
 } as const;
+
+/**
+ * A single trickled ICE candidate, sent peer→peer as soon as it is gathered
+ * (instead of waiting for the full gather to embed candidates in the SDP). The
+ * receiver applies it once it has a remote description, buffering earlier ones.
+ */
+export interface VoiceIceRequest {
+  session_id: string;
+  from_peer_id: string;
+  candidate: string;
+  sdp_mid?: string | null;
+  sdp_mline_index?: number | null;
+}
 
 export type VoicePresenceAction = 'join' | 'leave' | 'query';
 

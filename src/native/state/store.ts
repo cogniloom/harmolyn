@@ -777,6 +777,15 @@ export function setVoiceSecurityMode(channelId: string, mode: XoreinRuntimeVoice
   }));
 }
 
+/** Flag whether TURN is unavailable for a voice session (STUN-only). */
+export function setVoiceTurnUnavailable(channelId: string, unavailable: boolean): void {
+  updateState(s => ({
+    voice_sessions: s.voice_sessions.map(v =>
+      v.channel_id === channelId ? { ...v, turn_unavailable: unavailable } : v,
+    ),
+  }));
+}
+
 export function leaveVoice(channelId: string, peerId: string): void {
   updateState(s => ({
     voice_sessions: s.voice_sessions

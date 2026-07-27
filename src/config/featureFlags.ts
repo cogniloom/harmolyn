@@ -105,6 +105,12 @@ export const FEATURES = {
   // kind-tagged signaling track so peers render it as a dedicated stream.
   screenShare: true,
   voiceControlBar: true,
+  // voiceScaleSfu: opt-in peer-SFU topology for large voice channels. A single
+  // elected coordinator (min peer-id over the roster) accepts each participant's
+  // SFrame-opaque media and re-forwards it, so non-coordinators hold one connection
+  // instead of N-1. SFrame keys are per-sender, so the coordinator relays ciphertext
+  // it cannot read. Ships dark until the forwarding media path is smoke-tested live.
+  voiceScaleSfu: false,
 
   // ─── Channels ────────────────────────────────────────────
   textVoiceChannels: true,
