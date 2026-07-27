@@ -25,6 +25,7 @@ export const KeyRevealStep: React.FC<KeyRevealStepProps> = ({ peerId, displayNam
   const [copied, setCopied] = useState(false);
   const [downloaded, setDownloaded] = useState(false);
   const [downloadError, setDownloadError] = useState<string | null>(null);
+  const [confirmingSkip, setConfirmingSkip] = useState(false);
 
   const handleCopy = async () => {
     if (!resolvedPeerId) return;
@@ -117,14 +118,42 @@ export const KeyRevealStep: React.FC<KeyRevealStepProps> = ({ peerId, displayNam
             that holds it. You can always download a backup later from Settings.
           </SecurityNote>
 
-          <button
-            type="button"
-            onClick={onDone}
-            className="w-full h-14 rounded-full bg-primary text-bg-0 font-bold text-body-strong flex items-center justify-center gap-2 hover:shadow-glow transition-all"
-          >
-            {downloaded ? 'Continue' : 'Continue without a backup'}
-            <ArrowRight size={18} />
-          </button>
+          {/* When the user hasn't saved a backup, make skipping a deliberate choice —
+              account loss here is permanent, which non-technical users may not expect. */}
+          {!downloaded && confirmingSkip ? (
+            <div className="rounded-r2 border border-accent-warning/30 bg-accent-warning/10 p-4 space-y-3">
+              <p className="text-caption text-text-primary leading-relaxed">
+                Continue without a backup? If you forget your password or lose this device, your
+                account <span className="font-bold">cannot be recovered</span>. We strongly recommend
+                downloading the backup first.
+              </p>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => setConfirmingSkip(false)}
+                  className="flex-1 h-11 rounded-full bg-primary text-bg-0 font-bold text-caption hover:shadow-glow transition-all"
+                >
+                  Go back &amp; save it
+                </button>
+                <button
+                  type="button"
+                  onClick={onDone}
+                  className="flex-1 h-11 rounded-full border border-stroke text-text-secondary font-semibold text-caption hover:bg-white/5 transition-all"
+                >
+                  Continue anyway
+                </button>
+              </div>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={() => (downloaded ? onDone() : setConfirmingSkip(true))}
+              className="w-full h-14 rounded-full bg-primary text-bg-0 font-bold text-body-strong flex items-center justify-center gap-2 hover:shadow-glow transition-all"
+            >
+              {downloaded ? 'Continue' : 'Continue without a backup'}
+              <ArrowRight size={18} />
+            </button>
+          )}
         </div>
       </div>
     </div>
