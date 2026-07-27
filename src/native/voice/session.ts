@@ -798,6 +798,9 @@ export class VoiceSession {
     // ICE-level recovery: distinct from connectionState so we react to the ICE
     // agent's own failed/disconnected before DTLS gives up.
     pc.oniceconnectionstatechange = () => {
+      // A redial replaces the map entry; the superseded connection's late events must
+      // not drive recovery/teardown of its replacement. Ignore once we're not current.
+      if (this.peers.get(remotePeerId) !== entry) return;
       const st = pc.iceConnectionState;
       if (st === 'connected' || st === 'completed') {
         // Recovered: clear any grace timer + reconnect budget.
@@ -819,6 +822,9 @@ export class VoiceSession {
     };
 
     pc.onconnectionstatechange = () => {
+      // Same guard: a stale connection reaching 'closed' after a redial must not call
+      // dropPeer (which would close the live replacement and discard its scheduler).
+      if (this.peers.get(remotePeerId) !== entry) return;
       const st = pc.connectionState;
       if (st === 'closed') this.dropPeer(remotePeerId);
       else if (st === 'failed') this.recoverPeer(remotePeerId, entry);

@@ -661,9 +661,13 @@ export class XoreinNativeEngine {
         String(a.created_at).localeCompare(String(b.created_at)) ||
         String(a.id).localeCompare(String(b.id)));
     const oldest = scopeMsgs[0];
-    const before = oldest ? String(oldest.created_at) : new Date().toISOString();
-    // A high id sentinel puts the first (no-local-history) pull after everything at
-    // that timestamp; once we hold messages, the oldest's own id bounds the next page.
+    // For an EMPTY channel use a max cursor (not our local clock): if the owner's clock
+    // is ahead, a now()-based cursor would exclude their newer messages and, once an
+    // older page merges, later pulls cursor from that older record — leaving a
+    // permanent gap for the omitted interval. A far-future sentinel bounds nothing, so
+    // the first page is simply the newest retained messages. Once we hold history, the
+    // oldest record's (created_at, id) bounds the next page.
+    const before = oldest ? String(oldest.created_at) : '9999-12-31T23:59:59.999Z';
     const beforeId = oldest ? String(oldest.id) : '￿';
 
     // Authoritative history comes from the OWNER only: served message copies are not
