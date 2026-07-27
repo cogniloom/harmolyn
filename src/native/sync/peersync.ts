@@ -122,6 +122,43 @@ export class PeerSync {
     }
   }
 
+  /**
+   * Pull a page of older history for a server we already belong to, from any
+   * reachable member (owner or a peer). `before` is a created_at ISO cursor
+   * (exclusive); the responder returns up to `limit` messages that precede it plus
+   * a `has_more` flag. Returns null if the peer is unreachable or declined.
+   */
+  async pullHistory(
+    fromPeerId: string,
+    serverId: string,
+    before: string,
+    limit: number,
+    inviteToken?: string,
+  ): Promise<{ ok?: boolean; messages?: unknown[]; has_more?: boolean } | null> {
+    if (!this.node || fromPeerId === this.localPeerId) return null;
+    try {
+      const resp = await callFamily(
+        this.node,
+        this.addrOf(fromPeerId),
+        PROTOCOLS.sync,
+        'sync.pull',
+        jsonBytes({
+          server_id: serverId,
+          peer_id: this.localPeerId,
+          before,
+          limit,
+          invite_token: inviteToken,
+          addresses: this.localCircuitAddrs(),
+        }),
+        crypto.randomUUID(),
+      );
+      if (!resp?.payload) return null;
+      return JSON.parse(new TextDecoder().decode(resp.payload)) as { ok?: boolean; messages?: unknown[]; has_more?: boolean };
+    } catch {
+      return null;
+    }
+  }
+
   // ── Outbound: broadcast to scope members ───────────────────────────────
 
   /**

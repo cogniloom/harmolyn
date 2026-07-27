@@ -200,6 +200,9 @@ export function useRuntimeMutations() {
         // owner is offline. engine is non-null on the native path.
         joinServerByInvite: (deeplink: string) =>
           engine ? engine.joinServer(deeplink) : Promise.resolve(nativeJoinServer(deeplink)),
+        // Page older channel history from the owner or any reachable member.
+        loadOlderHistory: (serverId: string, channelId: string) =>
+          engine ? engine.pullOlderHistory(serverId, channelId) : Promise.resolve({ added: 0, hasMore: false }),
         pinMessage: (channelId: string, messageId: string) => Promise.resolve(nativePinMessage(channelId, messageId)),
         unpinMessage: (channelId: string, messageId: string) => Promise.resolve(nativeUnpinMessage(channelId, messageId)),
         createRole: (serverId: string, opts: { role_name: string; permissions_bitfield?: number }) =>
@@ -285,6 +288,7 @@ export function useRuntimeMutations() {
       addFriendRequest: (peerAddr: string) => sendFriendRequest(snap, peerAddr),
       ensureDirectMessage: (peerId: string) => nativeEnsureDirectMessage(peerId),
       joinServerByInvite: (deeplink: string) => joinServerByInvite(snap, deeplink),
+      loadOlderHistory: (_serverId: string, _channelId: string) => Promise.resolve({ added: 0, hasMore: false }),
       pinMessage: (channelId: string, messageId: string) => pinMessage(snap, channelId, messageId),
       unpinMessage: (channelId: string, messageId: string) => unpinMessage(snap, channelId, messageId),
       createRole: (serverId: string, opts: { role_name: string; permissions_bitfield?: number }) => createRole(snap, serverId, opts),

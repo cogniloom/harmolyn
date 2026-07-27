@@ -292,6 +292,22 @@ export function applyJoinedServer(server: XoreinRuntimeServer, messages: XoreinR
   });
 }
 
+/**
+ * Merge a page of older history (from a member/owner `sync.pull`) into the store,
+ * de-duplicating by message id. Returns the number of NEW messages actually added,
+ * so the caller (UI load-older) can tell whether the page advanced anything.
+ */
+export function mergeHistoryMessages(messages: XoreinRuntimeMessage[]): number {
+  let added = 0;
+  updateState(s => {
+    const existingIds = new Set(s.messages.map(m => m.id));
+    const fresh = messages.filter(m => m && m.id && !existingIds.has(m.id));
+    added = fresh.length;
+    return fresh.length ? { messages: [...fresh, ...s.messages] } : {};
+  });
+  return added;
+}
+
 /** Record that the local identity has joined a server (membership). */
 export function recordServerMembership(serverId: string): void {
   updateState(s => (

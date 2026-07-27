@@ -60,6 +60,8 @@ export const CAPABILITY_MAP: CapabilityEntry[] = [
     description: 'Create a new server with a fresh crowd root and invite secret' },
   { name: 'joinServerByInvite', route: 'native', p2pPropagated: true,
     description: 'Join a server by deeplink; dials owner P2P to pull manifest' },
+  { name: 'loadOlderHistory', route: 'native', p2pPropagated: true,
+    description: 'Page older channel history from the owner or any reachable member (cursor pull)' },
   { name: 'createChannel', route: 'native', p2pPropagated: true,
     description: 'Create a channel and broadcast the updated server to members' },
   { name: 'updateChannel', route: 'native', p2pPropagated: true,

@@ -1,6 +1,43 @@
 import { describe, expect, it } from "vitest";
-import { DeeplinkValidationError, parseJoinDeepLink } from "./deeplink";
+import { DeeplinkValidationError, parseJoinDeepLink, buildJoinDeepLink, parseInviteMetadata } from "./deeplink";
 import { parseAbsoluteUrl } from './url';
+
+describe("member-seed round-trip (WS-D)", () => {
+  const OWNER = "ownerPeer12345678901234";
+  const S1 = "memberSeedAAAAAAAAAAAAAA";
+  const S2 = "memberSeedBBBBBBBBBBBBBB";
+
+  it("carries seeds through build → parse", () => {
+    const link = buildJoinDeepLink("cyber-devs", OWNER, "Cyber Devs", "tok-123", [S1, S2]);
+    const meta = parseInviteMetadata(link);
+    expect(meta.serverId).toBe("cyber-devs");
+    expect(meta.ownerPeerId).toBe(OWNER);
+    expect(meta.inviteToken).toBe("tok-123");
+    expect(meta.seeds).toEqual([S1, S2]);
+  });
+
+  it("drops the owner and duplicates from seeds, and caps the list", () => {
+    const many = Array.from({ length: 12 }, (_, i) => `seedPeer${String(i).padStart(16, "0")}`);
+    const link = buildJoinDeepLink("cyber-devs", OWNER, undefined, undefined, [OWNER, S1, S1, ...many]);
+    const meta = parseInviteMetadata(link);
+    expect(meta.seeds).not.toContain(OWNER);
+    expect(new Set(meta.seeds).size).toBe(meta.seeds!.length); // no dupes
+    expect(meta.seeds!.length).toBeLessThanOrEqual(8);
+  });
+
+  it("omits seeds entirely when none are valid", () => {
+    const link = buildJoinDeepLink("cyber-devs", OWNER, undefined, undefined, ["!!", "short"]);
+    const meta = parseInviteMetadata(link);
+    expect(meta.seeds).toBeUndefined();
+  });
+
+  it("is backward-compatible with seed-less invites", () => {
+    const link = buildJoinDeepLink("cyber-devs", OWNER);
+    const meta = parseInviteMetadata(link);
+    expect(meta.seeds).toBeUndefined();
+    expect(meta.ownerPeerId).toBe(OWNER);
+  });
+});
 
 function makeXoreinInviteDeeplink(serverId = "cyber-devs") {
   const rawInvite = Buffer.from(JSON.stringify({

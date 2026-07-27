@@ -1,7 +1,7 @@
 // Inbound PeerStream family handlers: receive chat messages, reactions, and
 // presence/typing updates from remote peers and apply them to the local store.
 import type { Libp2p } from 'libp2p';
-import type { XoreinRuntimeServer } from '../../types.js';
+import type { XoreinRuntimeServer, XoreinRuntimeMessage } from '../../types.js';
 import {
   frameMessage, unframeMessage,
   decodePeerStreamRequest, encodePeerStreamResponse,
@@ -333,7 +333,7 @@ function handleNotifyPush(payload: Record<string, unknown>, remotePeerId: string
  * returns the full server record + its message history. This is the owner-served
  * half of P2P invite-join — the joiner dials us over the relay circuit.
  */
-function handleSyncRequest(operation: string, payload: Record<string, unknown>, remotePeerId: string): Record<string, unknown> {
+export function handleSyncRequest(operation: string, payload: Record<string, unknown>, remotePeerId: string): Record<string, unknown> {
   const serverId = String(payload.server_id ?? '');
   if (!serverId) return { ok: false, error: 'missing_server_id' };
 
@@ -434,7 +434,12 @@ function handleSyncRequest(operation: string, payload: Record<string, unknown>, 
   }
 
   const current = getState().servers[serverId] ?? server;
-  const allMessages = getState().messages.filter(m => !m.deleted && m.server_id === serverId);
+  // Chronological order (oldest → newest) so cursor paging is deterministic across
+  // peers regardless of local store insertion order.
+  const allMessages = getState().messages
+    .filter(m => !m.deleted && m.server_id === serverId)
+    .slice()
+    .sort((a, b) => String(a.created_at ?? '').localeCompare(String(b.created_at ?? '')));
   const retention = current.manifest?.history_retention_messages ?? 100;
   // History policy: an existing member re-pulling gets the full retention window; a
   // brand-new joiner gets only `join_history_messages` (default 0 = zero pre-join
@@ -443,7 +448,30 @@ function handleSyncRequest(operation: string, payload: Record<string, unknown>, 
   // member from reading old conversations.
   const joinWindow = current.manifest?.join_history_messages ?? 0;
   const historyLimit = alreadyMember ? retention : joinWindow;
-  const messages = historyLimit > 0 ? allMessages.slice(-historyLimit) : [];
+
+  // Cursor pagination (`sync.pull` with `before`): serve the page of messages that
+  // precede the cursor, so a member can lazily scroll further back than the initial
+  // window. `before` is a created_at ISO cursor (exclusive); `limit` bounds the page.
+  // Cursor paging is member-history and always clamped to the retention window — a
+  // non-member (joinWindow) can never page past their allowed slice.
+  const before = typeof payload.before === 'string' ? payload.before : undefined;
+  const requestedLimit = Number(payload.limit);
+  const pageLimit = Number.isFinite(requestedLimit) && requestedLimit > 0
+    ? Math.min(Math.floor(requestedLimit), retention)
+    : Math.min(50, retention);
+
+  let messages: XoreinRuntimeMessage[];
+  let hasMore = false;
+  if (operation === 'sync.pull' && before) {
+    // Only members may page (cursor pull is not a join); non-members get nothing.
+    const windowed = alreadyMember ? allMessages : [];
+    const older = windowed.filter(m => String(m.created_at ?? '') < before);
+    messages = older.slice(-pageLimit);
+    hasMore = older.length > messages.length;
+  } else {
+    messages = historyLimit > 0 ? allMessages.slice(-historyLimit) : [];
+    hasMore = allMessages.length > messages.length && (alreadyMember ? historyLimit > 0 : false);
+  }
   // Advertise our own circuit addresses so the joiner can reach us on our relay.
   const addresses = (getState().relay_addrs ?? []).filter(a => a.includes('p2p-circuit'));
   // SECURITY: strip invite_secret before sending — it is an owner-only capability
@@ -451,7 +479,7 @@ function handleSyncRequest(operation: string, payload: Record<string, unknown>, 
   // joining members so they can decrypt channel messages at the current epoch; the
   // root is rotated on join above so a joiner never learns a prior epoch's key.
   const { invite_secret: _omit, ...serverForJoiner } = current;
-  return { ok: true, server: serverForJoiner, messages, addresses };
+  return { ok: true, server: serverForJoiner, messages, addresses, has_more: hasMore };
 }
 
 /**

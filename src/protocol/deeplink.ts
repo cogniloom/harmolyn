@@ -30,21 +30,54 @@ export interface InviteMetadata {
   serverName?: string;
   /** Opaque invite-capability token the owner verifies before serving history. */
   inviteToken?: string;
+  /**
+   * A few recent member peer-ids the joiner can dial to pull a read copy of the
+   * server when the owner is offline (member-served history fallback). Best-effort:
+   * any member still enforces the invite token before serving, and only the owner
+   * mutates membership — seeds only speed up first contact.
+   */
+  seeds?: string[];
 }
+
+const MAX_INVITE_SEEDS = 8;
+const PEER_ID_PATTERN = /^[A-Za-z0-9]{20,120}$/;
 
 /**
  * Build a shareable join deeplink that carries the owner's peer id so a joiner
  * can dial the owner directly over the relay circuit (P2P) and pull the server.
  *   xorein://join/<serverId>?invite=<base64url({v,owner,name})>
  */
-export function buildJoinDeepLink(serverId: string, ownerPeerId: string, serverName?: string, inviteToken?: string): string {
+export function buildJoinDeepLink(
+  serverId: string,
+  ownerPeerId: string,
+  serverName?: string,
+  inviteToken?: string,
+  seeds?: string[],
+): string {
+  const cleanSeeds = sanitizeSeeds(seeds, ownerPeerId);
   const payload = JSON.stringify({
     v: 1,
     owner: ownerPeerId,
     ...(serverName ? { name: serverName } : {}),
     ...(inviteToken ? { tok: inviteToken } : {}),
+    ...(cleanSeeds.length ? { seeds: cleanSeeds } : {}),
   });
   return `xorein://join/${serverId}?invite=${encodeBase64Url(payload)}`;
+}
+
+/** Normalize a seed list: valid distinct peer-ids, excluding the owner, capped. */
+function sanitizeSeeds(seeds: string[] | undefined, ownerPeerId?: string): string[] {
+  if (!Array.isArray(seeds)) return [];
+  const out: string[] = [];
+  const seen = new Set<string>(ownerPeerId ? [ownerPeerId] : []);
+  for (const raw of seeds) {
+    const s = trimString(raw);
+    if (!s || seen.has(s) || !PEER_ID_PATTERN.test(s)) continue;
+    seen.add(s);
+    out.push(s);
+    if (out.length >= MAX_INVITE_SEEDS) break;
+  }
+  return out;
 }
 
 /**
@@ -58,6 +91,7 @@ export function parseInviteMetadata(raw: string): InviteMetadata {
   let ownerPeerId: string | undefined;
   let serverName: string | undefined;
   let inviteToken: string | undefined;
+  let seeds: string[] = [];
   if (invite) {
     try {
       const decoded = JSON.parse(decodeBase64Url(invite));
@@ -66,6 +100,7 @@ export function parseInviteMetadata(raw: string): InviteMetadata {
         const manifest = isRecord(decoded.manifest) ? decoded.manifest : undefined;
         serverName = trimString(decoded.name) || (manifest ? trimString(manifest.name) : '') || undefined;
         inviteToken = trimString(decoded.tok) || trimString(decoded.invite_token) || undefined;
+        seeds = sanitizeSeeds(Array.isArray(decoded.seeds) ? decoded.seeds as string[] : undefined, ownerPeerId);
       }
     } catch { /* opaque/legacy invite — owner unknown, caller falls back */ }
   }
@@ -74,6 +109,7 @@ export function parseInviteMetadata(raw: string): InviteMetadata {
     ...(ownerPeerId ? { ownerPeerId } : {}),
     ...(serverName ? { serverName } : {}),
     ...(inviteToken ? { inviteToken } : {}),
+    ...(seeds.length ? { seeds } : {}),
   };
 }
 

@@ -18,7 +18,7 @@ import { newPeerKey, encryptFrame, decryptFrame, type PeerKey } from '../voice/m
 import { uploadBlob, downloadBlob, type BlobRef } from '../blobs/blobs.js';
 import { deliverOffline, drainDeliveries } from '../delivery/mailbox.js';
 import { serverRendezvousCID } from '../transport/rendezvous.js';
-import { initStore, setNativeIdentity, getState, updateState, upsertPeer, resetNativeStore, configureNativeStore, applyJoinedServer, setStateEncryptionKey, pinPeerIdentity } from '../state/store.js';
+import { initStore, setNativeIdentity, getState, updateState, upsertPeer, resetNativeStore, configureNativeStore, applyJoinedServer, mergeHistoryMessages, setStateEncryptionKey, pinPeerIdentity } from '../state/store.js';
 import { identityKeyBlob } from '../identity/safetyNumber.js';
 import { parseInviteMetadata } from '../../protocol/deeplink.js';
 import type { XoreinRuntimeServer, XoreinRuntimeMessage } from '../../types.js';
@@ -591,7 +591,79 @@ export class XoreinNativeEngine {
         console.warn('[xorein/join] P2P join dial failed, using local stub:', err);
       }
     }
+
+    // Member-served fallback: the owner is offline/unreachable. Try each seed member
+    // carried in the invite — any member can serve a READ copy of the server (it
+    // still verifies the invite token). Membership stays authoritative to the owner,
+    // so we keep the pending-owner-sync sentinel and reconcile when the owner returns.
+    const seeds = (meta.seeds ?? []).filter(s => s && s !== me && s !== meta.ownerPeerId);
+    for (const seed of seeds) {
+      try {
+        const data = await this.peerSync.joinServer(
+          seed,
+          meta.serverId,
+          getState().identity?.profile?.display_name,
+          meta.inviteToken,
+        );
+        if (data?.ok && data.server) {
+          const server = data.server as XoreinRuntimeServer;
+          applyJoinedServer(server, (data.messages ?? []) as XoreinRuntimeMessage[]);
+          upsertPeer({
+            peer_id: seed,
+            role: 'peer',
+            addresses: Array.isArray(data.addresses) ? data.addresses : [],
+            last_seen_at: new Date().toISOString(),
+          });
+          publishNativeSnapshot();
+          console.info('[xorein/join] owner offline; joined via member seed', seed);
+          return server;
+        }
+      } catch {
+        // try the next seed
+      }
+    }
+
     return nativeJoinServer(deeplink, { name: meta.serverName, ownerPeerId: meta.ownerPeerId });
+  }
+
+  /**
+   * Load older history for a channel by paging backwards from the oldest message
+   * we currently hold. Dials the server owner first, then falls back to other
+   * members, asking each for the page before our earliest known message. Returns
+   * how many new messages were merged and whether more remain older than the page
+   * (`hasMore`), so the UI can decide whether to keep the "load older" affordance.
+   */
+  async pullOlderHistory(serverId: string, channelId: string): Promise<{ added: number; hasMore: boolean }> {
+    const state = getState();
+    const server = state.servers[serverId];
+    const me = this._identity?.peerId;
+    if (!server) return { added: 0, hasMore: false };
+
+    // Oldest local message for this channel is our cursor (exclusive).
+    const scopeMsgs = state.messages
+      .filter(m => m.server_id === serverId && m.scope_id === channelId && m.created_at)
+      .sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
+    const before = scopeMsgs.length ? String(scopeMsgs[0].created_at) : new Date().toISOString();
+
+    // Try the owner first, then the rest of the roster (member-served history).
+    const candidates = [server.owner_peer_id, ...server.members]
+      .filter((p, i, arr) => p && p !== me && arr.indexOf(p) === i);
+
+    for (const peer of candidates) {
+      // Paging is a member operation — the responder exempts existing members from
+      // the invite-token check, so none is needed here.
+      const data = await this.peerSync.pullHistory(peer, serverId, before, 50);
+      if (data?.ok && Array.isArray(data.messages)) {
+        const added = mergeHistoryMessages(data.messages as XoreinRuntimeMessage[]);
+        if (added > 0 || data.messages.length > 0) {
+          publishNativeSnapshot();
+          return { added, hasMore: Boolean(data.has_more) };
+        }
+        // Peer answered but had nothing new — a definitive "no older here".
+        return { added: 0, hasMore: Boolean(data.has_more) };
+      }
+    }
+    return { added: 0, hasMore: false };
   }
 
   /** Record the always-on bootstrap relay as a reachable known peer. */

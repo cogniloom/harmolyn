@@ -23,7 +23,7 @@ import { InboxPanel } from '@/components/InboxPanel';
 import { MentionAutocomplete } from '@/components/MentionAutocomplete';
 import { useToast } from '@/lib/toastBus';
 import { useFeature } from '@/hooks/useFeature';
-import { useSendChannelMessage, useSendDmMessage, useEditMessage, useDeleteMessage, useAddReaction, useRemoveReaction, usePinMessage, useUnpinMessage, useCastPollVote, useSetPeerVerified, useSubmitReport } from '@/hooks/runtime/mutations';
+import { useSendChannelMessage, useSendDmMessage, useEditMessage, useDeleteMessage, useAddReaction, useRemoveReaction, usePinMessage, useUnpinMessage, useCastPollVote, useLoadOlderHistory, useSetPeerVerified, useSubmitReport } from '@/hooks/runtime/mutations';
 import { KeyVerification } from '@/components/KeyVerification';
 import { ReportModal, type ReportSubmission } from '@/components/ReportModal';
 import { markNotificationsRead, searchNotifications } from '@/lib/xoreinControl';
@@ -470,6 +470,13 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   const pinMutation = usePinMessage();
   const unpinMutation = useUnpinMessage();
   const castPollVoteMutation = useCastPollVote();
+  const loadOlderMutation = useLoadOlderHistory();
+
+  // Older-history paging: whether more history is believed to exist further back,
+  // and a ref holding the scroll height captured just before a prepend so we can
+  // restore the viewport to the same messages instead of jumping.
+  const [hasMoreHistory, setHasMoreHistory] = useState(true);
+  const preserveScrollRef = useRef<number | null>(null);
 
   const [threadMessage, setThreadMessage] = useState<Message | null>(null);
   const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
@@ -927,8 +934,19 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   }, []);
 
   useEffect(() => {
+    // When we just prepended older history, keep the viewport anchored to the same
+    // messages (restore by the height delta) instead of snapping to the bottom.
+    if (preserveScrollRef.current != null && scrollRef.current) {
+      const delta = scrollRef.current.scrollHeight - preserveScrollRef.current;
+      scrollRef.current.scrollTop = delta;
+      preserveScrollRef.current = null;
+      return;
+    }
     scrollToBottom();
   }, [channel, messageLayout, normalizedMessages, searchQuery, scrollToBottom]);
+
+  // Reset the "more history" belief when switching channels.
+  useEffect(() => { setHasMoreHistory(true); }, [channel?.id]);
 
   // Auto-expand the composer up to a capped max-height as the draft grows, then
   // let it scroll internally. Driven off inputValue so emoji/sticker/mention
@@ -1047,6 +1065,27 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   }, [isDM, channel, runtimeSnapshot]);
 
   const forwardDestinations = useMemo<ForwardDestination[]>(() => buildForwardDestinations(liveShellData, normalizedUsers), [liveShellData, normalizedUsers]);
+
+  // The server that owns this channel (undefined for DMs) — needed for the cursor pull.
+  const historyServerId = useMemo(() => {
+    if (isDM || !channel) return undefined;
+    return runtimeSnapshot?.servers?.find(
+      (s) => Object.prototype.hasOwnProperty.call(s.channels ?? {}, channel.id),
+    )?.id;
+  }, [isDM, channel, runtimeSnapshot]);
+
+  const handleLoadOlder = useCallback(async () => {
+    if (!channel || !historyServerId || loadOlderMutation.isPending) return;
+    preserveScrollRef.current = scrollRef.current?.scrollHeight ?? null;
+    try {
+      const res = await loadOlderMutation.mutateAsync({ serverId: historyServerId, channelId: channel.id }) as { added: number; hasMore: boolean };
+      setHasMoreHistory(res.hasMore);
+      if (res.added === 0 && !res.hasMore) preserveScrollRef.current = null;
+    } catch {
+      preserveScrollRef.current = null;
+      setHasMoreHistory(false);
+    }
+  }, [channel, historyServerId, loadOlderMutation]);
 
   // Real typing state: peers whose presence reports typing_in_scope === this
   // channel/DM. Presence is keyed by peer id; for remote peers the peer id is the
@@ -1272,7 +1311,22 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
           messageLayout === 'bubbles' ? 'space-y-2.5' : 
           'space-y-6'
         }`} ref={scrollRef} onScroll={handleScroll}>
-        
+
+        {/* Load older history — only for server channels (DMs page differently) and
+            when not filtering. Hidden once the responder reports no more history. */}
+        {!isDM && !searchQuery && historyServerId && hasMoreHistory && filteredMessages.length > 0 && (
+          <div className="flex justify-center pb-4">
+            <button
+              type="button"
+              onClick={handleLoadOlder}
+              disabled={loadOlderMutation.isPending}
+              className="text-xs font-semibold text-white/50 hover:text-primary border border-white/10 hover:border-primary/30 rounded-full px-4 py-1.5 transition-colors disabled:opacity-50"
+            >
+              {loadOlderMutation.isPending ? 'Loading…' : 'Load older messages'}
+            </button>
+          </div>
+        )}
+
         {messageLayout !== 'terminal' && !searchQuery && (
              <div className="pb-10 border-b border-white/5 mb-6">
                 <div className="w-20 h-20 rounded-2xl bg-gradient-to-br from-primary/30 to-transparent flex items-center justify-center mb-6 shadow-glow border border-primary/20 relative group">

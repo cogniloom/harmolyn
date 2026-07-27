@@ -30,6 +30,14 @@ export function useSendDmMessage() {
   });
 }
 
+export function useLoadOlderHistory() {
+  const m = useRuntimeMutations();
+  return useMutation({
+    mutationFn: ({ serverId, channelId }: { serverId: string; channelId: string }) =>
+      m.loadOlderHistory(serverId, channelId),
+  });
+}
+
 export function useEditMessage() {
   const m = useRuntimeMutations();
   return useMutation({
