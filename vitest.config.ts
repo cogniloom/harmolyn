@@ -14,6 +14,12 @@ export default defineConfig({
     globals: true,
     setupFiles: ["./src/test/setup.ts"],
     include: ["src/**/*.{test,spec}.{ts,tsx}"],
+    // Post-quantum crypto tests (ML-KEM-768 / ML-DSA-65 keygen+sign, X3DH, double
+    // ratchet) are CPU-heavy and, on shared CI runners under worker contention,
+    // legitimately exceed Vitest's 5s default — even light render tests get starved.
+    // Give real headroom so a slow runner doesn't flake the suite (green locally).
+    testTimeout: 20000,
+    hookTimeout: 20000,
     coverage: {
       provider: "v8",
       include: ["src/**/*.{ts,tsx}"],
