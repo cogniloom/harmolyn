@@ -75,7 +75,7 @@ import { PendingButton } from '@/components/ui/PendingButton';
 import { safeStorageRemove } from '@/lib/browserStorage';
 import { applyAccessibilityPrefs } from '@/lib/accessibility';
 import { useTranslation } from 'react-i18next';
-import { getLocale, setLocale } from '@/lib/locale';
+import { setLocale } from '@/lib/locale';
 import i18n, { SUPPORTED_LANGUAGES, isRtlLocale } from '@/i18n';
 import { canCopyTextToClipboardSafely, copyTextToClipboardSafely } from '@/components/contextMenuUtils';
 import { resolveAvatarSrc } from '@/lib/avatar';
@@ -1492,9 +1492,17 @@ const LAYOUTS: { key: MessageLayout; label: string; desc: string }[] = [
  */
 const LanguageSection: React.FC = () => {
   const { t } = useTranslation('settings');
-  const [current, setCurrent] = useState<string>(() => getLocale() ?? 'system');
   const isDev = Boolean(import.meta.env?.DEV);
   const options = SUPPORTED_LANGUAGES.filter((l) => isDev || !l.devOnly);
+  // Seed the picker from the STORED preference only (not navigator.language, which
+  // getLocale() falls back to) — an unstored or unsupported resolved locale like
+  // "en-US" isn't a <select> option and would render the control blank. Map anything
+  // not offered to "system" so the default is shown selected.
+  const [current, setCurrent] = useState<string>(() => {
+    let stored: string | null = null;
+    try { stored = typeof localStorage !== 'undefined' ? localStorage.getItem('harmolyn:locale') : null; } catch { stored = null; }
+    return stored && options.some((l) => l.code === stored) ? stored : 'system';
+  });
 
   const choose = (code: string) => {
     if (code === 'system') {

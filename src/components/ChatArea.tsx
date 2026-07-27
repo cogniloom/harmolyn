@@ -1078,12 +1078,17 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
     if (!channel || !historyServerId || loadOlderMutation.isPending) return;
     preserveScrollRef.current = scrollRef.current?.scrollHeight ?? null;
     try {
-      const res = await loadOlderMutation.mutateAsync({ serverId: historyServerId, channelId: channel.id }) as { added: number; hasMore: boolean };
-      setHasMoreHistory(res.hasMore);
-      if (res.added === 0 && !res.hasMore) preserveScrollRef.current = null;
+      const res = await loadOlderMutation.mutateAsync({ serverId: historyServerId, channelId: channel.id }) as { added: number; hasMore: boolean; unavailable?: boolean };
+      // A transient "unavailable" (owner/members unreachable) must NOT hide the button —
+      // keep it so the user can retry when connectivity returns. Only a definitive
+      // answer (has_more, or a real empty page) updates the exhausted state.
+      if (res.unavailable) setHasMoreHistory(true);
+      else setHasMoreHistory(res.hasMore);
+      if (!res.unavailable && res.added === 0 && !res.hasMore) preserveScrollRef.current = null;
     } catch {
+      // Network/exception is also transient — keep the retry affordance visible.
       preserveScrollRef.current = null;
-      setHasMoreHistory(false);
+      setHasMoreHistory(true);
     }
   }, [channel, historyServerId, loadOlderMutation]);
 
@@ -1313,8 +1318,10 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
         }`} ref={scrollRef} onScroll={handleScroll}>
 
         {/* Load older history — only for server channels (DMs page differently) and
-            when not filtering. Hidden once the responder reports no more history. */}
-        {!isDM && !searchQuery && historyServerId && hasMoreHistory && filteredMessages.length > 0 && (
+            when not filtering. Shown even on an EMPTY channel (a recovered device
+            restores membership but not history — the owner can still serve the
+            retention window). Hidden only once the responder reports no more history. */}
+        {!isDM && !searchQuery && historyServerId && hasMoreHistory && (
           <div className="flex justify-center pb-4">
             <button
               type="button"

@@ -646,7 +646,7 @@ export class XoreinNativeEngine {
    * how many new messages were merged and whether more remain older than the page
    * (`hasMore`), so the UI can decide whether to keep the "load older" affordance.
    */
-  async pullOlderHistory(serverId: string, channelId: string): Promise<{ added: number; hasMore: boolean }> {
+  async pullOlderHistory(serverId: string, channelId: string): Promise<{ added: number; hasMore: boolean; unavailable?: boolean }> {
     const state = getState();
     const server = state.servers[serverId];
     const me = this._identity?.peerId;
@@ -684,7 +684,11 @@ export class XoreinNativeEngine {
         return { added: 0, hasMore: Boolean(data.has_more) };
       }
     }
-    return { added: 0, hasMore: false };
+    // No candidate answered (owner/members all unreachable right now). This is a
+    // TRANSIENT failure, not proven exhaustion — signal `unavailable` so the UI keeps
+    // the "load older" affordance for a retry when connectivity returns, rather than
+    // treating it as authoritative end-of-history.
+    return { added: 0, hasMore: false, unavailable: true };
   }
 
   /**

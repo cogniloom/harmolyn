@@ -221,6 +221,12 @@ async function runVoiceTests(browserInstance, url) {
     });
 
     if (!probe.success) throw new Error(`voice protocol probe failed: ${probe.error}`);
+    // Assert the voice protocol is actually registered — a probe that returns
+    // hasVoice:false must NOT record a PASS (the harness would need to wire the
+    // engine's /aether/voice handler for the mesh probe to be meaningful).
+    if (!probe.hasVoice) {
+      throw new Error(`voice protocol not registered on the node (hasVoice=false; protoCount=${probe.protoCount}) — wire the engine voice handler in the p0 harness`);
+    }
     report.push(`T3 PASS — voice mesh signaling registered (voiceProto=${probe.hasVoice}); full presence/offer/ice mesh is a documented two-peer live smoketest`);
     await ctx.close();
   } catch (err) {

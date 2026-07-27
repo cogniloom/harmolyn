@@ -34,8 +34,15 @@ self.addEventListener('fetch', (event) => {
     event.respondWith(
       fetch(event.request)
         .then((res) => {
-          const copy = res.clone();
-          caches.open(CACHE).then((c) => c.put('/index.html', copy)).catch(() => {});
+          // Only replace the cached offline shell with a genuinely good HTML response.
+          // A same-origin navigation that gets a 5xx/maintenance page still resolves
+          // fetch(); caching that would poison the shell so later offline launches show
+          // the error page instead of the app.
+          const ct = res.headers.get('content-type') || '';
+          if (res.ok && res.type === 'basic' && ct.includes('text/html')) {
+            const copy = res.clone();
+            caches.open(CACHE).then((c) => c.put('/index.html', copy)).catch(() => {});
+          }
           return res;
         })
         .catch(() => caches.match(event.request).then((r) => r || caches.match('/index.html')).then((r) => r || caches.match('/'))),
