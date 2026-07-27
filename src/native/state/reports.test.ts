@@ -1,6 +1,7 @@
 // Tier-1: abuse reporting stores a local copy and targets the right server owner.
 import { describe, it, expect, beforeEach } from 'vitest';
 import { initStore, getState, setNativeIdentity, addServer } from './store';
+import { publishNativeSnapshot } from './snapshot';
 import { nativeSubmitReport } from './mutations';
 
 const ME = 'reporter';
@@ -25,6 +26,25 @@ describe('nativeSubmitReport', () => {
     expect(stored!.reason).toBe('harassment');
     expect(stored!.server_id).toBe('s1');
     expect(stored!.inbound).toBeFalsy();
+  });
+
+  it('keeps report content OUT of the plaintext localStorage snapshot', () => {
+    addServer({ id: 's1', name: 'S', owner_peer_id: OWNER, members: [OWNER, ME], channels: { c1: { id: 'c1', server_id: 's1', name: 'general', voice: false } } });
+    nativeSubmitReport({
+      targetKind: 'message', targetId: 'm1', reportedPeerId: 'baddie',
+      serverId: 's1', channelId: 'c1', contentExcerpt: 'SENSITIVE-EXCERPT-XYZ', reason: 'harassment',
+      details: 'SENSITIVE-DETAILS-XYZ',
+    });
+    publishNativeSnapshot();
+    // The in-memory global keeps reports (moderation UI needs them)...
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect(((window as any).__HARMOLYN_XOREIN_RUNTIME__?.reports ?? []).length).toBeGreaterThan(0);
+    // ...but the PLAINTEXT localStorage copies must not carry the report content.
+    for (const key of ['harmolyn:xorein:runtime', 'harmolyn:runtime-snapshot', 'xorein:runtime-snapshot']) {
+      const raw = localStorage.getItem(key) ?? '';
+      expect(raw).not.toContain('SENSITIVE-EXCERPT-XYZ');
+      expect(raw).not.toContain('SENSITIVE-DETAILS-XYZ');
+    }
   });
 
   it('records a DM report locally with no server scope', () => {

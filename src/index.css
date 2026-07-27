@@ -303,7 +303,13 @@ body {
   font-weight: 500;
   font-size: 11px;
 }
-.simple-mode .grid-overlay,
+/* .grid-overlay is used both as a standalone decorative layer AND as a class on
+   functional containers (e.g. ServerSettingsScreen's content), so `display:none`
+   would blank real panels. Remove just its decorative grid background instead — the
+   element (and any content) stays. Scanlines are purely decorative → hide them. */
+.simple-mode .grid-overlay {
+  background-image: none !important;
+}
 .simple-mode .scanlines,
 .simple-mode .scanline {
   display: none !important;

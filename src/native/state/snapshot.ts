@@ -22,14 +22,20 @@ export function publishNativeSnapshot(): void {
   if (typeof window === 'undefined') return;
 
   const snapshot = toRuntimeSnapshot();
-  const serialized = JSON.stringify(snapshot);
 
   for (const key of RUNTIME_GLOBAL_KEYS) {
+    // In-memory global for the UI — full snapshot (reports drive the moderation UI).
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (window as any)[key] = snapshot;
   }
+
+  // localStorage is PLAINTEXT (separate from the encrypted native-state blob), so the
+  // persisted copy must not carry sensitive abuse-report content (reason / free-form
+  // details / target / content excerpt). Strip reports before serializing; they are
+  // restored into the in-memory snapshot from the encrypted store on reload.
+  const persisted = JSON.stringify({ ...snapshot, reports: [] });
   for (const key of RUNTIME_STORAGE_KEYS) {
-    try { localStorage.setItem(key, serialized); } catch { /* best effort */ }
+    try { localStorage.setItem(key, persisted); } catch { /* best effort */ }
   }
 
   // Signal the React polling loop (same events as xoreinControl.ts publishSnapshot).

@@ -146,6 +146,34 @@ function readPersistedState(): NativeState | null {
   return outer as NativeState;
 }
 
+/**
+ * Rebuild the peers map from persisted state, keeping ONLY the durable trust pins and
+ * learned profile (identity_key / identity_verified / identity_changed / display_name
+ * / avatar / role) and dropping transient reachability (addresses, last_seen_at,
+ * source, public_key) which is repopulated on connect. This preserves safety-number
+ * verification and identity-change detection across reloads.
+ */
+function restorePeerTrust(persisted: Record<string, XoreinRuntimePeer> | undefined): Record<string, XoreinRuntimePeer> {
+  const out: Record<string, XoreinRuntimePeer> = {};
+  for (const [id, p] of Object.entries(persisted ?? {})) {
+    if (!p) continue;
+    // Only carry a peer forward if it holds trust/profile worth persisting — a peer
+    // known purely by a stale address contributes nothing and stays dropped.
+    if (!p.identity_key && !p.identity_verified && !p.identity_changed && !p.display_name && !p.avatar) continue;
+    out[id] = {
+      peer_id: p.peer_id ?? id,
+      ...(p.role ? { role: p.role } : {}),
+      ...(p.identity_key ? { identity_key: p.identity_key } : {}),
+      ...(p.identity_verified ? { identity_verified: true } : {}),
+      ...(p.identity_changed ? { identity_changed: true } : {}),
+      ...(p.display_name ? { display_name: p.display_name } : {}),
+      ...(p.avatar ? { avatar: p.avatar } : {}),
+      addresses: [],
+    };
+  }
+  return out;
+}
+
 function load(): NativeState {
   try {
     const parsed = readPersistedState();
@@ -155,10 +183,14 @@ function load(): NativeState {
         ...parsed,
         servers: parsed.servers ?? {},
         joined_server_ids: parsed.joined_server_ids ?? [],
-        // relay_addrs and peers are connection-derived: never restore stale
-        // values from a previous session, or the UI would report a reachable
-        // bootstrap path while actually offline. They are repopulated on connect.
-        peers: {},
+        // relay_addrs and peer REACHABILITY are connection-derived: never restore
+        // stale values, or the UI would report a reachable path while actually
+        // offline. But the TOFU trust pins (identity_key / identity_verified /
+        // identity_changed) and learned profile MUST survive a reload — otherwise a
+        // verified contact silently becomes unverified and a changed identity reads as
+        // a fresh first sighting instead of raising the safety-number warning. Keep the
+        // trust/profile fields; drop transient addresses/reachability.
+        peers: restorePeerTrust(parsed.peers),
         dms: parsed.dms ?? {},
         messages: parsed.messages ?? [],
         friends: parsed.friends ?? [],
