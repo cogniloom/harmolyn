@@ -1,6 +1,9 @@
 // Native application-state store.
-// Maintains in-memory state and persists to localStorage (plain JSON).
-// This is the local-only first step; P2P sync layers on top in a future iteration.
+// Maintains in-memory state and persists it ENCRYPTED-AT-REST (AES-256-GCM under a
+// key derived from the unlocked identity seed). The in-memory `_state` is the
+// synchronous source of truth for getState(); persistence is a best-effort mirror.
+import { gcm } from '@noble/ciphers/aes.js';
+import { deriveKey } from '../seal/kdf.js';
 import type {
   XoreinRuntimeSnapshot,
   XoreinRuntimeServer,
@@ -16,6 +19,41 @@ import type {
 } from '../../types.js';
 
 const STORAGE_KEY = 'harmolyn:native:state';
+
+// Cap the number of persisted messages so the at-rest blob can't grow without
+// bound and silently blow the storage quota (after which persist() would fail and
+// the app would quietly stop saving). In-memory state is unaffected; only what we
+// write to disk is trimmed to the most recent messages.
+const MAX_PERSISTED_MESSAGES = 5000;
+
+const STATE_KEY_LABEL = 'xorein/state/v1/at-rest';
+
+// AES-256 key for encrypting the at-rest state blob, derived from the unlocked
+// identity seed and held only in memory. Null before unlock (or in tests) — see
+// persist()/load() for the plaintext-legacy fallback used only when it is null.
+let _stateKey: Uint8Array | null = null;
+
+/**
+ * Install (or clear) the at-rest encryption key from the unlocked identity seed.
+ * MUST be called before initStore() so load() can decrypt an existing v2 blob.
+ * Passing null clears the key (e.g. on lock/logout).
+ */
+export function setStateEncryptionKey(seed: Uint8Array | null): void {
+  _stateKey = seed && seed.length > 0 ? deriveKey(seed, null, STATE_KEY_LABEL, 32) : null;
+}
+
+function b64encode(b: Uint8Array): string {
+  let s = '';
+  for (let i = 0; i < b.length; i++) s += String.fromCharCode(b[i]);
+  return btoa(s);
+}
+
+function b64decode(s: string): Uint8Array {
+  const bin = atob(s);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
 
 // Guests persist to sessionStorage (per-tab, session-scoped) so each browsing
 // session/tab is an isolated throwaway guest — no cross-tab clobber and a fresh
@@ -73,11 +111,37 @@ const EMPTY: NativeState = {
 
 let _state: NativeState = { ...EMPTY, servers: {}, dms: {} };
 
+/**
+ * Read and decode the persisted state blob. Handles two formats:
+ *   • v2 `{v:2,n,ct}` — AES-256-GCM encrypted under `_stateKey` (the only format
+ *     production ever writes once an identity is unlocked).
+ *   • legacy plaintext JSON — migrated forward on the next persist(). Kept only so
+ *     existing installs upgrade seamlessly; new writes are always encrypted.
+ * Returns null when nothing is stored or it can't be decoded.
+ */
+function readPersistedState(): NativeState | null {
+  const raw = _storage()?.getItem(STORAGE_KEY) ?? null;
+  if (!raw) return null;
+  let outer: unknown;
+  try { outer = JSON.parse(raw); } catch { return null; }
+  if (outer && typeof outer === 'object' && (outer as { v?: number }).v === 2) {
+    const env = outer as { n?: string; ct?: string };
+    if (!_stateKey || typeof env.n !== 'string' || typeof env.ct !== 'string') return null;
+    try {
+      const pt = gcm(_stateKey, b64decode(env.n)).decrypt(b64decode(env.ct));
+      return JSON.parse(new TextDecoder().decode(pt)) as NativeState;
+    } catch {
+      return null; // wrong key / tampered — start fresh rather than surface garbage
+    }
+  }
+  // Legacy plaintext (pre-encryption). Accept once so it migrates on next persist.
+  return outer as NativeState;
+}
+
 function load(): NativeState {
   try {
-    const raw = _storage()?.getItem(STORAGE_KEY) ?? null;
-    if (raw) {
-      const parsed = JSON.parse(raw) as NativeState;
+    const parsed = readPersistedState();
+    if (parsed) {
       return {
         ...EMPTY,
         ...parsed,
@@ -118,7 +182,26 @@ export function resetNativeStore(): void {
 
 function persist(): void {
   try {
-    _storage()?.setItem(STORAGE_KEY, JSON.stringify(_state));
+    const store = _storage();
+    if (!store) return;
+    // Trim persisted messages to the retention cap (keep the most recent). The live
+    // in-memory state keeps everything for this session; only the disk copy is bounded.
+    const toPersist: NativeState = _state.messages.length > MAX_PERSISTED_MESSAGES
+      ? { ..._state, messages: _state.messages.slice(-MAX_PERSISTED_MESSAGES) }
+      : _state;
+    const json = JSON.stringify(toPersist);
+    if (_stateKey) {
+      // Encrypt at rest: crowd_root, invite_secret, and every message body are in
+      // this blob — they must never touch disk in cleartext.
+      const nonce = crypto.getRandomValues(new Uint8Array(12));
+      const ct = gcm(_stateKey, nonce).encrypt(new TextEncoder().encode(json));
+      store.setItem(STORAGE_KEY, JSON.stringify({ v: 2, n: b64encode(nonce), ct: b64encode(ct) }));
+    } else {
+      // No key yet (pre-unlock / tests). No sensitive data exists before an identity
+      // is unlocked; writing plaintext here keeps dev/test round-trips working and is
+      // migrated to v2 as soon as a key is installed.
+      store.setItem(STORAGE_KEY, json);
+    }
   } catch { /* quota exceeded / private browsing — best effort */ }
 }
 

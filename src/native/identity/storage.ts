@@ -308,23 +308,27 @@ export async function importToVault(blobJson: string, passphrase: string): Promi
   return entry;
 }
 
-// ── Session unlock (5-day remember-me) ────────────────────────────────────
-// After a successful passphrase unlock we re-encrypt the decrypted identity
-// with a fresh random key and store it in IDB. The random key lives in
-// localStorage with a 5-day TTL. On subsequent page loads we skip Argon2.
+// ── Session unlock (remember-me) ──────────────────────────────────────────
+// After a successful passphrase unlock we re-encrypt the decrypted identity under
+// a NON-EXTRACTABLE WebCrypto AES-GCM key and store both the ciphertext and the
+// CryptoKey handle in IndexedDB. localStorage holds only an expiry timestamp — no
+// key material. The wrapping key's raw bytes are never exposed to JS (the browser
+// keeps them opaque), so an attacker with disk/localStorage/IDB-dump access cannot
+// recover the identity without executing in the page's origin. On subsequent loads
+// we skip the expensive Argon2 KDF.
 
 const SESSION_KEY_LS_KEY = 'harmolyn:session-unlock';
 const SESSION_BLOB_IDB_KEY = 'session';
+const SESSION_WRAPKEY_IDB_KEY = 'session-wrapkey';
 export const SESSION_TTL_MS = 5 * 24 * 60 * 60 * 1000;
 
 interface SessionEntry {
-  key: string;       // hex 32 bytes — raw AES-256 key
-  expiresAt: number; // ms timestamp
+  expiresAt: number; // ms timestamp — the ONLY thing in localStorage (no key bytes)
 }
 
 interface SessionBlob {
   nonce: string;      // hex 12 bytes
-  ciphertext: string; // base64 AES-256-GCM(identity JSON)
+  ciphertext: string; // base64 AES-256-GCM(identity JSON) under the non-extractable key
 }
 
 /** Returns true if a non-expired session entry exists in localStorage. Synchronous. */
@@ -340,50 +344,76 @@ export function hasValidSession(): boolean {
   }
 }
 
-async function saveSessionBlob(blob: SessionBlob): Promise<void> {
+async function idbPut(key: string, value: unknown): Promise<void> {
   const db = await openDB();
   await new Promise<void>((resolve, reject) => {
     const tx = db.transaction(IDB_STORE_NAME, 'readwrite');
-    tx.objectStore(IDB_STORE_NAME).put(JSON.stringify(blob), SESSION_BLOB_IDB_KEY);
+    tx.objectStore(IDB_STORE_NAME).put(value, key);
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
   });
   db.close();
 }
 
-async function loadSessionBlob(): Promise<SessionBlob | null> {
+async function idbGet<T>(key: string): Promise<T | undefined> {
   const db = await openDB();
-  const raw = await new Promise<string | undefined>((resolve, reject) => {
+  const result = await new Promise<T | undefined>((resolve, reject) => {
     const tx = db.transaction(IDB_STORE_NAME, 'readonly');
-    const req = tx.objectStore(IDB_STORE_NAME).get(SESSION_BLOB_IDB_KEY);
-    req.onsuccess = () => resolve(req.result as string | undefined);
+    const req = tx.objectStore(IDB_STORE_NAME).get(key);
+    req.onsuccess = () => resolve(req.result as T | undefined);
     req.onerror = () => reject(req.error);
   });
   db.close();
-  if (!raw) return null;
-  return JSON.parse(raw) as SessionBlob;
+  return result;
 }
 
-async function clearSessionBlob(): Promise<void> {
+async function idbDelete(key: string): Promise<void> {
   const db = await openDB();
   await new Promise<void>((resolve, reject) => {
     const tx = db.transaction(IDB_STORE_NAME, 'readwrite');
-    tx.objectStore(IDB_STORE_NAME).delete(SESSION_BLOB_IDB_KEY);
+    tx.objectStore(IDB_STORE_NAME).delete(key);
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
   });
   db.close();
 }
 
-/** Re-encrypt the identity with a random key and persist for SESSION_TTL_MS. */
+async function saveSessionBlob(blob: SessionBlob): Promise<void> {
+  await idbPut(SESSION_BLOB_IDB_KEY, JSON.stringify(blob));
+}
+
+async function loadSessionBlob(): Promise<SessionBlob | null> {
+  const raw = await idbGet<string>(SESSION_BLOB_IDB_KEY);
+  return raw ? (JSON.parse(raw) as SessionBlob) : null;
+}
+
+/**
+ * Get (or lazily create) the non-extractable AES-GCM wrapping key, persisted as a
+ * CryptoKey handle in IndexedDB. `extractable: false` means its raw bytes can never
+ * be read back out — this is the whole point: the remember-me secret is not a value
+ * an attacker can copy off disk.
+ */
+async function getOrCreateSessionWrapKey(): Promise<CryptoKey> {
+  const existing = await idbGet<CryptoKey>(SESSION_WRAPKEY_IDB_KEY);
+  if (existing) return existing;
+  const key = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+  await idbPut(SESSION_WRAPKEY_IDB_KEY, key);
+  return key;
+}
+
+/**
+ * Re-encrypt the identity under the non-extractable wrapping key and persist for
+ * SESSION_TTL_MS. localStorage stores only the expiry — never key material.
+ */
 export async function saveSessionIdentity(id: XoreinIdentity): Promise<void> {
-  const sessionKey = crypto.getRandomValues(new Uint8Array(32));
+  const wrapKey = await getOrCreateSessionWrapKey();
   const nonce = crypto.getRandomValues(new Uint8Array(12));
   const plaintext = serializeIdentity(id);
-  const aead = gcm(sessionKey, nonce);
-  const ciphertext = aead.encrypt(plaintext);
+  const ciphertext = new Uint8Array(
+    await crypto.subtle.encrypt({ name: 'AES-GCM', iv: nonce as BufferSource }, wrapKey, plaintext as BufferSource),
+  );
   await saveSessionBlob({ nonce: toHex(nonce), ciphertext: toBase64(ciphertext) });
-  const entry: SessionEntry = { key: toHex(sessionKey), expiresAt: Date.now() + SESSION_TTL_MS };
+  const entry: SessionEntry = { expiresAt: Date.now() + SESSION_TTL_MS };
   localStorage.setItem(SESSION_KEY_LS_KEY, JSON.stringify(entry));
 }
 
@@ -398,11 +428,11 @@ export async function loadSessionIdentity(): Promise<XoreinIdentity | null> {
     if (!raw) return null;
     const entry = JSON.parse(raw) as SessionEntry;
     if (entry.expiresAt <= Date.now()) { clearSessionIdentity(); return null; }
-    const blob = await loadSessionBlob();
-    if (!blob) { clearSessionIdentity(); return null; }
-    const sessionKey = fromHex(entry.key);
-    const aead = gcm(sessionKey, fromHex(blob.nonce));
-    const plaintext = aead.decrypt(fromBase64(blob.ciphertext));
+    const [blob, wrapKey] = await Promise.all([loadSessionBlob(), idbGet<CryptoKey>(SESSION_WRAPKEY_IDB_KEY)]);
+    if (!blob || !wrapKey) { clearSessionIdentity(); return null; }
+    const plaintext = new Uint8Array(
+      await crypto.subtle.decrypt({ name: 'AES-GCM', iv: fromHex(blob.nonce) as BufferSource }, wrapKey, fromBase64(blob.ciphertext) as BufferSource),
+    );
     const stored = JSON.parse(new TextDecoder().decode(plaintext)) as {
       ed25519_priv: number[];
       mldsa65_priv: number[];
@@ -417,12 +447,13 @@ export async function loadSessionIdentity(): Promise<XoreinIdentity | null> {
   }
 }
 
-/** Remove the session key and blob. */
+/** Remove the session expiry, encrypted blob, and non-extractable wrapping key. */
 export function clearSessionIdentity(): void {
   try {
     if (typeof localStorage !== 'undefined') localStorage.removeItem(SESSION_KEY_LS_KEY);
   } catch { /* best effort */ }
-  void clearSessionBlob().catch(() => {});
+  void idbDelete(SESSION_BLOB_IDB_KEY).catch(() => {});
+  void idbDelete(SESSION_WRAPKEY_IDB_KEY).catch(() => {});
 }
 
 // ── High-level API ─────────────────────────────────────────────────────────

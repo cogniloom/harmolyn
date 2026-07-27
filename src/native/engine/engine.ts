@@ -18,7 +18,7 @@ import { newPeerKey, encryptFrame, decryptFrame, type PeerKey } from '../voice/m
 import { uploadBlob, downloadBlob, type BlobRef } from '../blobs/blobs.js';
 import { deliverOffline, drainDeliveries } from '../delivery/mailbox.js';
 import { serverRendezvousCID } from '../transport/rendezvous.js';
-import { initStore, setNativeIdentity, getState, updateState, upsertPeer, resetNativeStore, configureNativeStore, applyJoinedServer } from '../state/store.js';
+import { initStore, setNativeIdentity, getState, updateState, upsertPeer, resetNativeStore, configureNativeStore, applyJoinedServer, setStateEncryptionKey } from '../state/store.js';
 import { parseInviteMetadata } from '../../protocol/deeplink.js';
 import type { XoreinRuntimeServer, XoreinRuntimeMessage } from '../../types.js';
 import { publishNativeSnapshot } from '../state/snapshot.js';
@@ -227,6 +227,11 @@ export class XoreinNativeEngine {
       this._identity = await loadOrCreateGuestIdentity();
     }
 
+    // Install the at-rest state-encryption key (derived from the unlocked identity
+    // seed) BEFORE initStore() so it can decrypt an existing encrypted blob and so
+    // every subsequent persist() writes ciphertext — crowd roots, invite secrets and
+    // message bodies never touch disk in cleartext.
+    setStateEncryptionKey(this._identity.edSeed);
     // Bootstrap the local state store with this identity.
     initStore();
     // If the persisted store belongs to a *different* identity (a new guest
