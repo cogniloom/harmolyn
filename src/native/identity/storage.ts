@@ -324,6 +324,13 @@ export const SESSION_TTL_MS = 5 * 24 * 60 * 60 * 1000;
 
 interface SessionEntry {
   expiresAt: number; // ms timestamp — the ONLY thing in localStorage (no key bytes)
+  /**
+   * LEGACY (pre-A5) field: a raw AES-256 key in hex. Present only in remember-me sessions
+   * created by the previous release, which stored the key in localStorage. On first load it
+   * is used once to decrypt the legacy blob, which is then re-wrapped under the new
+   * non-extractable key and this field dropped. New sessions never write it.
+   */
+  key?: string;
 }
 
 interface SessionBlob {
@@ -429,7 +436,25 @@ export async function loadSessionIdentity(): Promise<XoreinIdentity | null> {
     const entry = JSON.parse(raw) as SessionEntry;
     if (entry.expiresAt <= Date.now()) { clearSessionIdentity(); return null; }
     const [blob, wrapKey] = await Promise.all([loadSessionBlob(), idbGet<CryptoKey>(SESSION_WRAPKEY_IDB_KEY)]);
-    if (!blob || !wrapKey) { clearSessionIdentity(); return null; }
+    if (!blob) { clearSessionIdentity(); return null; }
+    if (!wrapKey) {
+      // MIGRATION: a legacy (pre-A5) remember-me session stored its AES key raw in
+      // localStorage (entry.key) and had no non-extractable wrap key. Rather than dropping
+      // the still-valid session and forcing the password screen, decrypt the legacy blob
+      // once with that key and re-save under the new wrapped scheme (which also removes the
+      // raw key). If there's no legacy key either, it's genuinely unreadable — clear it.
+      if (typeof entry.key === 'string' && entry.key) {
+        try {
+          const legacyPlaintext = gcm(fromHex(entry.key), fromHex(blob.nonce)).decrypt(fromBase64(blob.ciphertext));
+          const legacy = JSON.parse(new TextDecoder().decode(legacyPlaintext)) as { ed25519_priv: number[]; mldsa65_priv: number[] };
+          const migrated = await identityFromStored(new Uint8Array(legacy.ed25519_priv), new Uint8Array(legacy.mldsa65_priv));
+          await saveSessionIdentity(migrated); // rewraps under the new non-extractable key; entry loses `key`
+          return migrated;
+        } catch { clearSessionIdentity(); return null; }
+      }
+      clearSessionIdentity();
+      return null;
+    }
     const plaintext = new Uint8Array(
       await crypto.subtle.decrypt({ name: 'AES-GCM', iv: fromHex(blob.nonce) as BufferSource }, wrapKey, fromBase64(blob.ciphertext) as BufferSource),
     );
