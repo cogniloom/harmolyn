@@ -832,6 +832,32 @@ export class VoiceSession {
     return entry;
   }
 
+  /**
+   * A server membership change (join/kick/leave) rotated this channel's crowd_root. The
+   * SFrame keys were derived once from the OLD root, so: re-derive our key from the new
+   * root; permanently drop any connected peer no longer in `members` (a removed member's
+   * open WebRTC connection must stop decrypting media immediately, not linger on the old
+   * key); and redial the remaining members so a fresh connection re-attaches SFrame
+   * transforms under the NEW key. No-op for non-crowd (DTLS-only) channels.
+   */
+  rekey(members: string[]): void {
+    if (this.stopped) return;
+    const wasSframe = this.useSframe;
+    this.localKey = voiceSecurityMode(this.channelId) === 'crowd'
+      ? deriveVoicePeerKey(this.channelId, this.localPeerId)
+      : null;
+    this.useSframe = this.cap !== 'none' && this.localKey !== null;
+    this.remoteKeys.clear(); // re-derived per peer on the next connection from the new root
+    const roster = new Set(members);
+    for (const peerId of [...this.peers.keys()]) {
+      if (!roster.has(peerId)) {
+        this.dropPeer(peerId); // removed member: permanent teardown, no reconnect
+      } else if (wasSframe || this.useSframe) {
+        this.scheduleReconnect(peerId); // remaining member: redial to re-attach new-key transforms
+      }
+    }
+  }
+
   /** Per-peer reconnect scheduler, created on demand and preserved across redials. */
   private schedulerFor(peerId: string): ReconnectScheduler {
     let s = this.reconnectSchedulers.get(peerId);

@@ -12,6 +12,7 @@ import { nativeAnnouncePresence, broadcastServerUpdate, rotateCrowdEpoch } from 
 import { publishNativeSnapshot } from '../state/snapshot.js';
 import { decryptInboundEnvelope, getScopeCrypto, applyCrowdRoot, type DecryptedMessage } from './secureEnvelope.js';
 import { verifyInviteToken } from './invite.js';
+import { rekeyVoiceForServer } from '../voice/registry.js';
 import type { PeerSync } from './peersync.js';
 
 const enc = new TextEncoder();
@@ -513,6 +514,9 @@ export function handleSyncRequest(operation: string, payload: Record<string, unk
         // The new root may unlock channel messages that raced ahead of it — replay any
         // buffered future-epoch ciphertext now that this epoch's key is installed.
         replayBufferedChannelMessages(serverId);
+        // Rekey any active voice call on this server: SFrame keys derive from crowd_root,
+        // so a rotation must re-key remaining members and drop removed ones' connections.
+        rekeyVoiceForServer(serverId);
       }
       publishNativeSnapshot();
     }

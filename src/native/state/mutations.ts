@@ -32,6 +32,7 @@ import { markStateDirty } from './stateSync.js';
 import type { NativeState } from './store.js';
 import { getState } from './store.js';
 import { getPeerSync } from '../sync/registry.js';
+import { rekeyVoiceForServer } from '../voice/registry.js';
 import { encryptChannelEnvelope, encryptDmEnvelope, channelSecurityMode, applyCrowdRoot } from '../sync/secureEnvelope.js';
 import { depositOfflineChat } from '../delivery/offline.js';
 import { addRelayOverride, removeRelayOverride } from '../transport/relays.js';
@@ -61,6 +62,9 @@ export function rotateCrowdEpoch(serverId: string): boolean {
   const nextEpoch = (server.crowd_epoch ?? 0) + 1;
   updateServer(serverId, { crowd_root: freshCrowdRoot(), crowd_epoch: nextEpoch });
   applyCrowdRoot(serverId); // encrypt under the new epoch from now on
+  // Rekey the owner's own active voice call on this server so its SFrame keys track the
+  // new root and any just-removed member's live connection is torn down.
+  rekeyVoiceForServer(serverId);
   return true;
 }
 
