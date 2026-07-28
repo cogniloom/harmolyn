@@ -24,12 +24,12 @@ import { parseInviteMetadata } from '../../protocol/deeplink.js';
 import type { XoreinRuntimeServer, XoreinRuntimeMessage } from '../../types.js';
 import { publishNativeSnapshot } from '../state/snapshot.js';
 import { PeerSync } from '../sync/peersync.js';
-import { registerInboundHandlers, ingestMailboxChat } from '../sync/inbound.js';
+import { registerInboundHandlers, ingestMailboxChat, replayBufferedChannelMessages } from '../sync/inbound.js';
 import { registerPeerSync } from '../sync/registry.js';
 import { SealSessions } from '../seal/session.js';
 import { loadSealState, saveSealState } from '../seal/persist.js';
 import { ChannelCrypto } from '../crowd/channel.js';
-import { registerScopeCrypto, resetScopeCrypto } from '../sync/secureEnvelope.js';
+import { registerScopeCrypto, resetScopeCrypto, applyCrowdRoot } from '../sync/secureEnvelope.js';
 import { registerOfflineIdentity, resetOfflineIdentity, drainOfflineChat } from '../delivery/offline.js';
 import { PROTOCOLS, RECOVERY_OPS } from '../families/families.js';
 import { unframeMessage, frameMessage, decodePeerStreamRequest, encodePeerStreamResponse } from '../families/peerstream.js';
@@ -41,7 +41,7 @@ import {
 import { encryptSyncState, captureSyncState, restorePendingSyncState, registerStateSyncHandler, type EncryptedSyncBlob } from '../state/stateSync.js';
 import { getRecoveryContacts } from '../recovery/custody.js';
 import { VoiceSession } from '../voice/session.js';
-import { registerVoiceSession, getVoiceSession, clearVoiceSession } from '../voice/registry.js';
+import { registerVoiceSession, getVoiceSession, clearVoiceSession, rekeyVoiceForServer } from '../voice/registry.js';
 import { resolveFeatureFlag } from '../../config/featureFlags.js';
 import {
   nativeSendChannelMessage,
@@ -510,10 +510,24 @@ export class XoreinNativeEngine {
     let changed = false;
     for (const s of servers) {
       try {
+        const priorEpoch = typeof s.crowd_epoch === 'number' ? s.crowd_epoch : -1;
         const data = await this.peerSync.joinServer(s.owner_peer_id, s.id, displayName);
         if (data?.ok && data.server) {
-          applyJoinedServer(data.server as XoreinRuntimeServer, (data.messages ?? []) as XoreinRuntimeMessage[]);
+          const nextServer = data.server as XoreinRuntimeServer;
+          applyJoinedServer(nextServer, (data.messages ?? []) as XoreinRuntimeMessage[]);
           changed = true;
+          // If the re-pulled snapshot advanced the Crowd epoch while we were offline (a
+          // rotation we missed — e.g. a member was kicked), install the new root into the
+          // live channel crypto, replay any future-epoch ciphertext that raced ahead of it,
+          // and rekey any active voice call. applyJoinedServer only updates the store; the
+          // crypto/voice side must be re-seeded here or we'd stay on the stale key and fail
+          // to decrypt current-epoch channel and voice traffic.
+          const nextEpoch = typeof nextServer.crowd_epoch === 'number' ? nextServer.crowd_epoch : -1;
+          if (typeof nextServer.crowd_root === 'string' && nextEpoch > priorEpoch) {
+            applyCrowdRoot(nextServer.id);
+            replayBufferedChannelMessages(nextServer.id);
+            rekeyVoiceForServer(nextServer.id);
+          }
         }
       } catch { /* owner unreachable — retried on the next reconnect */ }
     }

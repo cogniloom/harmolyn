@@ -2,7 +2,7 @@
 // composed while the transport was down — instead of discarding them behind a
 // misleading "offline_queued" badge.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { initStore, getState, setNativeIdentity, addServer, updateServer, getOutbox } from './store';
+import { initStore, getState, setNativeIdentity, addServer, updateServer, getOutbox, enqueueOutbox, addMessage } from './store';
 import { ChannelCrypto } from '../crowd/channel';
 import { SealSessions } from '../seal/session';
 import { generateSigningIdentity } from '../crypto/hybrid';
@@ -101,5 +101,64 @@ describe('durable outbox (T2.1)', () => {
     // The queued payload carries NO plaintext envelope (it hasn't been encrypted yet).
     expect(Object.keys(queued[0].payload)).toHaveLength(0);
     expect(getState().messages.find(m => m.id === msg.id)?.delivery_status).toBe('offline_queued');
+  });
+
+  it('retains a still-fresh pending-seal entry across a failed drain (time-based, not attempt-based)', async () => {
+    // A first-contact DM whose recipient bundle is still unreachable: encryptDmEnvelope
+    // (fetchBundle → null) can't seal it. A recent entry must be KEPT (re-queued) so it
+    // ships when the peer finally appears — not expired after a handful of attempts.
+    registerPeerSync({ sendToPeer: vi.fn().mockResolvedValue(true) } as unknown as PeerSync);
+    addMessage({ id: 'm-fresh', scope_type: 'dm', scope_id: 'dm-alice', sender_peer_id: ME, body: 'x', created_at: new Date().toISOString(), delivery_status: 'offline_queued' });
+    enqueueOutbox({ id: 'ob-fresh', targets: [ALICE], protocol: 'chat', operation: 'chat.send', payload: {}, message_id: 'm-fresh', created_at: new Date().toISOString(), attempts: 49, pending_seal: { recipient: ALICE, base: {}, body: 'x' } });
+
+    await nativeDrainOutbox();
+
+    // Still queued (re-enqueued), NOT expired despite attempts far past the old cap of 50.
+    const q = getOutbox();
+    expect(q.length).toBe(1);
+    expect(q[0].pending_seal?.recipient).toBe(ALICE);
+    expect(getState().messages.find(m => m.id === 'm-fresh')?.delivery_status).toBe('offline_queued');
+  });
+
+  it('expires a pending-seal entry older than the retention window and marks it failed', async () => {
+    registerPeerSync({ sendToPeer: vi.fn().mockResolvedValue(true) } as unknown as PeerSync);
+    const old = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString(); // 8 days ago (> 7d window)
+    addMessage({ id: 'm-old', scope_type: 'dm', scope_id: 'dm-alice', sender_peer_id: ME, body: 'x', created_at: old, delivery_status: 'offline_queued' });
+    enqueueOutbox({ id: 'ob-old', targets: [ALICE], protocol: 'chat', operation: 'chat.send', payload: {}, message_id: 'm-old', created_at: old, attempts: 3, pending_seal: { recipient: ALICE, base: {}, body: 'x' } });
+
+    await nativeDrainOutbox();
+
+    expect(getOutbox().length).toBe(0);
+    expect(getState().messages.find(m => m.id === 'm-old')?.delivery_status).toBe('failed');
+  });
+
+  it('marks the oldest message failed when the outbox cap evicts it', () => {
+    addMessage({ id: 'm-evict', scope_type: 'channel', scope_id: CHAN, server_id: SRV, sender_peer_id: ME, body: 'x', created_at: new Date().toISOString(), delivery_status: 'offline_queued' });
+    // Fill the queue to the 500 cap; the first entry references the message we track.
+    enqueueOutbox({ id: 'ob-0', targets: [ALICE], protocol: 'chat', operation: 'chat.send', payload: {}, message_id: 'm-evict', created_at: new Date().toISOString(), attempts: 0 });
+    for (let i = 1; i < 500; i++) {
+      enqueueOutbox({ id: `ob-${i}`, targets: [ALICE], protocol: 'chat', operation: 'chat.send', payload: {}, message_id: `m-${i}`, created_at: new Date().toISOString(), attempts: 0 });
+    }
+    expect(getOutbox().length).toBe(500);
+    // One more push over the cap evicts the oldest (ob-0 → m-evict).
+    enqueueOutbox({ id: 'ob-500', targets: [ALICE], protocol: 'chat', operation: 'chat.send', payload: {}, message_id: 'm-500', created_at: new Date().toISOString(), attempts: 0 });
+
+    expect(getOutbox().length).toBe(500);
+    expect(getOutbox().some(e => e.id === 'ob-0')).toBe(false); // evicted
+    expect(getState().messages.find(m => m.id === 'm-evict')?.delivery_status).toBe('failed');
+  });
+
+  it('coalesces concurrent drains so a deliverable entry is sent exactly once', async () => {
+    const sendToPeer = vi.fn().mockImplementation(() => new Promise(r => setTimeout(() => r(true), 10)));
+    registerPeerSync({ sendToPeer } as unknown as PeerSync);
+    addMessage({ id: 'm-once', scope_type: 'dm', scope_id: 'dm-alice', sender_peer_id: ME, body: 'x', created_at: new Date().toISOString(), delivery_status: 'offline_queued' });
+    enqueueOutbox({ id: 'ob-once', targets: [ALICE], protocol: 'chat', operation: 'chat.send', payload: { ct: 'x' }, message_id: 'm-once', created_at: new Date().toISOString(), attempts: 0 });
+
+    // Fire two overlapping drains; the second must coalesce into the in-flight one.
+    await Promise.all([nativeDrainOutbox(), nativeDrainOutbox()]);
+
+    expect(sendToPeer).toHaveBeenCalledTimes(1);
+    expect(getOutbox().length).toBe(0);
+    expect(getState().messages.find(m => m.id === 'm-once')?.delivery_status).toBe('sent');
   });
 });

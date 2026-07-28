@@ -946,9 +946,16 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
     // When we just prepended older history, keep the viewport anchored to the same
     // messages (restore by the height delta) instead of snapping to the bottom.
     if (preserveScrollRef.current != null && scrollRef.current) {
-      const delta = scrollRef.current.scrollHeight - preserveScrollRef.current;
-      scrollRef.current.scrollTop = delta;
-      preserveScrollRef.current = null;
+      // Only consume the anchor once the prepended rows have actually rendered — i.e. the
+      // scroll height has grown past the value captured at pull time. This effect also runs
+      // for unrelated dependency changes (layout, an incoming message) that can fire before
+      // the older page commits; consuming the anchor then would compute a zero/late delta
+      // and snap the viewport. Hold the anchor until the content grows, then restore.
+      if (scrollRef.current.scrollHeight > preserveScrollRef.current) {
+        const delta = scrollRef.current.scrollHeight - preserveScrollRef.current;
+        scrollRef.current.scrollTop = delta;
+        preserveScrollRef.current = null;
+      }
       return;
     }
     scrollToBottom();
@@ -1101,7 +1108,10 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
       // answer (has_more, or a real empty page) updates the exhausted state.
       if (res.unavailable) setHasMoreHistory(true);
       else setHasMoreHistory(res.hasMore);
-      if (!res.unavailable && res.added === 0 && !res.hasMore) preserveScrollRef.current = null;
+      // If nothing was actually prepended, release the scroll anchor now — the content
+      // won't grow, so the anchored-restore effect would otherwise hold it forever and
+      // wedge normal auto-scroll-to-bottom. Keep it only when rows were added.
+      if (res.added === 0) preserveScrollRef.current = null;
     } catch {
       // Network/exception is also transient — keep the retry affordance visible.
       preserveScrollRef.current = null;

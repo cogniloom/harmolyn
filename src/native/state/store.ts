@@ -420,13 +420,26 @@ export function pinPeerIdentity(peerId: string, identityKey: string): void {
   });
 }
 
+const OUTBOX_CAP = 500;
+
 /** Queue an encrypted envelope for delivery once the transport is back (deduped by id). */
 export function enqueueOutbox(entry: XoreinOutboxEntry): void {
+  let evicted: XoreinOutboxEntry[] = [];
   updateState(s => {
     if (s.outbox.some(e => e.id === entry.id)) return {};
-    // Bound the queue so a long offline stretch can't grow it without limit.
-    return { outbox: [...s.outbox, entry].slice(-500) };
+    // Bound the queue so a long offline stretch can't grow it without limit. The oldest
+    // entries fall off the front; capture them so their messages can be marked failed
+    // rather than silently dropped (which would leave the UI showing a stuck "queued").
+    const next = [...s.outbox, entry];
+    if (next.length > OUTBOX_CAP) {
+      evicted = next.slice(0, next.length - OUTBOX_CAP);
+      return { outbox: next.slice(-OUTBOX_CAP) };
+    }
+    return { outbox: next };
   });
+  for (const e of evicted) {
+    if (e.message_id) setMessageDeliveryStatus(e.message_id, 'failed');
+  }
 }
 
 /** Remove an outbox entry once it has been delivered (or given up on). */

@@ -710,6 +710,21 @@ export function nativeSetPeerVerified(peerId: string, verified: boolean): void {
 }
 
 const MAX_OUTBOX_ATTEMPTS = 50;
+// First-contact pending-seal entries retry until the recipient's prekey bundle becomes
+// reachable, which can take far longer than an ordinary send (the peer may be offline for
+// days). Bounding those by attempt count would expire them after only ~21 min of periodic
+// drains, so they get a generous time-based retention instead — the message survives the
+// wait and ships when the peer finally appears.
+const PENDING_SEAL_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+
+// Serialize drains: nativeDrainOutbox is triggered from several places (transport
+// reconnect, the presence heartbeat, peer-presence changes). Two overlapping runs would
+// both read the same queue snapshot and could re-encrypt/re-send the same pending_seal
+// entry (double delivery). A single in-flight promise coalesces concurrent callers; a
+// re-run flag makes one extra pass if new work was requested mid-drain, so nothing queued
+// during a drain waits for the next heartbeat.
+let drainInFlight: Promise<void> | null = null;
+let drainRequestedAgain = false;
 
 /**
  * Replay the durable outbound queue after the transport reconnects. For each queued
@@ -717,9 +732,28 @@ const MAX_OUTBOX_ATTEMPTS = 50;
  * the envelope deposited in its zero-knowledge mailbox. Entries are removed once
  * handled (delivered or mailboxed) and the originating message is marked sent. This
  * is what makes the "queued" delivery state honest — the message really does go out
- * on reconnect rather than being silently lost.
+ * on reconnect rather than being silently lost. Serialized so concurrent triggers
+ * never double-process the same entry.
  */
-export async function nativeDrainOutbox(): Promise<void> {
+export function nativeDrainOutbox(): Promise<void> {
+  if (drainInFlight) {
+    drainRequestedAgain = true;
+    return drainInFlight;
+  }
+  drainInFlight = (async () => {
+    try {
+      do {
+        drainRequestedAgain = false;
+        await drainOutboxOnce();
+      } while (drainRequestedAgain);
+    } finally {
+      drainInFlight = null;
+    }
+  })();
+  return drainInFlight;
+}
+
+async function drainOutboxOnce(): Promise<void> {
   const sync = getPeerSync();
   if (!sync) return;
   const entries = [...getOutbox()];
@@ -734,8 +768,11 @@ export async function nativeDrainOutbox(): Promise<void> {
         const ps = entry.pending_seal;
         const sealed = await encryptDmEnvelope(ps.recipient, ps.base, ps.body, ps.media);
         if (!sealed) {
-          // Still can't establish a session — keep the entry (bump attempts) and move on.
-          if (entry.attempts + 1 >= MAX_OUTBOX_ATTEMPTS) {
+          // Still can't establish a session — keep the entry until it ages out (time-based,
+          // not attempt-based, so a days-offline recipient's first-contact DM survives).
+          const createdMs = Date.parse(entry.created_at);
+          const tooOld = Number.isFinite(createdMs) && (Date.now() - createdMs) >= PENDING_SEAL_MAX_AGE_MS;
+          if (tooOld) {
             removeOutbox(entry.id);
             if (entry.message_id) setMessageDeliveryStatus(entry.message_id, 'failed');
           } else {

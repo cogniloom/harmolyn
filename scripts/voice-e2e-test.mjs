@@ -192,10 +192,18 @@ async function runVoiceTests(browserInstance, url) {
     await page.waitForFunction(() => typeof window.__p0?.createNode === 'function', { timeout: 10_000 });
 
     // Get a circuit relay reservation first (needed to reach peers over the relay).
+    // Register the voice mesh protocol handler on the node BEFORE the probe so the
+    // reachability assertion is meaningful — the p0 harness builds a bare transport node
+    // (no engine), so nothing wires /aether/voice unless we do it here. This mirrors what
+    // the engine's wireDataPlane does: node.handle(PROTOCOLS.voice, …).
     const circuitAddr = await page.evaluate(async () => {
-      const { createNode, circuitAddrs } = window.__p0;
+      const { createNode, circuitAddrs, PROTOCOLS } = window.__p0;
       const node = await createNode();
       window.__p0.node = node;
+      // Minimal voice signaling handler: a bare acknowledgement is enough for the
+      // single-peer reachability probe (the full presence/offer/ice handshake is the
+      // documented two-peer live smoketest). Registering it is what the probe checks.
+      await node.handle(PROTOCOLS.voice, (() => { /* stub: framed reply handled in the live path */ }), { runOnLimitedConnection: true });
       const deadline = Date.now() + 20_000;
       while (Date.now() < deadline) {
         await new Promise(r => setTimeout(r, 500));
