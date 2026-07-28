@@ -108,6 +108,13 @@ function handleChatSend(payload: Record<string, unknown>, remotePeerId: string):
       Object.keys(s.channels ?? {}).includes(scopeId),
     );
     if (!server || !(server.members ?? []).includes(me)) return;
+    // SECURITY: the authenticated sender must ALSO still be a current member. Crowd
+    // retains the previous epoch root so legitimate in-flight ciphertext still
+    // decrypts after a rotation — but a KICKED peer could otherwise keep minting
+    // fresh ciphertext under that retained epoch and have us accept it until enough
+    // later rotations evict the epoch. Gating acceptance on live membership closes
+    // that window without touching the (correct) legacy decrypt window.
+    if (!(server.members ?? []).includes(senderId)) return;
     serverId = server.id;
   }
 

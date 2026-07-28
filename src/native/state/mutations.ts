@@ -273,16 +273,24 @@ export function nativeEditMessage(messageId: string, body: string): void {
 
   if (msg.scope_type === 'channel' && msg.server_id) {
     // Crowd-encrypt the edit payload — inbound handler decrypts before applying.
+    // FAIL-CLOSED: if there's no crowd root yet we do NOT fall back to a plaintext
+    // edit. The inbound edit handler rejects any edit lacking the scope's required
+    // encrypted envelope, so a plaintext broadcast would be silently discarded by
+    // every recipient (diverging the conversation) AND put cleartext on the wire —
+    // pure downside. The edit stays local until it can be encrypted.
     const envelope = encryptChannelEnvelope(msg.server_id, localPeerId(), base, body);
-    void getPeerSync()?.broadcastToScope(scopeMembers, PROTOCOLS.chat, 'chat.edit',
-      envelope ?? { ...base, body });  // fallback plaintext if no crowd root yet
+    if (envelope) {
+      void getPeerSync()?.broadcastToScope(scopeMembers, PROTOCOLS.chat, 'chat.edit', envelope);
+    }
   } else if (msg.scope_type === 'dm') {
-    // Seal-encrypt the edit for each DM participant individually (async).
+    // Seal-encrypt the edit for each DM participant individually (async). Same
+    // fail-closed rule: only transmit a sealed envelope, never a plaintext fallback.
     const recipients = scopeMembers.filter(p => p !== localPeerId());
     for (const recipient of recipients) {
       void encryptDmEnvelope(recipient, base, body).then(sealed => {
-        void getPeerSync()?.sendToPeer(recipient, PROTOCOLS.chat, 'chat.edit',
-          sealed ?? { ...base, body });
+        if (sealed) {
+          void getPeerSync()?.sendToPeer(recipient, PROTOCOLS.chat, 'chat.edit', sealed);
+        }
       });
     }
   }

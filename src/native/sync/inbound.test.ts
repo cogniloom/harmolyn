@@ -66,6 +66,25 @@ describe('inbound — fail-closed encryption policy (A1)', () => {
     expect(getState().messages.some(m => m.id === 'm-mism')).toBe(false);
   });
 
+  it('rejects a genuine Crowd envelope from a sender who is no longer a member (kick)', () => {
+    // Seed the server WITHOUT Alice (she was kicked) but keep the crowd_root — the
+    // legacy epoch still exists so her in-flight ciphertext would decrypt. A real
+    // envelope she mints under that retained epoch must still be REJECTED because she
+    // is no longer in server.members; otherwise a kicked peer keeps posting.
+    addServer({
+      id: SRV, name: 'S', owner_peer_id: ME, members: [ME],
+      channels: { [CHAN]: { id: CHAN, server_id: SRV, name: 'general', voice: false } },
+    });
+    updateServer(SRV, { crowd_root: freshRootB64() });
+    const base = { message_id: 'm-kicked', scope_id: CHAN, scope_type: 'channel', server_id: SRV, sender_id: ALICE };
+    const envelope = encryptChannelEnvelope(SRV, ALICE, base, 'post-kick message');
+    expect(envelope).toBeTruthy();
+
+    ingestMailboxChat(envelope!, ALICE);
+
+    expect(getState().messages.some(m => m.id === 'm-kicked')).toBe(false);
+  });
+
   it('accepts a genuine Crowd envelope and stamps the real security mode (A2)', () => {
     seedServerWithRoot();
     // Build a real crowd envelope as ALICE would (same shared root from the server

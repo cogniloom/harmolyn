@@ -879,16 +879,35 @@ export class VoiceSession {
     if (this.stopped) return;
     // The impolite peer owns restart to avoid both sides restarting at once (glare).
     if (!entry.polite && entry.pc.signalingState === 'stable') {
+      let restarted = false;
       try {
         entry.pc.restartIce();
         entry.iceBuffer.reset();
-        void this.renegotiate(remotePeerId, entry, { iceRestart: true });
+        restarted = true;
+      } catch { /* restartIce unavailable — fall through to full reconnect */ }
+      if (restarted) {
+        // restartIce() resolves synchronously and never rejects, so the only real
+        // signal that recovery worked is whether renegotiation lands a usable answer.
+        // Await it; if the peer never answers (unreachable / no answer), fall back to
+        // a backed-off full reconnect instead of sitting failed forever.
+        void this.renegotiate(remotePeerId, entry, { iceRestart: true }).then((ok) => {
+          if (ok || this.stopped) return;
+          if (this.peers.get(remotePeerId) !== entry) return; // superseded by a redial
+          this.scheduleReconnect(remotePeerId);
+        });
         return;
-      } catch { /* fall through to full reconnect */ }
+      }
     }
-    // Otherwise schedule a backed-off full reconnect (redial from scratch). The
-    // scheduler is keyed by peerId (not the PeerConn) so the attempt count and backoff
-    // survive the redial's connection replacement — no infinite retry at the base delay.
+    // Otherwise schedule a backed-off full reconnect (redial from scratch).
+    this.scheduleReconnect(remotePeerId);
+  }
+
+  /**
+   * Schedule a backed-off full reconnect (tear down + redial). The scheduler is keyed
+   * by peerId (not the PeerConn) so the attempt count and backoff survive the redial's
+   * connection replacement — no infinite retry at the base delay.
+   */
+  private scheduleReconnect(remotePeerId: string): void {
     this.schedulerFor(remotePeerId).schedule(() => {
       if (this.stopped || !this.peers.has(remotePeerId)) return;
       this.dropPeer(remotePeerId, { keepScheduler: true });
@@ -944,9 +963,16 @@ export class VoiceSession {
     await this.renegotiate(remotePeerId, entry);
   }
 
-  private async renegotiate(remotePeerId: string, entry: PeerConn, opts: { iceRestart?: boolean } = {}): Promise<void> {
+  /**
+   * Send an offer to a peer. Returns true when negotiation is progressing (we applied
+   * the peer's answer, or hit glare so the polite peer will answer our offer), false
+   * when it could not complete (peer unreachable / no usable answer / exception). The
+   * boolean lets ICE-restart recovery decide whether to fall back to a full reconnect —
+   * most callers ignore it (renegotiation there is best-effort).
+   */
+  private async renegotiate(remotePeerId: string, entry: PeerConn, opts: { iceRestart?: boolean } = {}): Promise<boolean> {
     const peerSync = getPeerSync();
-    if (!peerSync) return;
+    if (!peerSync) return false;
     try {
       entry.makingOffer = true;
       const prefs = readAvPrefs();
@@ -969,10 +995,12 @@ export class VoiceSession {
         entry.remoteKinds = { ...entry.remoteKinds, ...(resp.kinds ?? {}) };
         await entry.pc.setRemoteDescription({ type: 'answer', sdp: resp.sdp });
         this.flushIce(entry);
-      } else if (resp?.error === 'glare') {
-        // The polite peer will answer our offer via its own handleOffer path.
+        return true;
       }
-    } catch { /* peer unreachable / negotiation failed — non-fatal */ }
+      // Glare is not a failure: the polite peer will answer our offer via its own
+      // handleOffer path, so negotiation is still progressing.
+      return resp?.error === 'glare';
+    } catch { /* peer unreachable / negotiation failed */ return false; }
     finally { entry.makingOffer = false; }
   }
 

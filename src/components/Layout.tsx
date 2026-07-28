@@ -142,10 +142,17 @@ export const Layout: React.FC = () => {
   // more respectful and more likely to be granted.
   useEffect(() => {
     if (!desktopNotifications || typeof Notification === 'undefined' || Notification.permission !== 'default') return;
+    // Honor the user's stored Desktop Notifications toggle: if they've turned it off we
+    // must NOT prompt — otherwise the very pointer-down that flips the toggle off would
+    // itself open the OS permission dialog before the toggle's click handler runs.
+    if (!readNotificationPreferences().desktopEnabled) return;
     const ask = () => {
       window.removeEventListener('pointerdown', ask);
       window.removeEventListener('keydown', ask);
-      if (Notification.permission === 'default') void Notification.requestPermission();
+      // Re-check at gesture time: the preference may have changed since we registered.
+      if (Notification.permission === 'default' && readNotificationPreferences().desktopEnabled) {
+        void Notification.requestPermission();
+      }
     };
     window.addEventListener('pointerdown', ask, { once: true });
     window.addEventListener('keydown', ask, { once: true });
