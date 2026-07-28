@@ -329,6 +329,10 @@ export class XoreinNativeEngine {
           // resil-2: pull any messages deposited in our zero-knowledge mailbox
           // while we were offline.
           this.drainOfflineMailbox();
+          // Reconcile joined servers: re-pull each owner's authoritative record so a
+          // membership/epoch change we missed while offline (new crowd_root, roles) is
+          // applied — otherwise we'd stay stuck on a stale epoch and fail to decrypt.
+          void this.reconcileJoinedServers();
           // Replay our own durable outbound queue: messages composed while the relay
           // was down now go out (or into recipients' mailboxes) instead of being lost.
           void nativeDrainOutbox();
@@ -488,10 +492,45 @@ export class XoreinNativeEngine {
    * Re-announcing covers peers who connect after us or live on a different relay —
    * without it, presence only ever updates when someone happens to type.
    */
+  /**
+   * On (re)connect, re-pull each joined server's authoritative record from its owner.
+   * Membership/epoch changes (join/kick/leave) are distributed by a fire-and-forget
+   * sync.update; a member who was OFFLINE when it fired never receives the new crowd_root
+   * and would be stuck on a stale epoch — unable to decrypt any subsequent channel traffic.
+   * A re-pull (sync.join is exempt from the invite check for an existing member) reconciles
+   * the root/epoch, roles/membership, and any messages missed while offline. Best-effort and
+   * idempotent (applyJoinedServer de-dups by id; the crypto re-seeds the new root lazily).
+   */
+  private async reconcileJoinedServers(): Promise<void> {
+    const me = this._identity?.peerId;
+    if (!me) return;
+    const displayName = getState().identity?.profile?.display_name;
+    const servers = Object.values(getState().servers)
+      .filter(s => s.owner_peer_id && s.owner_peer_id !== me && (s.members ?? []).includes(me));
+    let changed = false;
+    for (const s of servers) {
+      try {
+        const data = await this.peerSync.joinServer(s.owner_peer_id, s.id, displayName);
+        if (data?.ok && data.server) {
+          applyJoinedServer(data.server as XoreinRuntimeServer, (data.messages ?? []) as XoreinRuntimeMessage[]);
+          changed = true;
+        }
+      } catch { /* owner unreachable — retried on the next reconnect */ }
+    }
+    if (changed) publishNativeSnapshot();
+  }
+
   private startPresenceHeartbeat(): void {
     this.stopPresenceHeartbeat();
     nativeAnnouncePresence();
-    this._presenceTimer = setInterval(() => nativeAnnouncePresence(), 25_000);
+    this._presenceTimer = setInterval(() => {
+      nativeAnnouncePresence();
+      // Also drain the outbound queue on the heartbeat, not only on our own transport
+      // (re)connect. A first-contact pending_seal DM is queued while WE are already
+      // connected but the RECIPIENT is offline; when they later come online there is no
+      // sender-side connect event, so without this periodic retry it would never ship.
+      void nativeDrainOutbox();
+    }, 25_000);
   }
 
   private stopPresenceHeartbeat(): void {
