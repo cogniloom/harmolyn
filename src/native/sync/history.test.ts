@@ -9,6 +9,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { initStore, setNativeIdentity, addServer, addMessage } from '../state/store.js';
 import { handleSyncRequest } from './inbound.js';
+import { computeInviteToken } from './invite.js';
 import type { XoreinRuntimeMessage } from '../../types.js';
 
 const OWNER = 'owner';
@@ -146,6 +147,28 @@ describe('handleSyncRequest — cursor pagination (WS-D)', () => {
     // No valid invite token and not a member → declined.
     expect(res.ok).toBe(false);
     expect(res.error).toBe('invalid_invite');
+  });
+
+  it('enforces the join boundary on later pulls, not just the initial join (P1 leak)', () => {
+    // All seeded messages predate "now", so they are pre-join for any new joiner.
+    seed(20);
+    const token = computeInviteToken('sekret', SRV);
+
+    // A brand-new joiner joins with a valid invite: join_history_messages=0 → no history.
+    const joinRes = handleSyncRequest('sync.join', { server_id: SRV, invite_token: token }, OUTSIDER);
+    expect(joinRes.ok).toBe(true);
+    expect((joinRes.messages as XoreinRuntimeMessage[]).length).toBe(0);
+
+    // The joiner is now a member. A LATER cursor pull must STILL withhold the pre-join
+    // history — previously `alreadyMember` flipped true and served the full window.
+    const pullRes = handleSyncRequest('sync.pull', { server_id: SRV, channel_id: CHAN, before: '2026-01-01T00:00:59.000Z', limit: 50 }, OUTSIDER);
+    expect(pullRes.ok).toBe(true);
+    expect((pullRes.messages as XoreinRuntimeMessage[]).length).toBe(0);
+
+    // A message sent AFTER they joined is visible to them (boundary is a floor, not a mute).
+    addMessage({ id: 'm-post', scope_type: 'channel', scope_id: CHAN, server_id: SRV, sender_peer_id: OWNER, body: 'after join', created_at: '2099-01-01T00:00:00.000Z' } as XoreinRuntimeMessage);
+    const afterRes = handleSyncRequest('sync.pull', { server_id: SRV, channel_id: CHAN, before: '2099-01-02T00:00:00.000Z', limit: 50 }, OUTSIDER);
+    expect((afterRes.messages as XoreinRuntimeMessage[]).map(m => m.id)).toEqual(['m-post']);
   });
 
   it('strips the invite_secret from the served server record', () => {

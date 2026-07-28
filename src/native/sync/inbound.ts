@@ -51,6 +51,24 @@ function bufferFutureEpochChannelMessage(payload: Record<string, unknown>, remot
  * decrypt. Called right after a server's Crowd root advances (sync.update). Messages still
  * ahead of the installed epoch stay buffered for a later rotation.
  */
+/**
+ * Enforce a member's join-history boundary: messages strictly older than when they joined
+ * are withheld beyond the `joinWindow` (join_history_messages) allowance. A member with no
+ * recorded boundary (owner, or a member from before boundaries were tracked) sees the set
+ * unchanged. `msgs` must already be sorted oldest→newest.
+ */
+function applyJoinBoundary(
+  msgs: XoreinRuntimeMessage[],
+  memberSince: string | undefined,
+  joinWindow: number,
+): XoreinRuntimeMessage[] {
+  if (!memberSince) return msgs;
+  const preJoin = msgs.filter(m => String(m.created_at ?? '') < memberSince);
+  const postJoin = msgs.filter(m => String(m.created_at ?? '') >= memberSince);
+  const allowedPreJoin = joinWindow > 0 ? preJoin.slice(-joinWindow) : [];
+  return [...allowedPreJoin, ...postJoin];
+}
+
 export function replayBufferedChannelMessages(serverId: string): void {
   const list = FUTURE_EPOCH_BUFFER.get(serverId);
   if (!list || !list.length) return;
@@ -555,7 +573,14 @@ export function handleSyncRequest(operation: string, payload: Record<string, unk
   // response's server record. Re-pulls by existing members do NOT rotate.
   const isNewJoiner = operation === 'sync.join' && isOwner && remotePeerId && !alreadyMember;
   if (isNewJoiner) {
-    updateServer(serverId, { members: [...server.members, remotePeerId] });
+    // Record the join boundary NOW so it is enforced on every later pull, not just this
+    // response — otherwise `alreadyMember` flips true and a subsequent sync.pull would
+    // serve the full retention window, leaking the pre-join history the policy withheld.
+    const joinedAt = new Date().toISOString();
+    updateServer(serverId, {
+      members: [...server.members, remotePeerId],
+      member_since: { ...(server.member_since ?? {}), [remotePeerId]: joinedAt },
+    });
     rotateCrowdEpoch(serverId);
     broadcastServerUpdate(serverId);
     publishNativeSnapshot();
@@ -573,13 +598,15 @@ export function handleSyncRequest(operation: string, payload: Record<string, unk
       String(a.created_at ?? '').localeCompare(String(b.created_at ?? '')) ||
       String(a.id).localeCompare(String(b.id)));
   const retention = current.manifest?.history_retention_messages ?? 100;
-  // History policy: an existing member re-pulling gets the full retention window; a
-  // brand-new joiner gets only `join_history_messages` (default 0 = zero pre-join
-  // history / forward secrecy on join). The owner holds DECRYPTED plaintext, so
-  // clamping here — not the epoch rotation alone — is what actually stops a new
-  // member from reading old conversations.
+  // History policy: the owner holds DECRYPTED plaintext, so clamping HERE — not the epoch
+  // rotation alone — is what actually stops a member from reading old conversations. A
+  // member gets at most `join_history_messages` (default 0) of pre-join history, enforced
+  // via their persisted join boundary on EVERY pull. The boundary — not the transient
+  // `alreadyMember ? retention : joinWindow` split — is what prevents a member who is now
+  // `alreadyMember` from later paging into the pre-join window.
   const joinWindow = current.manifest?.join_history_messages ?? 0;
-  const historyLimit = alreadyMember ? retention : joinWindow;
+  const memberSince = remotePeerId ? current.member_since?.[remotePeerId] : undefined;
+  const boundaried = applyJoinBoundary(allMessages, memberSince, joinWindow);
 
   // Cursor pagination (`sync.pull` with `before`): serve the page of messages that
   // precede the cursor, so a member can lazily scroll further back than the initial
@@ -600,9 +627,10 @@ export function handleSyncRequest(operation: string, payload: Record<string, unk
     // Only members may page (cursor pull is not a join); non-members get nothing.
     // Scope to the requested channel so a busy server's other channels can't fill the
     // page, and clamp to the retention window BEFORE cursoring so repeated pulls can
-    // never exfiltrate history older than the manifest's advertised limit.
+    // never exfiltrate history older than the manifest's advertised limit. `boundaried`
+    // has already dropped pre-join history beyond the join allowance.
     const scoped = alreadyMember
-      ? (pullChannelId ? allMessages.filter(m => m.scope_id === pullChannelId) : allMessages)
+      ? (pullChannelId ? boundaried.filter(m => m.scope_id === pullChannelId) : boundaried)
       : [];
     const windowed = scoped.slice(-retention);
     // Older than the (created_at, id) cursor: strictly-earlier timestamp, OR same
@@ -614,8 +642,11 @@ export function handleSyncRequest(operation: string, payload: Record<string, unk
     messages = older.slice(-pageLimit);
     hasMore = older.length > messages.length;
   } else {
-    messages = historyLimit > 0 ? allMessages.slice(-historyLimit) : [];
-    hasMore = allMessages.length > messages.length && (alreadyMember ? historyLimit > 0 : false);
+    // Initial join / full pull: the boundaried set already reflects the join policy, so
+    // serve up to the retention window of it.
+    const windowed = boundaried.slice(-retention);
+    messages = windowed;
+    hasMore = boundaried.length > windowed.length;
   }
   // Advertise our own circuit addresses so the joiner can reach us on our relay.
   const addresses = (getState().relay_addrs ?? []).filter(a => a.includes('p2p-circuit'));
@@ -623,7 +654,7 @@ export function handleSyncRequest(operation: string, payload: Record<string, unk
   // that grants invite-minting authority. crowd_root/crowd_epoch ARE distributed to
   // joining members so they can decrypt channel messages at the current epoch; the
   // root is rotated on join above so a joiner never learns a prior epoch's key.
-  const { invite_secret: _omit, ...serverForJoiner } = current;
+  const { invite_secret: _omit, member_since: _omitSince, ...serverForJoiner } = current;
   return { ok: true, server: serverForJoiner, messages, addresses, has_more: hasMore };
 }
 

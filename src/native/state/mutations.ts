@@ -526,7 +526,7 @@ export function broadcastServerUpdate(serverId: string): void {
   const nextRev = (typeof current.server_rev === 'number' ? current.server_rev : 0) + 1;
   updateServer(serverId, { server_rev: nextRev });
   const server = getState().servers[serverId];
-  const { invite_secret: _omit, ...serverForMembers } = server;
+  const { invite_secret: _omit, member_since: _omitSince, ...serverForMembers } = server;
   void getPeerSync()?.broadcastToScope(members, PROTOCOLS.sync, 'sync.update', {
     server_id: serverId,
     server: serverForMembers,

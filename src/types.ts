@@ -299,6 +299,14 @@ export interface XoreinRuntimeServer {
    */
   server_rev?: number;
   /**
+   * Owner-held map of member peer id → the ISO timestamp at which that member joined.
+   * The owner enforces this boundary on EVERY history pull (not just the initial join
+   * response): messages older than a member's join time are withheld beyond the
+   * `join_history_messages` allowance, so a member can never later page into pre-join
+   * plaintext history. Owner-private (stripped before the record is sent to members).
+   */
+  member_since?: Record<string, string>;
+  /**
    * Base64 secret used to mint/verify invite tokens (owner-held, never sent to
    * the support node). A joiner must present HMAC(invite_secret, server_id) to be
    * admitted and served history.
