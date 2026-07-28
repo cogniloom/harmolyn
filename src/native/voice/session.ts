@@ -719,6 +719,14 @@ export class VoiceSession {
       return { ok: false, error: 'glare' };
     }
     try {
+      // A renegotiation / ICE-restart offer begins a NEW ICE generation. Candidates for
+      // that generation travel on a separate voice.ice stream and can arrive BEFORE this
+      // offer; if the buffer is still "ready" from the previous negotiation they'd be
+      // applied against the outgoing remote description and discarded. Close the gate so
+      // they re-buffer until the new remote description lands, then flushIce re-opens it.
+      if (pc.currentRemoteDescription != null) {
+        entry.iceBuffer.reset();
+      }
       if (offerCollision) {
         await pc.setLocalDescription({ type: 'rollback' } as RTCLocalSessionDescriptionInit).catch(() => undefined);
       }
