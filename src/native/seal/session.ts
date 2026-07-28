@@ -21,6 +21,12 @@ import { identityKeyBlob } from '../identity/safetyNumber.js';
 
 /** Rebuild the whole prekey bundle when unconsumed OPKs drop to this many or fewer. */
 const OPK_LOW_WATERMARK = 5;
+// How many just-retired bundles to keep so in-flight first-contact handshakes that fetched
+// the previous bundle can still complete after a rotation. One covers the realistic
+// concurrent-first-contact race; a small cap bounds retained private-key material.
+const RETIRED_GRACE = 1;
+
+interface RetainedBundle { bundle: PrekeyBundle; priv: PrekeyPrivate; consumedOpks: Set<number> }
 
 /** Constant-time-ish equality for public key material. */
 function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
@@ -64,13 +70,20 @@ export interface SealWire {
 
 export type FetchBundle = (peerId: string) => Promise<PrekeyBundle | null>;
 
+interface SerializedPrekeyPrivate { spkPriv: string; opkPrivs: string[]; mlkemSk: string }
+
 /** Serialized SealSessions state for encrypted persistence across reloads. */
 export interface SerializedSealState {
   bundle: PrekeyBundle;
-  priv: { spkPriv: string; opkPrivs: string[]; mlkemSk: string };
+  priv: SerializedPrekeyPrivate;
   sessions: Array<[string, SerializedRatchet]>;
   /** Indices of one-time prekeys already consumed (never reusable). */
   consumedOpks?: number[];
+  /**
+   * Recently-retired bundles kept for a grace window so in-flight first-contact handshakes
+   * that fetched the previous bundle (before a rotation) can still complete.
+   */
+  retired?: Array<{ bundle: PrekeyBundle; priv: SerializedPrekeyPrivate; consumedOpks: number[] }>;
 }
 
 interface SerializedRatchet {
@@ -103,6 +116,13 @@ function unb64(s: string): Uint8Array {
   const out = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
   return out;
+}
+
+function serializePrekeyPrivate(p: PrekeyPrivate): SerializedPrekeyPrivate {
+  return { spkPriv: b64(p.spkPriv), opkPrivs: p.opkPrivs.map(b64), mlkemSk: b64(p.mlkemSk) };
+}
+function deserializePrekeyPrivate(s: SerializedPrekeyPrivate): PrekeyPrivate {
+  return { spkPriv: unb64(s.spkPriv), opkPrivs: s.opkPrivs.map(unb64), mlkemSk: unb64(s.mlkemSk) };
 }
 
 function serializeRatchet(rs: RatchetState): SerializedRatchet {
@@ -143,7 +163,9 @@ export class SealSessions {
   private readonly edSeed: Uint8Array;
   private readonly edPub: Uint8Array;
   private readonly sessions = new Map<string, RatchetState>();
-  private readonly consumedOpks: Set<number>;
+  private consumedOpks: Set<number>;
+  // Just-retired bundles (privates) kept for a grace window across a rotation.
+  private retired: RetainedBundle[] = [];
   private readonly onChange?: (state: SerializedSealState) => void;
   private readonly onPeerIdentity?: (peerId: string, identityKeyB64: string) => void;
 
@@ -165,6 +187,11 @@ export class SealSessions {
         mlkemSk: unb64(opts.persisted.priv.mlkemSk),
       };
       for (const [pid, sr] of opts.persisted.sessions) this.sessions.set(pid, deserializeRatchet(sr));
+      this.retired = (opts.persisted.retired ?? []).map(r => ({
+        bundle: r.bundle,
+        priv: deserializePrekeyPrivate(r.priv),
+        consumedOpks: new Set(r.consumedOpks),
+      }));
     } else {
       const built = buildBundle(peerId, signingKey);
       this.bundle = built.bundle;
@@ -176,15 +203,16 @@ export class SealSessions {
   serialize(): SerializedSealState {
     return {
       bundle: this.bundle,
-      priv: {
-        spkPriv: b64(this.priv.spkPriv),
-        opkPrivs: this.priv.opkPrivs.map(b64),
-        mlkemSk: b64(this.priv.mlkemSk),
-      },
+      priv: serializePrekeyPrivate(this.priv),
       sessions: [...this.sessions.entries()].map(
         ([pid, rs]) => [pid, serializeRatchet(rs)] as [string, SerializedRatchet],
       ),
       consumedOpks: [...this.consumedOpks],
+      retired: this.retired.map(r => ({
+        bundle: r.bundle,
+        priv: serializePrekeyPrivate(r.priv),
+        consumedOpks: [...r.consumedOpks],
+      })),
     };
   }
 
@@ -210,19 +238,27 @@ export class SealSessions {
     const nowSec = Math.floor(Date.now() / 1000);
     const expired = nowSec > this.bundle.expires_at;
     if (!expired && this.remainingOpks() > OPK_LOW_WATERMARK) return;
+    // Retain the OUTGOING bundle's privates for a grace window so a concurrent first-contact
+    // handshake that fetched it before this rotation can still be answered (its init
+    // references the old SPK/OPK/ML-KEM key). Bounded so retained key material stays small.
+    this.retired = [{ bundle: this.bundle, priv: this.priv, consumedOpks: new Set(this.consumedOpks) }, ...this.retired].slice(0, RETIRED_GRACE);
     const built = buildBundle(this.selfPeerId, this.signingKey);
     this.bundle = built.bundle;
     this.priv = built.priv;
-    this.consumedOpks.clear();
+    this.consumedOpks = new Set();
     this.persist();
   }
 
-  /** Mark a one-time prekey consumed: zero its private + public halves, re-sign. */
-  private consumeOpk(index: number): void {
-    this.consumedOpks.add(index);
-    this.priv.opkPrivs[index] = new Uint8Array(32);
-    this.bundle.one_time_prekeys_x25519[index] = new Array(32).fill(0);
-    resignBundle(this.bundle, this.signingKey);
+  /**
+   * Mark a one-time prekey consumed in a specific bundle: zero its private + public halves
+   * so it can never back a second session. Re-sign only the CURRENT published bundle (a
+   * retired bundle is never served again, so its signature is irrelevant).
+   */
+  private consumeOpkIn(cand: RetainedBundle, index: number): void {
+    cand.consumedOpks.add(index);
+    cand.priv.opkPrivs[index] = new Uint8Array(32);
+    cand.bundle.one_time_prekeys_x25519[index] = new Array(32).fill(0);
+    if (cand.bundle === this.bundle) resignBundle(this.bundle, this.signingKey);
   }
 
   /**
@@ -312,39 +348,55 @@ export class SealSessions {
       opkIndex: wire.im.opk,
       ...(wire.im.opkPub ? { opkPub: unb64(wire.im.opkPub) } : {}),
     };
-    // ONE-TIME PREKEY: enforce single use. A consumed OPK must never back a
-    // second session (that would defeat the forward secrecy OPKs exist for);
-    // and the echoed OPK pub must match the slot we advertised.
-    if (im.opkIndex >= 0) {
-      if (im.opkPub) {
-        const advertised = this.bundle.one_time_prekeys_x25519[im.opkIndex];
-        if (!advertised || !bytesEqual(new Uint8Array(advertised), im.opkPub)) {
-          throw new Error('seal: one-time prekey mismatch');
+    // Try the CURRENT bundle first, then any retained (recently-retired) bundle. An init
+    // built against a since-rotated bundle references that bundle's SPK/OPK/ML-KEM key, so
+    // only its retained privates derive the right shared secret; the other candidates fail
+    // ratchetDecrypt and are skipped. This lets a concurrent first-contact handshake that
+    // fetched the old bundle complete instead of wedging permanently.
+    const candidates: RetainedBundle[] = [
+      { bundle: this.bundle, priv: this.priv, consumedOpks: this.consumedOpks },
+      ...this.retired,
+    ];
+    let lastErr: unknown;
+    for (const cand of candidates) {
+      // ONE-TIME PREKEY single-use + advertised-pub match, per candidate bundle. A consumed
+      // OPK must never back a second session (defeats the forward secrecy OPKs exist for).
+      if (im.opkIndex >= 0) {
+        if (im.opkPub) {
+          const advertised = cand.bundle.one_time_prekeys_x25519[im.opkIndex];
+          if (!advertised || !bytesEqual(new Uint8Array(advertised), im.opkPub)) {
+            lastErr = new Error('seal: one-time prekey mismatch'); continue;
+          }
+        }
+        if (cand.consumedOpks.has(im.opkIndex) || isConsumedSlot(cand.bundle, im.opkIndex)) {
+          lastErr = new Error('seal: one-time prekey already consumed'); continue;
         }
       }
-      if (this.consumedOpks.has(im.opkIndex) || isConsumedSlot(this.bundle, im.opkIndex)) {
-        throw new Error('seal: one-time prekey already consumed');
-      }
-    }
-    // AUTHENTICATE BEFORE COMMITTING: derive the responder ratchet and decrypt the actual
-    // message against this CANDIDATE state first. Only on success do we commit the session,
-    // consume the OPK, and rotate the bundle. Previously a malformed init could poison the
-    // in-memory session (the stored ratchet would make later valid inits skip X3DH and
-    // fail) and burn a one-time prekey before decryption ever authenticated.
-    const candidate = x3dhRespond(im, this.priv, this.bundle, this.edSeed, theirEdPub);
-    const pt = ratchetDecrypt(candidate, unb64(wire.header), unb64(wire.ct));
+      // AUTHENTICATE BEFORE COMMITTING: derive the responder ratchet and decrypt against
+      // this CANDIDATE first. Only on success do we commit the session, consume the OPK from
+      // the MATCHING bundle, and rotate — so a malformed init can neither poison the in-memory
+      // session (a stored bad ratchet would make later valid inits skip X3DH and fail) nor
+      // burn a one-time prekey before decryption ever authenticated.
+      let candidateRs: RatchetState;
+      try { candidateRs = x3dhRespond(im, cand.priv, cand.bundle, this.edSeed, theirEdPub); }
+      catch (e) { lastErr = e; continue; }
+      let pt: Uint8Array;
+      try { pt = ratchetDecrypt(candidateRs, unb64(wire.header), unb64(wire.ct)); }
+      catch (e) { lastErr = e; continue; }
 
-    this.sessions.set(peerId, candidate);
-    if (im.opkIndex >= 0) this.consumeOpk(im.opkIndex);
-    // TOFU-pin the initiator's full hybrid identity (Ed25519 bound to the sender + the
-    // ML-DSA half they carried) so the responder can show a safety number and detect
-    // identity changes for a relationship where the peer messaged first.
-    if (wire.im.dsa) {
-      this.onPeerIdentity?.(peerId, identityKeyBlob(theirEdPub, unb64(wire.im.dsa)));
+      this.sessions.set(peerId, candidateRs);
+      if (im.opkIndex >= 0) this.consumeOpkIn(cand, im.opkIndex);
+      // TOFU-pin the initiator's full hybrid identity (Ed25519 bound to the sender + the
+      // ML-DSA half they carried) so the responder can show a safety number and detect
+      // identity changes for a relationship where the peer messaged first.
+      if (wire.im.dsa) {
+        this.onPeerIdentity?.(peerId, identityKeyBlob(theirEdPub, unb64(wire.im.dsa)));
+      }
+      this.maybeRotateBundle();
+      this.persist();
+      return pt;
     }
-    this.maybeRotateBundle();
-    this.persist();
-    return pt;
+    throw lastErr instanceof Error ? lastErr : new Error('seal: could not establish session from init');
   }
 }
 

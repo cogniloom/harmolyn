@@ -6,9 +6,16 @@ import { SealSessions, type FetchBundle, type SerializedSealState } from './sess
 import { ChannelCrypto } from '../crowd/channel.js';
 import { generateSigningIdentity, type HybridSigningKey } from '../crypto/hybrid.js';
 import { identityKeyBlob } from '../identity/safetyNumber.js';
+import { buildBundle } from './bundle.js';
 
 function mkSigning(): HybridSigningKey {
   return generateSigningIdentity();
+}
+
+function b64bytes(b: Uint8Array): string {
+  let s = '';
+  for (let i = 0; i < b.length; i++) s += String.fromCharCode(b[i]);
+  return btoa(s);
 }
 
 describe('SealSessions (1:1 DM E2EE)', () => {
@@ -83,6 +90,35 @@ describe('SealSessions (1:1 DM E2EE)', () => {
     const alice2 = new SealSessions('alice', aliceKey);
     const w2 = await alice2.encrypt('bob', new TextEncoder().encode('m2'), async () => bob.serveBundle());
     expect(new TextDecoder().decode(bob.decrypt('alice', w2))).toBe('m2');
+  });
+
+  it('retains the rotated bundle so a concurrent first-contact under the OLD bundle still decrypts', async () => {
+    const bobKey = mkSigning();
+    // Bob starts with just OPK_LOW_WATERMARK+1 (6) one-time prekeys, so the FIRST accepted
+    // handshake drops the count to 5 (≤ watermark) and triggers a bundle rotation.
+    const built = buildBundle('bob', bobKey, 6);
+    const oldBundle = built.bundle; // what both initiators fetch (before the rotation)
+    const bob = new SealSessions('bob', bobKey, {
+      persisted: {
+        bundle: built.bundle,
+        priv: { spkPriv: b64bytes(built.priv.spkPriv), opkPrivs: built.priv.opkPrivs.map(b64bytes), mlkemSk: b64bytes(built.priv.mlkemSk) },
+        sessions: [],
+        consumedOpks: [],
+      },
+    });
+
+    // Initiator 1 fetches the old bundle and handshakes — this consumes an OPK and rotates.
+    const alice1 = new SealSessions('alice1', mkSigning());
+    const w1 = await alice1.encrypt('bob', new TextEncoder().encode('one'), async () => oldBundle);
+    expect(new TextDecoder().decode(bob.decrypt('alice1', w1))).toBe('one');
+
+    // Initiator 2 also fetched the OLD (now-rotated-away) bundle. Its init references the old
+    // SPK/OPK/ML-KEM key; without retention bob would derive the wrong secret and fail. With
+    // the retained bundle it still decrypts. (alice1's consumed OPK is zeroed in the shared
+    // bundle, so alice2 deterministically picks a different, still-available OPK.)
+    const alice2 = new SealSessions('alice2', mkSigning());
+    const w2 = await alice2.encrypt('bob', new TextEncoder().encode('two'), async () => oldBundle);
+    expect(new TextDecoder().decode(bob.decrypt('alice2', w2))).toBe('two');
   });
 
   it('pins the initiator hybrid identity on an inbound first-contact DM (responder TOFU)', async () => {
