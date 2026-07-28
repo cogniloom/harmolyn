@@ -13,7 +13,7 @@ import { ChannelCrypto } from '../crowd/channel.js';
 import { SealSessions } from '../seal/session.js';
 import { generateSigningIdentity } from '../crypto/hybrid.js';
 import { registerScopeCrypto, resetScopeCrypto, encryptChannelEnvelope } from './secureEnvelope.js';
-import { ingestMailboxChat } from './inbound.js';
+import { ingestMailboxChat, classifyChannelNotification } from './inbound.js';
 
 const ME = 'me';
 const ALICE = 'alice';
@@ -37,6 +37,33 @@ function seedServerWithRoot(): void {
   });
   updateServer(SRV, { crowd_root: freshRootB64() });
 }
+
+describe('classifyChannelNotification', () => {
+  const server = {
+    roles: [{ id: 'r-mod', name: 'Moderator' }, { id: 'r-vip', name: 'VIP' }],
+    member_roles: { [ME]: ['r-mod'] },
+  };
+
+  it('flags @everyone / @here as a broadcast ping', () => {
+    expect(classifyChannelNotification(server, ME, 'Me', 'hey @everyone')).toBe('everyone');
+    expect(classifyChannelNotification(server, ME, 'Me', 'psa @here please')).toBe('everyone');
+  });
+
+  it('flags a direct mention of my display name or peer id', () => {
+    expect(classifyChannelNotification(server, ME, 'Neo', 'ping @Neo look')).toBe('mention');
+    expect(classifyChannelNotification(server, ME, undefined, `yo @${ME}`)).toBe('mention');
+  });
+
+  it('flags a role ping only for a role I actually hold', () => {
+    expect(classifyChannelNotification(server, ME, 'Me', 'attention @Moderator')).toBe('role');
+    // I do not hold VIP, so an @VIP ping is ordinary channel traffic for me.
+    expect(classifyChannelNotification(server, ME, 'Me', 'hello @VIP')).toBe('channel');
+  });
+
+  it('treats ordinary channel text as the plain channel kind', () => {
+    expect(classifyChannelNotification(server, ME, 'Me', 'just chatting')).toBe('channel');
+  });
+});
 
 describe('inbound — fail-closed encryption policy (A1)', () => {
   beforeEach(() => {

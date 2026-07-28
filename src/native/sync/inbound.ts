@@ -30,6 +30,36 @@ function emitNotify(detail: { kind: string; title: string; body: string; scopeId
   } catch { /* non-DOM environment (tests / workers) */ }
 }
 
+/**
+ * Classify an inbound CHANNEL message for notification routing so the user's stored
+ * notification level actually applies to channel traffic (previously only DMs emitted
+ * events, so "All messages" / "Mentions only" were dead for channels). The kinds line
+ * up with the pref filter in Layout: `everyone`/`role` are broadcast pings that
+ * suppressEveryone/suppressRoles can mute; `mention` is a direct ping that survives
+ * "Mentions only"; `channel` is ordinary traffic that "Mentions only" drops.
+ */
+export function classifyChannelNotification(
+  server: { roles?: { id: string; name?: string }[]; member_roles?: Record<string, string[]> },
+  mePeerId: string,
+  myDisplayName: string | undefined,
+  body: string,
+): 'everyone' | 'role' | 'mention' | 'channel' {
+  const text = (body ?? '').toLowerCase();
+  if (/@(everyone|here)\b/i.test(body ?? '')) return 'everyone';
+  const myName = myDisplayName?.trim().toLowerCase();
+  if ((myName && text.includes('@' + myName)) || (mePeerId && text.includes('@' + mePeerId.toLowerCase()))) {
+    return 'mention';
+  }
+  // A role ping counts only when it targets a role the local user actually holds.
+  const myRoleIds = new Set((server.member_roles ?? {})[mePeerId] ?? []);
+  const myRoleNames = (server.roles ?? [])
+    .filter((r) => myRoleIds.has(r.id))
+    .map((r) => String(r.name ?? '').trim().toLowerCase())
+    .filter(Boolean);
+  if (myRoleNames.some((name) => text.includes('@' + name))) return 'role';
+  return 'channel';
+}
+
 /** Best-effort display name for a peer from learned presence/profile. */
 function peerDisplayName(peerId: string): string {
   return getState().peers[peerId]?.display_name?.trim() || 'Someone';
@@ -141,6 +171,17 @@ function handleChatSend(payload: Record<string, unknown>, remotePeerId: string):
   if (scopeId !== getActiveScope()) bumpUnread(scopeId);
   if (scopeType === 'dm' && scopeId !== getActiveScope()) {
     emitNotify({ kind: 'dm', title: peerDisplayName(senderId), body: body || 'Sent an attachment', scopeId });
+  } else if (scopeType === 'channel' && scopeId !== getActiveScope() && serverId) {
+    // Channel messages now emit a classified notify event (mention / @everyone / role /
+    // plain channel) so the stored notification level applies to channel traffic — not
+    // just DMs. Layout's pref filter decides whether it actually surfaces a toast/desktop
+    // notification. The unread pip still fires above regardless.
+    const server = state.servers[serverId];
+    const channelName = server?.channels?.[scopeId]?.name ?? 'channel';
+    const kind = server
+      ? classifyChannelNotification(server, me, state.identity?.profile?.display_name, body)
+      : 'channel';
+    emitNotify({ kind, title: `#${channelName}`, body: `${peerDisplayName(senderId)}: ${body || 'Sent an attachment'}`, scopeId });
   }
   publishNativeSnapshot();
 }
