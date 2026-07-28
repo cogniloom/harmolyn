@@ -12,7 +12,7 @@ import { initStore, getState, setNativeIdentity, addServer, updateServer } from 
 import { ChannelCrypto } from '../crowd/channel.js';
 import { SealSessions } from '../seal/session.js';
 import { generateSigningIdentity } from '../crypto/hybrid.js';
-import { registerScopeCrypto, resetScopeCrypto, encryptChannelEnvelope } from './secureEnvelope.js';
+import { registerScopeCrypto, resetScopeCrypto, encryptChannelEnvelope, applyCrowdRoot } from './secureEnvelope.js';
 import { ingestMailboxChat, classifyChannelNotification, handleSyncRequest } from './inbound.js';
 
 const ME = 'me';
@@ -62,6 +62,50 @@ describe('classifyChannelNotification', () => {
 
   it('treats ordinary channel text as the plain channel kind', () => {
     expect(classifyChannelNotification(server, ME, 'Me', 'just chatting')).toBe('channel');
+  });
+});
+
+describe('future-epoch channel ciphertext is buffered then replayed on root install', () => {
+  const OWNER = 'owner';
+  const R0 = freshRootB64();
+  const R1 = freshRootB64();
+
+  beforeEach(() => {
+    localStorage.clear();
+    initStore();
+    setNativeIdentity({ id: ME, peer_id: ME });
+  });
+  afterEach(() => resetScopeCrypto());
+
+  it('holds a message under a not-yet-installed epoch and delivers it once the root arrives', () => {
+    addServer({ id: SRV, name: 'S', owner_peer_id: OWNER, members: [OWNER, ME, ALICE], channels: { [CHAN]: { id: CHAN, server_id: SRV, name: 'general', voice: false } } });
+
+    // 1) Build a genuine epoch-1 envelope with a sender crypto seeded at the NEW root.
+    registerScopeCrypto({ seal: new SealSessions(ME, generateSigningIdentity()), channels: new ChannelCrypto(), fetchBundle: async () => null });
+    updateServer(SRV, { crowd_root: R1, crowd_epoch: 1 });
+    applyCrowdRoot(SRV);
+    const base = { message_id: 'm-future', scope_id: CHAN, scope_type: 'channel', server_id: SRV, sender_id: ALICE };
+    const envelope = encryptChannelEnvelope(SRV, ALICE, base, 'from the future')!;
+    expect(envelope).toBeTruthy();
+
+    // 2) A RECEIVER that is still behind at epoch 0 (fresh crypto, old root) gets it first.
+    registerScopeCrypto({ seal: new SealSessions(ME, generateSigningIdentity()), channels: new ChannelCrypto(), fetchBundle: async () => null });
+    updateServer(SRV, { crowd_root: R0, crowd_epoch: 0 });
+    applyCrowdRoot(SRV);
+    ingestMailboxChat(envelope, ALICE);
+    // Can't decrypt yet → buffered, NOT stored (and not dropped).
+    expect(getState().messages.some(m => m.id === 'm-future')).toBe(false);
+
+    // 3) The owner distributes the epoch-1 root; installing it replays the buffer.
+    handleSyncRequest('sync.update', {
+      server_id: SRV,
+      server: { id: SRV, owner_peer_id: OWNER, members: [OWNER, ME, ALICE], crowd_root: R1, crowd_epoch: 1, server_rev: 1 },
+    }, OWNER);
+
+    const stored = getState().messages.find(m => m.id === 'm-future');
+    expect(stored).toBeTruthy();
+    expect(stored!.body).toBe('from the future');
+    expect(stored!.security_mode).toBe('crowd');
   });
 });
 

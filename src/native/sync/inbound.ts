@@ -18,6 +18,52 @@ const enc = new TextEncoder();
 const dec = new TextDecoder();
 
 /**
+ * Buffer for channel ciphertext that arrives under a Crowd epoch NEWER than the one we
+ * currently hold. After a kick/join the owner rotates the epoch and distributes the new
+ * root via a fire-and-forget sync.update on a separate stream, so a channel message under
+ * the new epoch can race ahead of the root. Rather than drop it permanently (undecryptable
+ * → lost), hold it briefly and replay it once the matching root installs. Bounded per
+ * server; the oldest entry is evicted past the cap so a never-arriving epoch can't grow it.
+ */
+const FUTURE_EPOCH_BUFFER = new Map<string, { payload: Record<string, unknown>; remotePeerId: string; epoch: number }[]>();
+const MAX_FUTURE_EPOCH_BUFFERED = 100;
+
+function bufferFutureEpochChannelMessage(payload: Record<string, unknown>, remotePeerId: string, scopeId: string): void {
+  const wire = payload.crowd as { epoch?: number } | undefined;
+  if (!wire || typeof wire.epoch !== 'number') return;
+  const state = getState();
+  const server = Object.values(state.servers).find(s => Object.keys(s.channels ?? {}).includes(scopeId));
+  if (!server) return;
+  const installed = typeof server.crowd_epoch === 'number' ? server.crowd_epoch : 0;
+  // Only buffer a genuinely FUTURE epoch — a same/older-epoch decrypt failure is a real
+  // reject (tamper, wrong key, expired legacy window) and must stay dropped.
+  if (wire.epoch <= installed) return;
+  const list = FUTURE_EPOCH_BUFFER.get(server.id) ?? [];
+  const messageId = String(payload.message_id ?? '');
+  if (messageId && list.some(e => String(e.payload.message_id ?? '') === messageId)) return; // dedup
+  list.push({ payload, remotePeerId, epoch: wire.epoch });
+  while (list.length > MAX_FUTURE_EPOCH_BUFFERED) list.shift();
+  FUTURE_EPOCH_BUFFER.set(server.id, list);
+}
+
+/**
+ * Replay any buffered future-epoch channel messages that the newly-installed root can now
+ * decrypt. Called right after a server's Crowd root advances (sync.update). Messages still
+ * ahead of the installed epoch stay buffered for a later rotation.
+ */
+export function replayBufferedChannelMessages(serverId: string): void {
+  const list = FUTURE_EPOCH_BUFFER.get(serverId);
+  if (!list || !list.length) return;
+  const server = getState().servers[serverId];
+  const installed = typeof server?.crowd_epoch === 'number' ? server.crowd_epoch : 0;
+  const ready = list.filter(e => e.epoch <= installed);
+  const remaining = list.filter(e => e.epoch > installed);
+  if (remaining.length) FUTURE_EPOCH_BUFFER.set(serverId, remaining);
+  else FUTURE_EPOCH_BUFFER.delete(serverId);
+  for (const e of ready) handleChatSend(e.payload, e.remotePeerId); // idempotent (dedups by id)
+}
+
+/**
  * Surface an ephemeral notification to the UI. The native layer runs outside
  * React, so it dispatches a DOM CustomEvent that a listener in Layout forwards to
  * the toast bus (and, where granted, a desktop Notification). No-op off-DOM.
@@ -111,7 +157,13 @@ function handleChatSend(payload: Record<string, unknown>, remotePeerId: string):
   const senderId = remotePeerId;
 
   const decoded = decodeInboundMessage(payload, remotePeerId, scopeId, scopeType);
-  if (!scopeId || !decoded) return;
+  if (!scopeId) return;
+  if (!decoded) {
+    // A crowd message under a not-yet-installed (future) epoch can't decrypt yet because
+    // the rotation root is still in flight — buffer it for replay instead of dropping it.
+    if (scopeType === 'channel') bufferFutureEpochChannelMessage(payload, remotePeerId, scopeId);
+    return;
+  }
   const { body, media, mode } = decoded;
   // Accept text-only, attachment-only, or both — but never an empty message.
   if (!(body && body.length > 0) && !(media && media.length > 0)) return;
@@ -438,7 +490,12 @@ export function handleSyncRequest(operation: string, payload: Record<string, unk
       });
       // Install the (possibly rotated) root into the live crypto so the new epoch
       // takes effect immediately — only when we actually persisted an advancing root.
-      if (applyCrowd) applyCrowdRoot(serverId);
+      if (applyCrowd) {
+        applyCrowdRoot(serverId);
+        // The new root may unlock channel messages that raced ahead of it — replay any
+        // buffered future-epoch ciphertext now that this epoch's key is installed.
+        replayBufferedChannelMessages(serverId);
+      }
       publishNativeSnapshot();
     }
     return { ok: true };
