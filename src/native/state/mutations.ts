@@ -385,11 +385,14 @@ export function nativeRemoveReaction(messageId: string, emoji: string): void {
 }
 
 export function nativePinMessage(channelId: string, messageId: string): void {
-  // AUTHORIZATION: only a member with MANAGE_MESSAGES may pin. Gate locally so an
-  // unauthorized user neither sees an optimistic pin nor broadcasts one (inbound
-  // handlers reject it anyway, but this keeps the local view honest).
+  // AUTHORIZATION: only a member with MANAGE_MESSAGES may pin. THROW (don't bare-return)
+  // so the mutation rejects and React Query rolls back the caller's optimistic pin —
+  // otherwise the unauthorized pin stays visible/persisted locally even though the store
+  // never applied it and every recipient rejects it.
   const target = getState().messages.find(m => m.id === messageId);
-  if (target?.server_id && !memberHasPermission(target.server_id, localPeerId(), 'MANAGE_MESSAGES')) return;
+  if (target?.server_id && !memberHasPermission(target.server_id, localPeerId(), 'MANAGE_MESSAGES')) {
+    throw new Error('not authorized to pin messages in this server');
+  }
   storePinMessage(messageId, true);
   publishNativeSnapshot();
 
@@ -411,7 +414,9 @@ export function nativePinMessage(channelId: string, messageId: string): void {
 
 export function nativeUnpinMessage(channelId: string, messageId: string): void {
   const target = getState().messages.find(m => m.id === messageId);
-  if (target?.server_id && !memberHasPermission(target.server_id, localPeerId(), 'MANAGE_MESSAGES')) return;
+  if (target?.server_id && !memberHasPermission(target.server_id, localPeerId(), 'MANAGE_MESSAGES')) {
+    throw new Error('not authorized to unpin messages in this server');
+  }
   storePinMessage(messageId, false);
   publishNativeSnapshot();
 

@@ -35,7 +35,7 @@ describe('voice signaling membership gate', () => {
     const session = new VoiceSession(CHAN, null, ME, {});
     const offer = await session.handleOffer({ session_id: CHAN, from_peer_id: KICKED, sdp: 'v=0' }, KICKED);
     expect(offer.ok).toBe(false);
-    const presence = session.handlePresence({ session_id: CHAN, action: 'join', from_peer_id: KICKED }, KICKED);
+    const presence = session.handlePresence({ session_id: CHAN, action: 'join' }, KICKED);
     expect(presence.ok).toBe(false);
   });
 

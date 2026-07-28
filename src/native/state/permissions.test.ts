@@ -40,9 +40,11 @@ describe('memberHasPermission (A8)', () => {
 describe('nativePinMessage authorization (A8)', () => {
   beforeEach(() => { localStorage.clear(); initStore(); seedServer(); });
 
-  it('a plain member cannot pin (no local pin, no broadcast)', () => {
+  it('a plain member cannot pin — the mutation THROWS so the optimistic UI rolls back', () => {
     setNativeIdentity({ id: PLAIN, peer_id: PLAIN });
-    nativePinMessage('c1', 'm1');
+    // Must reject (not silently return) so React Query runs its rollback handler and the
+    // unauthorized optimistic pin doesn't stick in the archive.
+    expect(() => nativePinMessage('c1', 'm1')).toThrow(/not authorized/i);
     expect(getState().messages.find(m => m.id === 'm1')?.pinned).toBeFalsy();
   });
 
