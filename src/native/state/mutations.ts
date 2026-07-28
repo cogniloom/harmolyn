@@ -494,10 +494,15 @@ export function nativeJoinServer(
  * stripped; crowd_root is intentionally re-shared (members already hold it).
  */
 export function broadcastServerUpdate(serverId: string): void {
-  const server = getState().servers[serverId];
-  if (!server || server.owner_peer_id !== localPeerId()) return;
-  const members = (server.members ?? []).filter(m => m !== localPeerId());
+  const current = getState().servers[serverId];
+  if (!current || current.owner_peer_id !== localPeerId()) return;
+  const members = (current.members ?? []).filter(m => m !== localPeerId());
   if (!members.length) return;
+  // Stamp a monotonically-increasing revision so receivers can reject out-of-order
+  // (fire-and-forget) snapshots that would otherwise regress roles/membership.
+  const nextRev = (typeof current.server_rev === 'number' ? current.server_rev : 0) + 1;
+  updateServer(serverId, { server_rev: nextRev });
+  const server = getState().servers[serverId];
   const { invite_secret: _omit, ...serverForMembers } = server;
   void getPeerSync()?.broadcastToScope(members, PROTOCOLS.sync, 'sync.update', {
     server_id: serverId,

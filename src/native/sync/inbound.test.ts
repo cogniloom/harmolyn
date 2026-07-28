@@ -13,7 +13,7 @@ import { ChannelCrypto } from '../crowd/channel.js';
 import { SealSessions } from '../seal/session.js';
 import { generateSigningIdentity } from '../crypto/hybrid.js';
 import { registerScopeCrypto, resetScopeCrypto, encryptChannelEnvelope } from './secureEnvelope.js';
-import { ingestMailboxChat, classifyChannelNotification } from './inbound.js';
+import { ingestMailboxChat, classifyChannelNotification, handleSyncRequest } from './inbound.js';
 
 const ME = 'me';
 const ALICE = 'alice';
@@ -62,6 +62,40 @@ describe('classifyChannelNotification', () => {
 
   it('treats ordinary channel text as the plain channel kind', () => {
     expect(classifyChannelNotification(server, ME, 'Me', 'just chatting')).toBe('channel');
+  });
+});
+
+describe('sync.update server_rev monotonic gate', () => {
+  const OWNER = 'owner';
+  beforeEach(() => {
+    localStorage.clear();
+    initStore();
+    setNativeIdentity({ id: ME, peer_id: ME });
+    addServer({ id: SRV, name: 'S', owner_peer_id: OWNER, members: [OWNER, ME], channels: {}, server_rev: 4 });
+  });
+
+  const update = (rev: number, roles: { id: string; name: string }[], memberRoles: Record<string, string[]>) =>
+    handleSyncRequest('sync.update', {
+      server_id: SRV,
+      server: { id: SRV, owner_peer_id: OWNER, members: [OWNER, ME], roles, member_roles: memberRoles, server_rev: rev },
+    }, OWNER);
+
+  it('rejects a stale whole snapshot so a revoked role is not restored', () => {
+    // Newer update grants ME no roles (owner revoked the mod role at rev 6).
+    update(6, [{ id: 'r-mod', name: 'Moderator' }], {});
+    expect(getState().servers[SRV].member_roles?.[ME] ?? []).toEqual([]);
+    expect(getState().servers[SRV].server_rev).toBe(6);
+
+    // A DELAYED older snapshot (rev 5) that still grants the mod role must be ignored.
+    update(5, [{ id: 'r-mod', name: 'Moderator' }], { [ME]: ['r-mod'] });
+    expect(getState().servers[SRV].member_roles?.[ME] ?? []).toEqual([]); // not restored
+    expect(getState().servers[SRV].server_rev).toBe(6);                    // rev unchanged
+  });
+
+  it('applies a strictly-newer snapshot', () => {
+    update(7, [{ id: 'r-mod', name: 'Moderator' }], { [ME]: ['r-mod'] });
+    expect(getState().servers[SRV].member_roles?.[ME]).toEqual(['r-mod']);
+    expect(getState().servers[SRV].server_rev).toBe(7);
   });
 });
 

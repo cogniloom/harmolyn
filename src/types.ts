@@ -276,6 +276,15 @@ export interface XoreinRuntimeServer {
    */
   crowd_epoch?: number;
   /**
+   * Monotonic revision of the whole owner-authoritative server record, bumped on every
+   * owner mutation that broadcasts (broadcastServerUpdate). Because those broadcasts are
+   * fire-and-forget on independent streams, updates can arrive out of order; members
+   * reject any incoming snapshot whose rev is not strictly newer than the one they hold,
+   * so a stale snapshot can't restore roles/permissions/membership the owner just changed.
+   * Defaults to 0 when absent.
+   */
+  server_rev?: number;
+  /**
    * Base64 secret used to mint/verify invite tokens (owner-held, never sent to
    * the support node). A joiner must present HMAC(invite_secret, server_id) to be
    * admitted and served history.

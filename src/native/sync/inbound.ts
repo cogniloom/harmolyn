@@ -404,6 +404,15 @@ export function handleSyncRequest(operation: string, payload: Record<string, unk
   if (operation === 'sync.update') {
     const incoming = payload.server as Partial<XoreinRuntimeServer> | undefined;
     if (incoming && remotePeerId === server.owner_peer_id && !isOwner) {
+      // Reject a STALE whole snapshot: broadcastServerUpdate is fire-and-forget on
+      // independent streams, so an older update can arrive after a newer one. Applying
+      // it would restore roles/permissions/membership the owner just changed. Gate the
+      // entire apply on a monotonic server_rev (older owners omit it → still applied).
+      const incomingRev = typeof incoming.server_rev === 'number' ? incoming.server_rev : undefined;
+      const storedRev = typeof server.server_rev === 'number' ? server.server_rev : -1;
+      if (incomingRev !== undefined && incomingRev <= storedRev) {
+        return { ok: true };
+      }
       // Apply the owner-authoritative fields. CRITICAL: this must include
       // crowd_root/crowd_epoch (channel-key rotation) and roles/member_roles —
       // previously they were silently dropped here, so kicks never revoked keys
@@ -425,6 +434,7 @@ export function handleSyncRequest(operation: string, payload: Record<string, unk
         ...(applyCrowd ? { crowd_root: nextRoot, crowd_epoch: nextEpoch } : {}),
         ...(Array.isArray(incoming.roles) ? { roles: incoming.roles } : {}),
         ...(incoming.member_roles && typeof incoming.member_roles === 'object' ? { member_roles: incoming.member_roles } : {}),
+        ...(incomingRev !== undefined ? { server_rev: incomingRev } : {}),
       });
       // Install the (possibly rotated) root into the live crypto so the new epoch
       // takes effect immediately — only when we actually persisted an advancing root.
