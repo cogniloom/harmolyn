@@ -8,8 +8,11 @@ import { SealSessions } from '../seal/session';
 import { generateSigningIdentity } from '../crypto/hybrid';
 import { registerScopeCrypto, resetScopeCrypto } from '../sync/secureEnvelope';
 import { registerPeerSync } from '../sync/registry';
-import { nativeSendChannelMessage, nativeDrainOutbox } from './mutations';
+import { nativeSendChannelMessage, nativeSendDmMessage, nativeDrainOutbox } from './mutations';
+import { ensureDm } from './store';
 import type { PeerSync } from '../sync/peersync';
+
+const flush = () => new Promise((resolve) => setTimeout(resolve, 15));
 
 const ME = 'me';
 const ALICE = 'alice';
@@ -60,5 +63,43 @@ describe('durable outbox (T2.1)', () => {
     expect(getOutbox().length).toBe(0);
     expect(sendToPeer).toHaveBeenCalledWith(ALICE, expect.any(String), 'chat.send', expect.any(Object));
     expect(getState().messages.find(m => m.id === msg.id)?.delivery_status).toBe('sent');
+  });
+
+  it('durably queues a channel send when direct delivery AND mailbox deposit both fail', async () => {
+    // A registered (non-null) sync that reaches nobody — the real-outage shape. No
+    // mailbox identity is set up, so depositOfflineChat returns false too. The envelope
+    // must still end up in the durable outbox, not vanish behind an offline_queued badge.
+    const broadcastToScope = vi.fn().mockResolvedValue([ALICE]); // ALICE undelivered
+    registerPeerSync({ broadcastToScope } as unknown as PeerSync);
+
+    const msg = nativeSendChannelMessage(CHAN, 'reaches nobody');
+    await flush();
+
+    const queued = getOutbox();
+    expect(queued.length).toBe(1);
+    expect(queued[0].targets).toEqual([ALICE]);
+    expect(queued[0].message_id).toBe(msg.id);
+    expect(getState().messages.find(m => m.id === msg.id)?.delivery_status).toBe('offline_queued');
+  });
+
+  it('persists a retryable pending-seal entry for a first-contact DM with no session', async () => {
+    // fetchBundle returns null (recipient offline / unreachable), so encryptDmEnvelope
+    // cannot build an envelope. Instead of a silent permanent "queued", a pending-seal
+    // entry must be persisted so the drain can re-attempt X3DH + encrypt on reconnect.
+    const dmId = 'dm-alice';
+    ensureDm(dmId, [ME, ALICE]);
+    registerPeerSync({ sendToPeer: vi.fn().mockResolvedValue(false) } as unknown as PeerSync);
+
+    const msg = nativeSendDmMessage(dmId, 'first hello');
+    await flush();
+
+    const queued = getOutbox();
+    expect(queued.length).toBe(1);
+    expect(queued[0].pending_seal?.recipient).toBe(ALICE);
+    expect(queued[0].pending_seal?.body).toBe('first hello');
+    expect(queued[0].message_id).toBe(msg.id);
+    // The queued payload carries NO plaintext envelope (it hasn't been encrypted yet).
+    expect(Object.keys(queued[0].payload)).toHaveLength(0);
+    expect(getState().messages.find(m => m.id === msg.id)?.delivery_status).toBe('offline_queued');
   });
 });

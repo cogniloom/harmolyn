@@ -180,6 +180,20 @@ export interface XoreinOutboxEntry {
   message_id?: string;
   created_at: string;
   attempts: number;
+  /**
+   * For a first-contact DM composed before a Seal session could be established (the
+   * recipient was offline, so no prekey bundle was reachable): the message could not be
+   * encrypted, so there is no wire `payload` to replay. This carries the material to
+   * (re)attempt X3DH + Double-Ratchet encryption on drain, once connectivity returns and
+   * the bundle can be fetched. Held only in the encrypted-at-rest local store; it is never
+   * transmitted as-is — the drain encrypts it first, exactly like a normal send.
+   */
+  pending_seal?: {
+    recipient: string;
+    base: Record<string, unknown>;
+    body: string;
+    media?: XoreinAttachment[];
+  };
 }
 
 /**

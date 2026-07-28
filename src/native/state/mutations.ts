@@ -144,15 +144,25 @@ export function nativeSendChannelMessage(
         }
         const undelivered = await sync.broadcastToScope(members, PROTOCOLS.chat, 'chat.send', envelope);
         // Offline members get the same encrypted envelope via their zero-knowledge
-        // mailbox (resil-2); each deposit is sealed under a pairwise secret.
-        for (const peerId of undelivered) await depositOfflineChat(peerId, envelope);
-        // Update delivery status: if all were undelivered and went to mailbox, show
-        // offline_queued; otherwise at least one peer got it directly → sent.
+        // mailbox (resil-2); each deposit is sealed under a pairwise secret. If BOTH
+        // direct delivery and the mailbox deposit fail for a peer, durably queue the
+        // envelope for that peer so reconnect replays it — a real outage never nulls
+        // `sync`, so relying on the `!sync` branch alone would silently drop it.
+        const stillFailed: string[] = [];
+        for (const peerId of undelivered) {
+          const deposited = await depositOfflineChat(peerId, envelope).catch(() => false);
+          if (!deposited) stillFailed.push(peerId);
+        }
+        if (stillFailed.length) {
+          enqueueOutbox({ id: uid(), targets: stillFailed, protocol: PROTOCOLS.chat, operation: 'chat.send', payload: envelope, message_id: msgId, created_at: nowISO(), attempts: 0 });
+        }
+        // Delivery status: sent if at least one peer got it directly OR was mailboxed;
+        // offline_queued only when nothing reached anyone (everything durably queued).
         const allTargets = members.filter(m => m !== msg.sender_peer_id);
-        const status = allTargets.length === 0 || allTargets.length > undelivered.length
-          ? 'sent'
-          : 'offline_queued';
-        setMessageDeliveryStatus(msgId, status);
+        const reachedSomeone = allTargets.length === 0
+          || allTargets.length > undelivered.length
+          || undelivered.length > stillFailed.length;
+        setMessageDeliveryStatus(msgId, reachedSomeone ? 'sent' : 'offline_queued');
         publishNativeSnapshot();
       })();
     } else {
@@ -221,7 +231,15 @@ export function nativeSendDmMessage(
         // A built envelope requires a Seal session; when one already exists this
         // resolves without the network even if the relay is down.
         const envelope = await encryptDmEnvelope(peerId, base, body, opts.media);
-        if (!envelope) { anyQueued = true; continue; } // no session yet — can't encrypt offline
+        if (!envelope) {
+          // First contact while the recipient is offline: no prekey bundle reachable, so
+          // we can't encrypt yet. Persist a retryable pending-seal entry (plaintext held
+          // only in the encrypted-at-rest store) so the drain re-attempts X3DH + encrypt +
+          // deliver on reconnect — instead of a permanent "queued" that never ships.
+          enqueueOutbox({ id: uid(), targets: [peerId], protocol: PROTOCOLS.chat, operation: 'chat.send', payload: {}, message_id: msgId, created_at: nowISO(), attempts: 0, pending_seal: { recipient: peerId, base, body, media: opts.media } });
+          anyQueued = true;
+          continue;
+        }
         if (!sync) {
           // Relay down but we could encrypt: DURABLY queue the sealed envelope for
           // replay on reconnect instead of dropping it.
@@ -234,8 +252,13 @@ export function nativeSendDmMessage(
           anyDelivered = true;
         } else {
           // Offline fallback: deposit the encrypted envelope in the zero-knowledge
-          // mailbox so the recipient pulls it on reconnect (resil-2).
-          await depositOfflineChat(peerId, envelope);
+          // mailbox so the recipient pulls it on reconnect (resil-2). If BOTH the direct
+          // send AND the mailbox deposit fail, durably queue it — don't claim "queued"
+          // with nothing actually persisted to retry.
+          const deposited = await depositOfflineChat(peerId, envelope).catch(() => false);
+          if (!deposited) {
+            enqueueOutbox({ id: uid(), targets: [peerId], protocol: PROTOCOLS.chat, operation: 'chat.send', payload: envelope, message_id: msgId, created_at: nowISO(), attempts: 0 });
+          }
           anyQueued = true;
         }
       }
@@ -694,13 +717,37 @@ export async function nativeDrainOutbox(): Promise<void> {
   for (const entry of entries) {
     try {
       let allHandled = true;
+      // First-contact pending-seal entry: no session existed at compose time. Now that
+      // we're online, (re)attempt X3DH + encryption; if it still can't encrypt (bundle
+      // not yet reachable), leave the entry for a later drain.
+      let payload = entry.payload;
+      if (entry.pending_seal) {
+        const ps = entry.pending_seal;
+        const sealed = await encryptDmEnvelope(ps.recipient, ps.base, ps.body, ps.media);
+        if (!sealed) {
+          // Still can't establish a session — keep the entry (bump attempts) and move on.
+          if (entry.attempts + 1 >= MAX_OUTBOX_ATTEMPTS) {
+            removeOutbox(entry.id);
+            if (entry.message_id) setMessageDeliveryStatus(entry.message_id, 'failed');
+          } else {
+            removeOutbox(entry.id);
+            enqueueOutbox({ ...entry, attempts: entry.attempts + 1 });
+          }
+          continue;
+        }
+        payload = sealed;
+      }
       for (const target of entry.targets) {
-        const delivered = await sync.sendToPeer(target, entry.protocol, entry.operation, entry.payload);
+        const delivered = await sync.sendToPeer(target, entry.protocol, entry.operation, payload);
         if (!delivered) {
           // Still unreachable → hand off to the recipient's offline mailbox so they
           // pull it when they reconnect. Only the chat family is mailbox-eligible.
+          // depositOfflineChat reports ordinary failures by RETURNING false (it does not
+          // throw), so honor the boolean — otherwise the entry would be dropped and the
+          // message marked sent with nothing actually delivered or stored.
           if (entry.operation === 'chat.send') {
-            try { await depositOfflineChat(target, entry.payload); } catch { allHandled = false; }
+            const deposited = await depositOfflineChat(target, payload).catch(() => false);
+            if (!deposited) allHandled = false;
           } else {
             allHandled = false;
           }
