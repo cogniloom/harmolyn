@@ -150,7 +150,7 @@ export class PeerSync {
     );
     if (!resp.payload) return null;
     try {
-      return JSON.parse(new TextDecoder().decode(resp.payload)) as { ok?: boolean; server?: unknown; messages?: unknown[]; addresses?: string[] };
+      return JSON.parse(new TextDecoder().decode(resp.payload)) as { ok?: boolean; error?: string; server?: unknown; messages?: unknown[]; addresses?: string[] };
     } catch {
       return null;
     }

@@ -215,6 +215,14 @@ export interface XoreinReport {
   created_at: string;
   /** True on the server owner's copy of a report received from a member. */
   inbound?: boolean;
+  /**
+   * Delivery state of the reporter's copy: 'pending' until the owner acknowledges/receives it,
+   * 'failed' once the durable retry has aged out without reaching the owner. Undefined = local
+   * DM report (no owner to deliver to) or delivered.
+   */
+  delivery?: 'pending' | 'failed';
+  /** Owner-side moderation state: set once the owner has actioned/dismissed the report. */
+  resolved?: boolean;
 }
 
 export interface XoreinRuntimeChannel {
@@ -334,6 +342,7 @@ export interface XoreinAttachment {
   key: string;           // base64url AES-256-GCM key — E2EE, never sent to the node
   nonce: string;         // base64url 12-byte nonce
   content_hash?: string; // sha256 hex of the plaintext (integrity)
+  origin?: string;       // node origin (scheme+host) the ciphertext lives on, for cross-node fetch
 }
 
 export interface XoreinRuntimeMessage {

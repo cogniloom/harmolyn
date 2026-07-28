@@ -2,7 +2,7 @@
 // composed while the transport was down — instead of discarding them behind a
 // misleading "offline_queued" badge.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { initStore, getState, setNativeIdentity, addServer, updateServer, getOutbox, enqueueOutbox, addMessage } from './store';
+import { initStore, getState, setNativeIdentity, addServer, updateServer, getOutbox, enqueueOutbox, addMessage, addReport } from './store';
 import { ChannelCrypto } from '../crowd/channel';
 import { SealSessions } from '../seal/session';
 import { generateSigningIdentity } from '../crypto/hybrid';
@@ -146,6 +146,30 @@ describe('durable outbox (T2.1)', () => {
     expect(getOutbox().length).toBe(500);
     expect(getOutbox().some(e => e.id === 'ob-0')).toBe(false); // evicted
     expect(getState().messages.find(m => m.id === 'm-evict')?.delivery_status).toBe('failed');
+  });
+
+  it('retains a queued report far past the generic attempt cap (owner overnight outage)', async () => {
+    // A report notify.push to an offline owner must not expire on the ~50-attempt cap.
+    registerPeerSync({ sendToPeer: vi.fn().mockResolvedValue(false) } as unknown as PeerSync);
+    addReport({ id: 'rep-1', reason: 'spam', target_kind: 'message', target_id: 'm', server_id: SRV, reporter_peer_id: ME, created_at: new Date().toISOString() });
+    enqueueOutbox({ id: 'ob-rep', targets: ['owner'], protocol: 'notify', operation: 'notify.push', payload: { kind: 'report', report_id: 'rep-1' }, created_at: new Date().toISOString(), attempts: 49 });
+
+    await nativeDrainOutbox();
+
+    expect(getOutbox().some(e => e.id === 'ob-rep' || (e.payload as { report_id?: string }).report_id === 'rep-1')).toBe(true);
+    expect(getState().reports.find(r => r.id === 'rep-1')?.delivery).toBeUndefined(); // not failed
+  });
+
+  it('expires a report older than the retention window and flags the report failed', async () => {
+    registerPeerSync({ sendToPeer: vi.fn().mockResolvedValue(false) } as unknown as PeerSync);
+    const old = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString();
+    addReport({ id: 'rep-old', reason: 'spam', target_kind: 'message', target_id: 'm', server_id: SRV, reporter_peer_id: ME, created_at: old });
+    enqueueOutbox({ id: 'ob-rep-old', targets: ['owner'], protocol: 'notify', operation: 'notify.push', payload: { kind: 'report', report_id: 'rep-old' }, created_at: old, attempts: 3 });
+
+    await nativeDrainOutbox();
+
+    expect(getOutbox().some(e => (e.payload as { report_id?: string }).report_id === 'rep-old')).toBe(false);
+    expect(getState().reports.find(r => r.id === 'rep-old')?.delivery).toBe('failed');
   });
 
   it('coalesces concurrent drains so a deliverable entry is sent exactly once', async () => {

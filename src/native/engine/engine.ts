@@ -18,7 +18,7 @@ import { newPeerKey, encryptFrame, decryptFrame, type PeerKey } from '../voice/m
 import { uploadBlob, downloadBlob, type BlobRef } from '../blobs/blobs.js';
 import { deliverOffline, drainDeliveries } from '../delivery/mailbox.js';
 import { serverRendezvousCID, rendezvousRegister, rendezvousDiscover } from '../transport/rendezvous.js';
-import { initStore, setNativeIdentity, getState, updateState, upsertPeer, resetNativeStore, configureNativeStore, applyJoinedServer, mergeHistoryMessages, setStateEncryptionKey, pinPeerIdentity } from '../state/store.js';
+import { initStore, setNativeIdentity, getState, updateState, upsertPeer, resetNativeStore, configureNativeStore, applyJoinedServer, mergeHistoryMessages, setStateEncryptionKey, pinPeerIdentity, removeServerMembership } from '../state/store.js';
 import { identityKeyBlob } from '../identity/safetyNumber.js';
 import { parseInviteMetadata } from '../../protocol/deeplink.js';
 import type { XoreinRuntimeServer, XoreinRuntimeMessage } from '../../types.js';
@@ -153,6 +153,13 @@ export interface NativeEngineOptions {
  *   engine.transport.getCircuitAddrs()  // reachable circuit addresses
  *   await engine.stop();        // clean shutdown
  */
+// An authoritative "you are not a member here" rejection from a server owner's sync.join —
+// distinct from a transient unreachable/malformed response (null). Used to reconcile a kick
+// that was missed while offline by dropping the stale server locally.
+function isMembershipRejection(error: string | undefined): boolean {
+  return error === 'invalid_invite';
+}
+
 export class XoreinNativeEngine {
   private readonly opts: NativeEngineOptions;
   private _identity: XoreinIdentity | null = null;
@@ -512,6 +519,16 @@ export class XoreinNativeEngine {
       try {
         const priorEpoch = typeof s.crowd_epoch === 'number' ? s.crowd_epoch : -1;
         const data = await this.peerSync.joinServer(s.owner_peer_id, s.id, displayName);
+        // Reconcile a MISSED KICK: if we were removed while offline, our persisted snapshot
+        // still lists us as a member, so this re-pull reaches the owner and is authoritatively
+        // rejected ({ ok:false } with a membership error). Drop the stale server locally so it
+        // stops showing indefinitely. A null response is "unreachable/malformed" (not a
+        // rejection) and is retried on the next reconnect, so it must NOT trigger removal.
+        if (data && data.ok === false && isMembershipRejection(data.error)) {
+          removeServerMembership(s.id);
+          changed = true;
+          continue;
+        }
         if (data?.ok && data.server) {
           const nextServer = data.server as XoreinRuntimeServer;
           applyJoinedServer(nextServer, (data.messages ?? []) as XoreinRuntimeMessage[]);

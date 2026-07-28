@@ -23,7 +23,7 @@ import {
   addRelay, removeRelay,
   updatePresenceEntry,
   addServerRole, updateServerRole, removeServerRole, setMemberRoles, addPollVote,
-  memberHasPermission, setPeerVerified, addReport,
+  memberHasPermission, setPeerVerified, addReport, setReportDelivery, setReportResolved,
   enqueueOutbox, removeOutbox, getOutbox,
 } from './store.js';
 import type { XoreinReport } from '../../types.js';
@@ -716,6 +716,9 @@ const MAX_OUTBOX_ATTEMPTS = 50;
 // drains, so they get a generous time-based retention instead — the message survives the
 // wait and ships when the peer finally appears.
 const PENDING_SEAL_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+// Queued abuse reports must survive an ordinary owner outage (overnight/weekend) rather than
+// expiring after ~50 heartbeat drains (~21 min). Retain them by age, like pending_seal.
+const REPORT_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
 // Serialize drains: nativeDrainOutbox is triggered from several places (transport
 // reconnect, the presence heartbeat, peer-presence changes). Two overlapping runs would
@@ -802,14 +805,28 @@ async function drainOutboxOnce(): Promise<void> {
       if (allHandled) {
         removeOutbox(entry.id);
         if (entry.message_id) setMessageDeliveryStatus(entry.message_id, 'sent');
-      } else if (entry.attempts + 1 >= MAX_OUTBOX_ATTEMPTS) {
-        // Give up after too many attempts so the queue can't wedge forever.
-        removeOutbox(entry.id);
-        if (entry.message_id) setMessageDeliveryStatus(entry.message_id, 'failed');
       } else {
-        // Re-enqueue with a bumped attempt count (remove + add keeps it deduped).
-        removeOutbox(entry.id);
-        enqueueOutbox({ ...entry, attempts: entry.attempts + 1 });
+        // A queued abuse report (notify.push, kind:'report') has no message_id and must not
+        // expire on the generic ~50-attempt cap (~21 min) — an ordinary owner outage would
+        // lose it despite the reporter being promised a retry. Retain reports by AGE and, when
+        // they finally age out, flag the stored report record so the failure is surfaced.
+        const reportKind = (entry.payload as { kind?: string } | undefined)?.kind === 'report';
+        const reportId = reportKind ? (entry.payload as { report_id?: string }).report_id : undefined;
+        const createdMs = Date.parse(entry.created_at);
+        const ageMs = Number.isFinite(createdMs) ? Date.now() - createdMs : 0;
+        const expired = reportKind
+          ? ageMs >= REPORT_MAX_AGE_MS
+          : entry.attempts + 1 >= MAX_OUTBOX_ATTEMPTS;
+        if (expired) {
+          // Give up so the queue can't wedge forever.
+          removeOutbox(entry.id);
+          if (entry.message_id) setMessageDeliveryStatus(entry.message_id, 'failed');
+          if (reportId) setReportDelivery(reportId, 'failed');
+        } else {
+          // Re-enqueue with a bumped attempt count (remove + add keeps it deduped).
+          removeOutbox(entry.id);
+          enqueueOutbox({ ...entry, attempts: entry.attempts + 1 });
+        }
       }
     } catch {
       /* transient — leave the entry for the next drain */
@@ -883,6 +900,15 @@ export function nativeSubmitReport(input: ReportInput): XoreinReport {
     }
   }
   return report;
+}
+
+/**
+ * Owner-side moderation action: mark a received report resolved/dismissed (or reopen it).
+ * Only meaningful on the server owner's copy (the moderation inbox); local state only.
+ */
+export function nativeResolveReport(reportId: string, resolved = true): void {
+  setReportResolved(reportId, resolved);
+  publishNativeSnapshot();
 }
 
 // ── Friends ────────────────────────────────────────────────────────────────

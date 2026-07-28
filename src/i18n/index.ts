@@ -100,6 +100,12 @@ void i18n
   .init({
     lng: getLocale() ?? 'en',
     fallbackLng: 'en',
+    // The catalogs we actually bundle. Declaring them lets i18next resolve a requested
+    // language to a REAL catalog (e.g. an unsupported 'ar'/'ja-JP' resolves to 'en'), so
+    // `resolvedLanguage` reflects what's rendered — which we use to label the document.
+    // nonExplicitSupportedLngs lets a region tag like 'en-US' resolve to the base 'en'.
+    supportedLngs: ['en', 'en-XA'],
+    nonExplicitSupportedLngs: true,
     ns: NAMESPACES as unknown as string[],
     defaultNS: 'common',
     resources: {
@@ -114,8 +120,13 @@ void i18n
     saveMissing: false,
   });
 
-// Keep <html dir/lang> in sync with the active language, now and on every change.
-applyDocumentDirection(i18n.language);
-i18n.on('languageChanged', (lng) => applyDocumentDirection(lng));
+// Keep <html dir/lang> in sync with the RENDERED catalog, now and on every change. Use the
+// RESOLVED language, not the requested one: an unsupported system locale (e.g. 'ar', 'ja-JP')
+// renders the English fallback, so labeling the document 'ar'/RTL would mislabel English to
+// assistive tech and needlessly mirror the layout. The system locale is retained separately
+// for Intl/date formatting (src/lib/locale.ts).
+const renderedLanguage = (lng?: string): string => i18n.resolvedLanguage ?? lng ?? i18n.language;
+applyDocumentDirection(renderedLanguage());
+i18n.on('languageChanged', (lng) => applyDocumentDirection(renderedLanguage(lng)));
 
 export default i18n;

@@ -102,6 +102,15 @@ export function useSubmitReport() {
   });
 }
 
+/** Owner-side moderation: mark a received report resolved/dismissed (or reopen it). */
+export function useResolveReport() {
+  const m = useRuntimeMutations();
+  return useMutation({
+    mutationFn: ({ reportId, resolved }: { reportId: string; resolved?: boolean }) =>
+      m.resolveReport(reportId, resolved),
+  });
+}
+
 export function useUnpinMessage() {
   const m = useRuntimeMutations();
   return useMutation({

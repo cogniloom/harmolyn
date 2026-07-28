@@ -35,6 +35,12 @@ function bufferFutureEpochChannelMessage(payload: Record<string, unknown>, remot
   const state = getState();
   const server = Object.values(state.servers).find(s => Object.keys(s.channels ?? {}).includes(scopeId));
   if (!server) return;
+  // AUTHORIZATION: only buffer from a CURRENT member of the server. Otherwise any
+  // authenticated non-member who knows a channel id could submit malformed ciphertext with an
+  // arbitrarily large epoch and flood the bounded per-server buffer, evicting legitimate
+  // messages that merely raced the real epoch update. (The post-decrypt path already gates on
+  // membership; this undecryptable path must too, before it consumes a buffer slot.)
+  if (!(server.members ?? []).includes(remotePeerId)) return;
   const installed = typeof server.crowd_epoch === 'number' ? server.crowd_epoch : 0;
   // Only buffer a genuinely FUTURE epoch — a same/older-epoch decrypt failure is a real
   // reject (tamper, wrong key, expired legacy window) and must stay dropped.
@@ -122,10 +128,14 @@ export function classifyChannelNotification(
   body: string,
 ): 'everyone' | 'role' | 'mention' | 'channel' {
   const text = body ?? '';
-  if (/@(everyone|here)\b/i.test(text)) return 'everyone';
+  // A DIRECT mention of the local user wins over a broadcast tag: a message that both
+  // @everyone's and names me should classify as 'mention' so it survives the Mentions-Only /
+  // Suppress-Everyone filters (a direct ping is supposed to reach me even when I've muted
+  // broadcasts). Check the direct mention BEFORE the everyone/here branch.
   if ((myDisplayName && mentionsToken(text, myDisplayName)) || (mePeerId && mentionsToken(text, mePeerId))) {
     return 'mention';
   }
+  if (/@(everyone|here)\b/i.test(text)) return 'everyone';
   // A role ping counts only when it targets a role the local user actually holds.
   const myRoleIds = new Set((server.member_roles ?? {})[mePeerId] ?? []);
   const myRoleNames = (server.roles ?? [])

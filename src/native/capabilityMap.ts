@@ -170,6 +170,8 @@ export const CAPABILITY_MAP: CapabilityEntry[] = [
   // ── Abuse reporting ───────────────────────────────────────────────────────
   { name: 'submitReport', route: 'native', p2pPropagated: true,
     description: 'Submit an abuse report; delivered P2P to the server owner for server scope' },
+  { name: 'resolveReport', route: 'native', p2pPropagated: false,
+    description: 'Owner-side moderation: mark a received report resolved/dismissed (local state)' },
 
   // ── Notifications ─────────────────────────────────────────────────────────
   { name: 'markNotificationsRead', route: 'http', p2pPropagated: false,

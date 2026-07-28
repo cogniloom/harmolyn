@@ -460,6 +460,22 @@ export function addReport(report: XoreinReport): void {
   });
 }
 
+/** Set the reporter-side delivery state of a report (e.g. 'failed' once retry ages out). */
+export function setReportDelivery(reportId: string, delivery: XoreinReport['delivery']): void {
+  updateState(s => {
+    if (!s.reports.some(r => r.id === reportId)) return {};
+    return { reports: s.reports.map(r => (r.id === reportId ? { ...r, delivery } : r)) };
+  });
+}
+
+/** Mark an owner-side report resolved/dismissed (moderation inbox action). */
+export function setReportResolved(reportId: string, resolved: boolean): void {
+  updateState(s => {
+    if (!s.reports.some(r => r.id === reportId)) return {};
+    return { reports: s.reports.map(r => (r.id === reportId ? { ...r, resolved } : r)) };
+  });
+}
+
 /** Mark (or unmark) a peer's identity as user-verified out of band; clears the change flag. */
 export function setPeerVerified(peerId: string, verified: boolean): void {
   updateState(s => {

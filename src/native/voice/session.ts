@@ -1007,6 +1007,17 @@ export class VoiceSession {
     this.securityMode = 'clear';
     setVoiceSecurityMode(this.channelId, 'clear');
     publishNativeSnapshot();
+    // Existing peer connections may still carry SFrame sender/receiver transforms attached
+    // before the failure, leaving media half-encrypted: we can no longer install matching
+    // transforms, so peers' encrypted frames would be undecryptable and our outgoing frames
+    // inconsistent. Rebuild every live connection under the now-uniform clear mode instead of
+    // only flipping the badge — a backed-off reconnect drops the stale transforms and
+    // renegotiates fresh, clear PeerConns (addTrackToPc no longer attaches a transform once
+    // useSframe is false), and the remote observes the renegotiation. Full cross-peer mode
+    // signaling remains the documented live voice smoketest.
+    for (const peerId of [...this.peers.keys()]) {
+      this.scheduleReconnect(peerId);
+    }
   }
 
   /** Add a freshly-acquired local track (camera/screen) to every peer + renegotiate. */

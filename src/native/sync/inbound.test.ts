@@ -62,6 +62,13 @@ describe('classifyChannelNotification', () => {
     expect(classifyChannelNotification(server, ME, 'Ann', 'hey @Ann')).toBe('mention');
   });
 
+  it('prioritizes a DIRECT mention over an @everyone broadcast so it survives Mentions-Only', () => {
+    // A message that both @everyone's AND names me directly must classify as 'mention'
+    // (a direct ping is meant to reach me even when I've muted broadcasts).
+    expect(classifyChannelNotification(server, ME, 'Neo', 'hey @everyone — @Neo look at this')).toBe('mention');
+    expect(classifyChannelNotification(server, ME, undefined, `@here and @${ME} specifically`)).toBe('mention');
+  });
+
   it('flags a role ping only for a role I actually hold', () => {
     expect(classifyChannelNotification(server, ME, 'Me', 'attention @Moderator')).toBe('role');
     // I do not hold VIP, so an @VIP ping is ordinary channel traffic for me.
@@ -114,6 +121,32 @@ describe('future-epoch channel ciphertext is buffered then replayed on root inst
     expect(stored).toBeTruthy();
     expect(stored!.body).toBe('from the future');
     expect(stored!.security_mode).toBe('crowd');
+  });
+
+  it('does NOT buffer a future-epoch message from a NON-member (anti-flood authorization)', () => {
+    // Server has OWNER + ME only — ALICE is NOT a member (kicked / never joined). Her
+    // undecryptable "future epoch" envelope must be dropped, not buffered: otherwise any
+    // authenticated non-member who knows the channel id could flood the bounded buffer.
+    addServer({ id: SRV, name: 'S', owner_peer_id: OWNER, members: [OWNER, ME], channels: { [CHAN]: { id: CHAN, server_id: SRV, name: 'general', voice: false } } });
+
+    registerScopeCrypto({ seal: new SealSessions(ME, generateSigningIdentity()), channels: new ChannelCrypto(), fetchBundle: async () => null });
+    updateServer(SRV, { crowd_root: R1, crowd_epoch: 1 });
+    applyCrowdRoot(SRV);
+    const base = { message_id: 'm-flood', scope_id: CHAN, scope_type: 'channel', server_id: SRV, sender_id: ALICE };
+    const envelope = encryptChannelEnvelope(SRV, ALICE, base, 'junk')!;
+
+    // Receiver behind at epoch 0; ALICE is not a member → not buffered.
+    registerScopeCrypto({ seal: new SealSessions(ME, generateSigningIdentity()), channels: new ChannelCrypto(), fetchBundle: async () => null });
+    updateServer(SRV, { crowd_root: R0, crowd_epoch: 0 });
+    applyCrowdRoot(SRV);
+    ingestMailboxChat(envelope, ALICE);
+
+    // Even after the epoch-1 root arrives, nothing replays (it was never buffered).
+    handleSyncRequest('sync.update', {
+      server_id: SRV,
+      server: { id: SRV, owner_peer_id: OWNER, members: [OWNER, ME], crowd_root: R1, crowd_epoch: 1, server_rev: 1 },
+    }, OWNER);
+    expect(getState().messages.some(m => m.id === 'm-flood')).toBe(false);
   });
 });
 

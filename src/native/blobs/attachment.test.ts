@@ -6,9 +6,11 @@ import { uploadEncryptedAttachment, downloadDecryptedAttachment } from './blobs.
 
 function mockNodeUploads() {
   const store = new Map<string, string>();
+  const urls: string[] = [];
   let n = 0;
   const fetchMock = vi.fn(async (url: string | URL, init?: { method?: string; body?: string }) => {
     const u = String(url);
+    urls.push(u);
     if (u.endsWith('/uploads') && init?.method === 'POST') {
       const body = JSON.parse(init?.body ?? '{}');
       const id = `u${++n}`;
@@ -26,7 +28,7 @@ function mockNodeUploads() {
   });
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (globalThis as any).fetch = fetchMock;
-  return { store };
+  return { store, urls };
 }
 
 describe('encrypted attachments (priv-4)', () => {
@@ -51,6 +53,29 @@ describe('encrypted attachments (priv-4)', () => {
     // A holder of the attachment ref (key in the E2EE message) recovers the file.
     const got = await downloadDecryptedAttachment(att);
     expect(new TextDecoder().decode(got)).toBe('secret file contents 🔐 attack at dawn');
+  });
+
+  it('targets the configured node and records its origin so recipients fetch from the right node', async () => {
+    const { urls } = mockNodeUploads();
+    const att = await uploadEncryptedAttachment(new TextEncoder().encode('hi'), 'f', 'text/plain');
+    // With no VITE_XOREIN_CONTROL_ENDPOINT override, uploads target the default node's /v1.
+    expect(urls[0]).toBe('https://node.xorein.com/v1/uploads');
+    // The ref carries the node origin so a recipient on a different configured node still
+    // fetches the ciphertext from where it actually lives.
+    expect(att.origin).toBe('https://node.xorein.com');
+  });
+
+  it('downloads from the attachment origin (cross-node), not the local default', async () => {
+    const { store, urls } = mockNodeUploads();
+    const att = await uploadEncryptedAttachment(new TextEncoder().encode('data'), 'f', 'text/plain');
+    // Simulate the ref having been minted on a different node.
+    const uploadedId = [...store.keys()][0];
+    const remote = { ...att, id: uploadedId, origin: 'https://relay.example.org' };
+    urls.length = 0;
+    // The remote node has no such blob (our mock store keys off id only) — but the point is
+    // the FETCH URL uses the ref's origin, not the default.
+    await downloadDecryptedAttachment(remote).catch(() => undefined);
+    expect(urls[0].startsWith('https://relay.example.org/v1/uploads/')).toBe(true);
   });
 
   it('fails the integrity check if the ciphertext is tampered', async () => {

@@ -77,7 +77,15 @@ export const NotificationSettings: React.FC = () => {
               label="Desktop Notifications"
               desc="Show OS-level notifications"
               checked={preferences.desktopEnabled}
-              onChange={(value) => setPreferences((prev) => ({ ...prev, desktopEnabled: value }))}
+              onChange={(value) => {
+                setPreferences((prev) => ({ ...prev, desktopEnabled: value }));
+                // Turning the toggle ON is a user gesture — request OS permission now, so
+                // notifications work immediately instead of only after a reload (the Layout
+                // first-gesture effect doesn't re-run when this stored pref changes).
+                if (value && typeof Notification !== 'undefined' && Notification.permission === 'default') {
+                  void Notification.requestPermission();
+                }
+              }}
             />
             <ToggleRow
               label="Notification Sounds"
