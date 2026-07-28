@@ -51,11 +51,13 @@ jobs:
       # (Rollup chunks, build-time defines, base path, service worker) — not the dev server.
       - run: npm run build
 
-      # The self-hosted runner runs as a non-root user with the "no new privileges"
-      # flag set, so `playwright install --with-deps` (which shells out to sudo) fails.
-      # Chromium is preinstalled in the runner image at /opt/pw-browsers; use it. If it
-      # is ever absent, fall back to downloading only the browser binary (no OS deps,
-      # so no sudo/root is required).
+      # The self-hosted runner runs as a non-root user with the "no new privileges" flag
+      # set, so `playwright install --with-deps` (which shells out to sudo) fails. Some
+      # runner images preinstall Chromium at /opt/pw-browsers; others don't. Use the
+      # preinstalled one when present; otherwise download ONLY the browser binary (no OS
+      # deps → no sudo). The version is pinned to the project's playwright-core so the
+      # downloaded revision matches what the smoke resolves. The smoke's resolver also
+      # globs the install roots version-independently as a safety net.
       - name: Resolve Chromium for Playwright (no privileged install)
         run: |
           CHROME="$(ls /opt/pw-browsers/chromium-*/chrome-linux/chrome 2>/dev/null | head -1 || true)"
@@ -63,8 +65,9 @@ jobs:
             echo "PLAYWRIGHT_CHROME_PATH=$CHROME" >> "$GITHUB_ENV"
             echo "Using preinstalled Chromium at $CHROME"
           else
-            echo "No preinstalled Chromium found; downloading the browser binary only."
-            npx playwright@1.59.1 install chromium
+            PW_VERSION="$(node -p "require('playwright-core/package.json').version")"
+            echo "No preinstalled Chromium found; downloading the browser binary (playwright@${PW_VERSION})."
+            npx "playwright@${PW_VERSION}" install chromium
           fi
 
       - run: npm run test:browser:ci

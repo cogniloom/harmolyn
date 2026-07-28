@@ -8,10 +8,31 @@
 // runtime exception. It needs no privileged install (Chromium is provided via
 // PLAYWRIGHT_CHROME_PATH or a Playwright-managed browser) and no network.
 import path from 'path';
-import { existsSync } from 'fs';
+import os from 'os';
+import { existsSync, readdirSync } from 'fs';
 import { mkdir } from 'fs/promises';
 import { preview } from 'vite';
 import { chromium } from 'playwright-core';
+
+// Glob a Playwright browsers root for any installed Chromium/headless-shell binary,
+// version-independent. Runner images differ (some ship /opt/pw-browsers, some install into
+// ~/.cache/ms-playwright), and the installed revision may not match this project's
+// playwright-core (so chromium.executablePath() can point at a path that doesn't exist).
+// Matching by directory prefix avoids that version drift.
+function findInBrowsersRoot(root) {
+  if (!root || !existsSync(root)) return undefined;
+  let entries;
+  try { entries = readdirSync(root); } catch { return undefined; }
+  const candidates = [];
+  for (const name of entries) {
+    if (name.startsWith('chromium-')) candidates.push(path.join(root, name, 'chrome-linux', 'chrome'));
+    // headless_shell is fully launchable in headless mode, which this smoke uses.
+    if (name.startsWith('chromium_headless_shell-')) candidates.push(path.join(root, name, 'chrome-linux', 'headless_shell'));
+  }
+  // Prefer full chromium over the headless shell when both are present.
+  candidates.sort((a, b) => (a.includes('headless_shell') ? 1 : 0) - (b.includes('headless_shell') ? 1 : 0));
+  return candidates.find(existsSync);
+}
 
 function resolveChromeExecutable() {
   const explicit = [
@@ -23,10 +44,21 @@ function resolveChromeExecutable() {
   for (const candidate of explicit) {
     if (existsSync(candidate)) return candidate;
   }
+  // Playwright-managed browser matching THIS project's playwright-core (best case).
   try {
     const managed = chromium.executablePath();
     if (managed && existsSync(managed)) return managed;
   } catch { /* no managed browser available */ }
+  // Otherwise glob the standard install roots for any installed build.
+  const roots = [
+    process.env.PLAYWRIGHT_BROWSERS_PATH,
+    '/opt/pw-browsers',
+    path.join(os.homedir(), '.cache', 'ms-playwright'),
+  ].filter(Boolean);
+  for (const root of roots) {
+    const found = findInBrowsersRoot(root);
+    if (found) return found;
+  }
   return undefined;
 }
 
