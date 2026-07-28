@@ -8,7 +8,7 @@ import { SealSessions } from '../seal/session';
 import { generateSigningIdentity } from '../crypto/hybrid';
 import { registerScopeCrypto, resetScopeCrypto } from '../sync/secureEnvelope';
 import { registerPeerSync } from '../sync/registry';
-import { nativeSendChannelMessage, nativeSendDmMessage, nativeDrainOutbox } from './mutations';
+import { nativeSendChannelMessage, nativeSendDmMessage, nativeEditMessage, nativeDrainOutbox } from './mutations';
 import { ensureDm } from './store';
 import type { PeerSync } from '../sync/peersync';
 
@@ -184,5 +184,44 @@ describe('durable outbox (T2.1)', () => {
     expect(sendToPeer).toHaveBeenCalledTimes(1);
     expect(getOutbox().length).toBe(0);
     expect(getState().messages.find(m => m.id === 'm-once')?.delivery_status).toBe('sent');
+  });
+});
+
+describe('pending_edit — retryable channel edit when the crowd_root is not yet installed (R11.2)', () => {
+  const SRV2 = 'srv2';
+  const CHAN2 = 'chan2';
+
+  beforeEach(() => {
+    localStorage.clear();
+    initStore();
+    setNativeIdentity({ id: ME, peer_id: ME });
+    registerScopeCrypto({ seal: new SealSessions(ME, generateSigningIdentity()), channels: new ChannelCrypto(), fetchBundle: async () => null });
+    // Server WITHOUT a crowd_root → encryptChannelEnvelope returns null (fail-closed).
+    addServer({ id: SRV2, name: 'S2', owner_peer_id: ME, members: [ME, ALICE], channels: { [CHAN2]: { id: CHAN2, server_id: SRV2, name: 'g', voice: false } } });
+    addMessage({ id: 'edit-me', scope_type: 'channel', scope_id: CHAN2, server_id: SRV2, sender_peer_id: ME, body: 'orig', created_at: new Date().toISOString() });
+  });
+  afterEach(() => resetScopeCrypto());
+
+  it('queues a pending_edit instead of dropping the edit, then broadcasts once the root arrives', async () => {
+    registerPeerSync({ sendToPeer: vi.fn().mockResolvedValue(true), broadcastToScope: vi.fn().mockResolvedValue([]) } as unknown as PeerSync);
+
+    nativeEditMessage('edit-me', 'edited body');
+    // Local body applied, but no root → the edit could not be encrypted → durably queued.
+    expect(getState().messages.find(m => m.id === 'edit-me')?.body).toBe('edited body');
+    const queued = getOutbox();
+    expect(queued.length).toBe(1);
+    expect(queued[0].operation).toBe('chat.edit');
+    expect(queued[0].pending_edit?.body).toBe('edited body');
+    expect(Object.keys(queued[0].payload)).toHaveLength(0); // no plaintext on the wire
+
+    // The epoch root arrives; a drain now re-encrypts + delivers, clearing the entry.
+    updateServer(SRV2, { crowd_root: freshRootB64(), crowd_epoch: 0 });
+    const sendToPeer = vi.fn().mockResolvedValue(true);
+    registerPeerSync({ sendToPeer } as unknown as PeerSync);
+    await nativeDrainOutbox();
+
+    expect(getOutbox().length).toBe(0);
+    // Delivered a real crowd-encrypted edit envelope (not plaintext) to the other member.
+    expect(sendToPeer).toHaveBeenCalledWith(ALICE, expect.any(String), 'chat.edit', expect.objectContaining({ enc: 'crowd' }));
   });
 });

@@ -194,6 +194,19 @@ export interface XoreinOutboxEntry {
     body: string;
     media?: XoreinAttachment[];
   };
+  /**
+   * A message EDIT that could not be encrypted at compose time (a channel whose crowd_root
+   * isn't installed yet, or a DM with no Seal session). The new body is already applied
+   * locally, but the fail-closed rule forbids a plaintext edit on the wire — so this carries
+   * the material to re-encrypt (`chat.edit`) and broadcast on drain once the root/session
+   * arrives, instead of the sender's edit silently never reaching other members.
+   */
+  pending_edit?: {
+    scope_type: string;
+    server_id?: string;
+    base: Record<string, unknown>;
+    body: string;
+  };
 }
 
 /**

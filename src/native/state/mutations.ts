@@ -301,22 +301,27 @@ export function nativeEditMessage(messageId: string, body: string): void {
   if (msg.scope_type === 'channel' && msg.server_id) {
     // Crowd-encrypt the edit payload — inbound handler decrypts before applying.
     // FAIL-CLOSED: if there's no crowd root yet we do NOT fall back to a plaintext
-    // edit. The inbound edit handler rejects any edit lacking the scope's required
-    // encrypted envelope, so a plaintext broadcast would be silently discarded by
-    // every recipient (diverging the conversation) AND put cleartext on the wire —
-    // pure downside. The edit stays local until it can be encrypted.
+    // edit (recipients reject a plaintext edit AND it would leak cleartext). Instead of
+    // dropping it — which would leave the sender's edit permanently unseen by others —
+    // DURABLY queue a pending_edit so the drain re-encrypts + broadcasts once the root
+    // arrives.
     const envelope = encryptChannelEnvelope(msg.server_id, localPeerId(), base, body);
     if (envelope) {
       void getPeerSync()?.broadcastToScope(scopeMembers, PROTOCOLS.chat, 'chat.edit', envelope);
+    } else {
+      enqueueOutbox({ id: uid(), targets: scopeMembers.filter(p => p !== localPeerId()), protocol: PROTOCOLS.chat, operation: 'chat.edit', payload: {}, message_id: messageId, created_at: nowISO(), attempts: 0, pending_edit: { scope_type: 'channel', server_id: msg.server_id, base, body } });
     }
   } else if (msg.scope_type === 'dm') {
     // Seal-encrypt the edit for each DM participant individually (async). Same
-    // fail-closed rule: only transmit a sealed envelope, never a plaintext fallback.
+    // fail-closed rule: only transmit a sealed envelope, never a plaintext fallback. If a
+    // session can't be established yet, queue a pending_edit for that recipient.
     const recipients = scopeMembers.filter(p => p !== localPeerId());
     for (const recipient of recipients) {
       void encryptDmEnvelope(recipient, base, body).then(sealed => {
         if (sealed) {
           void getPeerSync()?.sendToPeer(recipient, PROTOCOLS.chat, 'chat.edit', sealed);
+        } else {
+          enqueueOutbox({ id: uid(), targets: [recipient], protocol: PROTOCOLS.chat, operation: 'chat.edit', payload: {}, message_id: messageId, created_at: nowISO(), attempts: 0, pending_edit: { scope_type: 'dm', base, body } });
         }
       });
     }
@@ -785,6 +790,26 @@ async function drainOutboxOnce(): Promise<void> {
           continue;
         }
         payload = sealed;
+      }
+      // A queued EDIT that couldn't be encrypted at compose time (crowd_root/session pending):
+      // re-encrypt now with the stored base+body. Same fail-closed + time-based retention rule
+      // as pending_seal — never a plaintext edit, and keep retrying until the root/session
+      // arrives (or it ages out) so the sender's edit isn't permanently unseen by others.
+      if (entry.pending_edit) {
+        const pe = entry.pending_edit;
+        const envelope = pe.scope_type === 'channel' && pe.server_id
+          ? encryptChannelEnvelope(pe.server_id, localPeerId(), pe.base, pe.body)
+          : pe.scope_type === 'dm'
+            ? await encryptDmEnvelope(entry.targets[0], pe.base, pe.body)
+            : null;
+        if (!envelope) {
+          const createdMs = Date.parse(entry.created_at);
+          const tooOld = Number.isFinite(createdMs) && (Date.now() - createdMs) >= PENDING_SEAL_MAX_AGE_MS;
+          removeOutbox(entry.id);
+          if (!tooOld) enqueueOutbox({ ...entry, attempts: entry.attempts + 1 });
+          continue;
+        }
+        payload = envelope;
       }
       for (const target of entry.targets) {
         const delivered = await sync.sendToPeer(target, entry.protocol, entry.operation, payload);

@@ -13,7 +13,7 @@ import { ChannelCrypto } from '../crowd/channel.js';
 import { SealSessions } from '../seal/session.js';
 import { generateSigningIdentity } from '../crypto/hybrid.js';
 import { registerScopeCrypto, resetScopeCrypto, encryptChannelEnvelope, applyCrowdRoot } from './secureEnvelope.js';
-import { ingestMailboxChat, classifyChannelNotification, handleSyncRequest } from './inbound.js';
+import { ingestMailboxChat, classifyChannelNotification, handleSyncRequest, handleNotifyPush } from './inbound.js';
 
 const ME = 'me';
 const ALICE = 'alice';
@@ -147,6 +147,41 @@ describe('future-epoch channel ciphertext is buffered then replayed on root inst
       server: { id: SRV, owner_peer_id: OWNER, members: [OWNER, ME], crowd_root: R1, crowd_epoch: 1, server_rev: 1 },
     }, OWNER);
     expect(getState().messages.some(m => m.id === 'm-flood')).toBe(false);
+  });
+});
+
+describe('inbound report field bounding (anti-DoS)', () => {
+  const OWNER = 'me'; // local identity owns the server
+  beforeEach(() => {
+    localStorage.clear();
+    initStore();
+    setNativeIdentity({ id: ME, peer_id: ME });
+    addServer({ id: SRV, name: 'S', owner_peer_id: ME, members: [ME, ALICE], channels: { [CHAN]: { id: CHAN, server_id: SRV, name: 'general', voice: false } } });
+  });
+
+  it('truncates an oversized inbound report before persisting it', () => {
+    handleNotifyPush({
+      kind: 'report',
+      report_id: 'rep-big',
+      server_id: SRV,
+      reason: 'x'.repeat(5000),
+      details: 'y'.repeat(50_000),
+      content_excerpt: 'z'.repeat(5000),
+      target_kind: 'message',
+      target_id: 'a'.repeat(5000),
+    }, ALICE);
+
+    const rep = getState().reports.find(r => r.id === 'rep-big');
+    expect(rep).toBeTruthy();
+    expect(rep!.details!.length).toBe(1000);       // matches ReportModal maxLength
+    expect(rep!.content_excerpt!.length).toBe(280); // matches the submit path
+    expect(rep!.reason.length).toBe(100);
+    expect(rep!.target_id.length).toBe(256);
+  });
+
+  it('ignores a report from a non-member (unchanged authorization)', () => {
+    handleNotifyPush({ kind: 'report', report_id: 'rep-x', server_id: SRV, reason: 'spam', target_kind: 'message', target_id: 'm' }, 'stranger');
+    expect(getState().reports.some(r => r.id === 'rep-x')).toBe(false);
   });
 });
 

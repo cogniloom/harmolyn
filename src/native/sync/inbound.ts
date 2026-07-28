@@ -109,6 +109,12 @@ function emitNotify(detail: { kind: string; title: string; body: string; scopeId
  * suppressEveryone/suppressRoles can mute; `mention` is a direct ping that survives
  * "Mentions only"; `channel` is ordinary traffic that "Mentions only" drops.
  */
+/** Coerce an untrusted payload value to a string bounded to `max` characters. */
+function boundedString(value: unknown, max: number): string {
+  const s = value == null ? '' : String(value);
+  return s.length > max ? s.slice(0, max) : s;
+}
+
 /**
  * True when `body` mentions the COMPLETE `token` after an `@` — i.e. `@token` followed by a
  * non-word character or end of string. A raw substring test would let `@Ann` match `@Anna`
@@ -391,7 +397,7 @@ function handlePresenceUpdate(payload: Record<string, unknown>, remotePeerId: st
 
 // ── Reaction inbound (via notify.push) ────────────────────────────────────
 
-function handleNotifyPush(payload: Record<string, unknown>, remotePeerId: string, _operation?: string): void {
+export function handleNotifyPush(payload: Record<string, unknown>, remotePeerId: string, _operation?: string): void {
   // SECURITY: use the Noise-authenticated connection peer for all sender fields, so
   // a member cannot attribute a reaction/pin/vote to someone else. These metadata
   // ops travel as plaintext (the relay can see that a reaction/pin/vote happened,
@@ -458,16 +464,21 @@ function handleNotifyPush(payload: Record<string, unknown>, remotePeerId: string
     // Reject references that don't belong to this server (channel must be one of ours).
     const reportChannelId = payload.channel_id ? String(payload.channel_id) : undefined;
     if (reportChannelId && !Object.prototype.hasOwnProperty.call(server.channels ?? {}, reportChannelId)) return;
+    // BOUND every field before persisting. A current member can send `notify.push`
+    // directly, bypassing ReportModal's maxLength — an arbitrarily large `details` would be
+    // retained in the owner's in-memory reports AND re-serialize the whole encrypted state on
+    // every arrival, so repeated large reports could exhaust memory / blow the quota. Truncate
+    // to the same limits the client enforces (details 1000, excerpt 280, reason short, ids).
     addReport({
-      id: String(payload.report_id ?? crypto.randomUUID()),
-      reason: String(payload.reason ?? 'other'),
-      details: payload.details ? String(payload.details) : undefined,
+      id: boundedString(payload.report_id, 256) || crypto.randomUUID(),
+      reason: boundedString(payload.reason, 100) || 'other',
+      details: payload.details ? boundedString(payload.details, 1000) : undefined,
       target_kind: payload.target_kind === 'user' ? 'user' : 'message',
-      target_id: String(payload.target_id ?? ''),
-      reported_peer_id: payload.reported_peer_id ? String(payload.reported_peer_id) : undefined,
+      target_id: boundedString(payload.target_id, 256),
+      reported_peer_id: payload.reported_peer_id ? boundedString(payload.reported_peer_id, 256) : undefined,
       server_id: serverId,
       channel_id: reportChannelId,
-      content_excerpt: payload.content_excerpt ? String(payload.content_excerpt) : undefined,
+      content_excerpt: payload.content_excerpt ? boundedString(payload.content_excerpt, 280) : undefined,
       reporter_peer_id: fromPeerId,
       created_at: new Date().toISOString(),
       inbound: true,
