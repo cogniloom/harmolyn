@@ -401,7 +401,16 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   const nativeActive = typeof window !== 'undefined'
     && (window as unknown as { __HARMOLYN_NATIVE_ACTIVE__?: boolean }).__HARMOLYN_NATIVE_ACTIVE__ === true;
   const anyClearMessage = useMemo(
-    () => messages.some((m) => !m.isSystem && (m.securityMode === 'clear' || m.encrypted === false)),
+    () => messages.some((m) => {
+      if (m.isSystem) return false;
+      if (m.securityMode === 'clear' || m.encrypted === false) return true;
+      // Unstamped legacy messages — persisted before provenance stamping and, under the
+      // old inbound path, possibly accepted as plaintext — carry NEITHER securityMode nor
+      // `encrypted`. Their provenance is unknown, so treat them as insecure rather than let
+      // the badge over-claim E2EE for pre-upgrade history. (Every current send/receive path
+      // stamps provenance, so this only ever matches genuinely-unstamped legacy records.)
+      return m.securityMode == null && m.encrypted == null;
+    }),
     [messages],
   );
   const conversationMode = nativeActive
