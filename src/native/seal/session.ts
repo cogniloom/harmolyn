@@ -37,7 +37,18 @@ function isConsumedSlot(bundle: PrekeyBundle, i: number): boolean {
 }
 
 /** First-message X3DH initial message, base64-wire form. */
-export interface SealInitWire { ek: string; ct: string; opk: number; opkPub?: string }
+export interface SealInitWire {
+  ek: string; ct: string; opk: number; opkPub?: string;
+  /**
+   * Initiator's ML-DSA-65 identity public key (b64). Carried so the RESPONDER can TOFU-pin
+   * the initiator's full hybrid identity (Ed25519 ‖ ML-DSA-65) on a first inbound DM — the
+   * responder never fetches the initiator's bundle, so without this it would have only the
+   * Ed25519 key and could never show a safety number or detect an identity change. The
+   * Ed25519 half is bound to the authenticated sender; the ML-DSA half is first-seen (TOFU),
+   * matching the same blob the encrypt-side pin derives, so both directions agree.
+   */
+  dsa?: string;
+}
 
 /** A Seal-encrypted message envelope carried inside the chat.send payload. */
 export interface SealWire {
@@ -268,6 +279,9 @@ export class SealSessions {
         ct: b64(im.ctMlkem),
         opk: im.opkIndex,
         ...(im.opkPub ? { opkPub: b64(im.opkPub) } : {}),
+        // Carry our ML-DSA-65 identity key so the responder can pin our FULL hybrid
+        // identity (they never fetch our bundle on the inbound path).
+        dsa: b64(this.signingKey.mldsaPublic),
       };
     }
     this.persist();
@@ -279,39 +293,56 @@ export class SealSessions {
    * envelope bootstraps the responder ratchet. Throws on auth/decrypt failure.
    */
   decrypt(peerId: string, wire: SealWire): Uint8Array {
-    let rs = this.sessions.get(peerId);
-    if (!rs) {
-      if (!wire.im) throw new Error('seal: no session and no X3DH init message');
-      const theirEdPub = unb64(wire.ik);
-      // IDENTITY BINDING: the initiator's claimed identity key must belong to the
-      // Noise-authenticated sender — otherwise a relay could relabel a bundle.
-      assertWireIdentityBinding(peerId, theirEdPub);
-      const im: InitialMessage = {
-        ekPub: unb64(wire.im.ek),
-        ctMlkem: unb64(wire.im.ct),
-        opkIndex: wire.im.opk,
-        ...(wire.im.opkPub ? { opkPub: unb64(wire.im.opkPub) } : {}),
-      };
-      // ONE-TIME PREKEY: enforce single use. A consumed OPK must never back a
-      // second session (that would defeat the forward secrecy OPKs exist for);
-      // and the echoed OPK pub must match the slot we advertised.
-      if (im.opkIndex >= 0) {
-        if (im.opkPub) {
-          const advertised = this.bundle.one_time_prekeys_x25519[im.opkIndex];
-          if (!advertised || !bytesEqual(new Uint8Array(advertised), im.opkPub)) {
-            throw new Error('seal: one-time prekey mismatch');
-          }
-        }
-        if (this.consumedOpks.has(im.opkIndex) || isConsumedSlot(this.bundle, im.opkIndex)) {
-          throw new Error('seal: one-time prekey already consumed');
+    const rs = this.sessions.get(peerId);
+    if (rs) {
+      const pt = ratchetDecrypt(rs, unb64(wire.header), unb64(wire.ct));
+      this.persist();
+      return pt;
+    }
+
+    // First contact: bootstrap a responder ratchet from the X3DH init message.
+    if (!wire.im) throw new Error('seal: no session and no X3DH init message');
+    const theirEdPub = unb64(wire.ik);
+    // IDENTITY BINDING: the initiator's claimed identity key must belong to the
+    // Noise-authenticated sender — otherwise a relay could relabel a bundle.
+    assertWireIdentityBinding(peerId, theirEdPub);
+    const im: InitialMessage = {
+      ekPub: unb64(wire.im.ek),
+      ctMlkem: unb64(wire.im.ct),
+      opkIndex: wire.im.opk,
+      ...(wire.im.opkPub ? { opkPub: unb64(wire.im.opkPub) } : {}),
+    };
+    // ONE-TIME PREKEY: enforce single use. A consumed OPK must never back a
+    // second session (that would defeat the forward secrecy OPKs exist for);
+    // and the echoed OPK pub must match the slot we advertised.
+    if (im.opkIndex >= 0) {
+      if (im.opkPub) {
+        const advertised = this.bundle.one_time_prekeys_x25519[im.opkIndex];
+        if (!advertised || !bytesEqual(new Uint8Array(advertised), im.opkPub)) {
+          throw new Error('seal: one-time prekey mismatch');
         }
       }
-      rs = x3dhRespond(im, this.priv, this.bundle, this.edSeed, theirEdPub);
-      this.sessions.set(peerId, rs);
-      if (im.opkIndex >= 0) this.consumeOpk(im.opkIndex);
-      this.maybeRotateBundle();
+      if (this.consumedOpks.has(im.opkIndex) || isConsumedSlot(this.bundle, im.opkIndex)) {
+        throw new Error('seal: one-time prekey already consumed');
+      }
     }
-    const pt = ratchetDecrypt(rs, unb64(wire.header), unb64(wire.ct));
+    // AUTHENTICATE BEFORE COMMITTING: derive the responder ratchet and decrypt the actual
+    // message against this CANDIDATE state first. Only on success do we commit the session,
+    // consume the OPK, and rotate the bundle. Previously a malformed init could poison the
+    // in-memory session (the stored ratchet would make later valid inits skip X3DH and
+    // fail) and burn a one-time prekey before decryption ever authenticated.
+    const candidate = x3dhRespond(im, this.priv, this.bundle, this.edSeed, theirEdPub);
+    const pt = ratchetDecrypt(candidate, unb64(wire.header), unb64(wire.ct));
+
+    this.sessions.set(peerId, candidate);
+    if (im.opkIndex >= 0) this.consumeOpk(im.opkIndex);
+    // TOFU-pin the initiator's full hybrid identity (Ed25519 bound to the sender + the
+    // ML-DSA half they carried) so the responder can show a safety number and detect
+    // identity changes for a relationship where the peer messaged first.
+    if (wire.im.dsa) {
+      this.onPeerIdentity?.(peerId, identityKeyBlob(theirEdPub, unb64(wire.im.dsa)));
+    }
+    this.maybeRotateBundle();
     this.persist();
     return pt;
   }
