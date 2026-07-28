@@ -811,7 +811,7 @@ export function nativeSubmitReport(input: ReportInput): XoreinReport {
     const server = getState().servers[input.serverId];
     const owner = server?.owner_peer_id;
     if (owner && owner !== localPeerId()) {
-      void getPeerSync()?.sendToPeer(owner, PROTOCOLS.notify, 'notify.push', {
+      const payload = {
         kind: 'report',
         report_id: report.id,
         reason: report.reason,
@@ -822,7 +822,18 @@ export function nativeSubmitReport(input: ReportInput): XoreinReport {
         server_id: report.server_id,
         channel_id: report.channel_id ?? '',
         content_excerpt: report.content_excerpt ?? '',
-      });
+      };
+      void (async () => {
+        const sync = getPeerSync();
+        const delivered = sync ? await sync.sendToPeer(owner, PROTOCOLS.notify, 'notify.push', payload) : false;
+        if (!delivered) {
+          // Owner offline / transport down: durably queue the report so it reaches the
+          // moderator on reconnect instead of being silently lost with only a local copy.
+          // notify.push isn't mailbox-eligible, so the drain simply re-attempts direct
+          // delivery (bounded by MAX_OUTBOX_ATTEMPTS) until it lands.
+          enqueueOutbox({ id: uid(), targets: [owner], protocol: PROTOCOLS.notify, operation: 'notify.push', payload, created_at: nowISO(), attempts: 0 });
+        }
+      })();
     }
   }
   return report;

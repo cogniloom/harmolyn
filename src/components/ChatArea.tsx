@@ -2052,7 +2052,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
               details: report.details || undefined,
             });
             setReportTarget(null);
-            toast.success('Report submitted', serverId ? 'The server owner has been notified.' : 'Thanks — your report was recorded.');
+            toast.success('Report submitted', serverId ? 'It has been sent to the server owner (and will retry if they are offline).' : 'Thanks — your report was recorded.');
           }}
         />
       )}
