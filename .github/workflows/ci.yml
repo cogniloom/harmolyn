@@ -47,6 +47,10 @@ jobs:
 
       - run: npm ci
 
+      # Build the production bundle so the smoke exercises the real dist output
+      # (Rollup chunks, build-time defines, base path, service worker) — not the dev server.
+      - run: npm run build
+
       # The self-hosted runner runs as a non-root user with the "no new privileges"
       # flag set, so `playwright install --with-deps` (which shells out to sudo) fails.
       # Chromium is preinstalled in the runner image at /opt/pw-browsers; use it. If it

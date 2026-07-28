@@ -10,7 +10,7 @@
 import path from 'path';
 import { existsSync } from 'fs';
 import { mkdir } from 'fs/promises';
-import { createServer } from 'vite';
+import { preview } from 'vite';
 import { chromium } from 'playwright-core';
 
 function resolveChromeExecutable() {
@@ -34,15 +34,22 @@ const ROOT = process.cwd();
 const EVIDENCE_DIR = path.resolve(ROOT, '.sisyphus/evidence');
 await mkdir(EVIDENCE_DIR, { recursive: true });
 
-const viteServer = await createServer({
+if (!existsSync(path.join(ROOT, 'dist', 'index.html'))) {
+  console.error('browser-ci-smoke: dist/index.html not found — run `npm run build` before this smoke.');
+  process.exit(1);
+}
+
+// Serve the PRODUCTION build (dist/) via Vite preview, not the dev server, so the smoke
+// exercises the real Rollup output, build-time defines, base-path handling, and
+// service-worker registration — the things a dev-server run would miss.
+const viteServer = await preview({
   root: ROOT,
-  server: { host: '127.0.0.1', port: 0, strictPort: false },
+  preview: { host: '127.0.0.1', port: 0, strictPort: false },
   logLevel: 'error',
 });
-await viteServer.listen();
 const address = viteServer.httpServer?.address();
-const port = typeof address === 'object' && address ? address.port : viteServer.config.server.port;
-const baseUrl = `http://127.0.0.1:${port}`;
+const port = typeof address === 'object' && address ? address.port : 0;
+const baseUrl = viteServer.resolvedUrls?.local?.[0] ?? `http://127.0.0.1:${port}`;
 
 const executablePath = resolveChromeExecutable();
 if (!executablePath) {
