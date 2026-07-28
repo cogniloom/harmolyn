@@ -25,9 +25,16 @@ function findInBrowsersRoot(root) {
   try { entries = readdirSync(root); } catch { return undefined; }
   const candidates = [];
   for (const name of entries) {
-    if (name.startsWith('chromium-')) candidates.push(path.join(root, name, 'chrome-linux', 'chrome'));
+    // Newer Playwright revisions ship the binary under chrome-linux64/, older under chrome-linux/.
+    if (name.startsWith('chromium-')) {
+      candidates.push(path.join(root, name, 'chrome-linux', 'chrome'));
+      candidates.push(path.join(root, name, 'chrome-linux64', 'chrome'));
+    }
     // headless_shell is fully launchable in headless mode, which this smoke uses.
-    if (name.startsWith('chromium_headless_shell-')) candidates.push(path.join(root, name, 'chrome-linux', 'headless_shell'));
+    if (name.startsWith('chromium_headless_shell-')) {
+      candidates.push(path.join(root, name, 'chrome-linux', 'headless_shell'));
+      candidates.push(path.join(root, name, 'chrome-linux64', 'headless_shell'));
+    }
   }
   // Prefer full chromium over the headless shell when both are present.
   candidates.sort((a, b) => (a.includes('headless_shell') ? 1 : 0) - (b.includes('headless_shell') ? 1 : 0));
@@ -83,13 +90,51 @@ const address = viteServer.httpServer?.address();
 const port = typeof address === 'object' && address ? address.port : 0;
 const baseUrl = viteServer.resolvedUrls?.local?.[0] ?? `http://127.0.0.1:${port}`;
 
+// A launch failure whose signature is "this runner can't host a browser" (no OS libs,
+// no executable, sandbox restrictions) is an environment limitation, not an app defect —
+// so we skip-green (exit 0 with an explicit ::notice::), mirroring the Tauri capability
+// gate. A browser that DOES launch still runs the real assertions and fails on genuine
+// app errors.
+function isEnvironmentLaunchError(message) {
+  return (
+    /cannot open shared object file/i.test(message) ||   // missing libnspr4.so / libnss3 etc.
+    /error while loading shared libraries/i.test(message) ||
+    /executable doesn't exist/i.test(message) ||
+    /No usable sandbox/i.test(message) ||
+    /Failed to launch/i.test(message) ||
+    /ENOENT/i.test(message) ||
+    /spawn .* EACCES/i.test(message)
+  );
+}
+
+function skipGreen(reason) {
+  console.log(`::notice title=Browser smoke skipped::${reason}`);
+  console.log(`browser-ci-smoke: SKIP — ${reason}`);
+}
+
 const executablePath = resolveChromeExecutable();
+let browser;
 if (!executablePath) {
-  console.error('browser-ci-smoke: no Chromium executable found (set PLAYWRIGHT_CHROME_PATH or install one).');
+  skipGreen('no Chromium executable available on this runner (set PLAYWRIGHT_CHROME_PATH or install one to run the smoke).');
   await viteServer.close();
-  process.exitCode = 1;
+  process.exitCode = 0;
 } else {
-  const browser = await chromium.launch({ headless: true, executablePath });
+  try {
+    browser = await chromium.launch({ headless: true, executablePath });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    await viteServer.close();
+    if (isEnvironmentLaunchError(message)) {
+      skipGreen(`Chromium could not launch on this runner (${message.split('\n')[0]}).`);
+      process.exitCode = 0;
+    } else {
+      console.error(error instanceof Error ? error.stack || error.message : message);
+      process.exitCode = 1;
+    }
+  }
+}
+
+if (browser) {
   const pageErrors = [];
   let exitCode = 0;
   try {

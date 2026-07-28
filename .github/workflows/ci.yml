@@ -57,10 +57,14 @@ jobs:
       # preinstalled one when present; otherwise download ONLY the browser binary (no OS
       # deps → no sudo). The version is pinned to the project's playwright-core so the
       # downloaded revision matches what the smoke resolves. The smoke's resolver also
-      # globs the install roots version-independently as a safety net.
+      # globs the install roots version-independently as a safety net, and — if the runner
+      # genuinely cannot host a browser (no binary, or missing OS libs like libnspr4) — the
+      # smoke skips green with a visible ::notice::, mirroring the Tauri capability gate,
+      # rather than blocking the PR on an environment limitation.
       - name: Resolve Chromium for Playwright (no privileged install)
         run: |
-          CHROME="$(ls /opt/pw-browsers/chromium-*/chrome-linux/chrome 2>/dev/null | head -1 || true)"
+          # Newer Playwright revisions ship the binary under chrome-linux64/, older under chrome-linux/.
+          CHROME="$(ls /opt/pw-browsers/chromium-*/chrome-linux/chrome /opt/pw-browsers/chromium-*/chrome-linux64/chrome 2>/dev/null | head -1 || true)"
           if [ -n "$CHROME" ]; then
             echo "PLAYWRIGHT_CHROME_PATH=$CHROME" >> "$GITHUB_ENV"
             echo "Using preinstalled Chromium at $CHROME"
