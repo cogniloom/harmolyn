@@ -24,7 +24,8 @@
     "test:browser:all": "node ./scripts/browser-smoke-all.mjs",
     "test:browser:transport": "node ./scripts/native-transport-test.mjs",
     "test:all": "npm run lint && npm run typecheck && npm run build && npm run test && npm run test:browser:all",
-    "test:voice:e2e": "node ./scripts/voice-e2e-test.mjs"
+    "test:voice:e2e": "node ./scripts/voice-e2e-test.mjs",
+    "test:browser:ci": "node ./scripts/browser-ci-smoke.mjs"
   },
   "dependencies": {
     "@bufbuild/protobuf": "^2.12.0",
