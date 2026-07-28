@@ -3,7 +3,7 @@
 // the inbound pin handler both consult it.
 import { describe, it, expect, beforeEach } from 'vitest';
 import {
-  initStore, getState, setNativeIdentity, addServer, addMessage, memberHasPermission,
+  initStore, getState, setNativeIdentity, addServer, addMessage, memberHasPermission, removeServerMember,
 } from './store';
 import { nativePinMessage } from './mutations';
 
@@ -34,6 +34,12 @@ describe('memberHasPermission (A8)', () => {
   });
   it('a plain member without a granting role does not', () => {
     expect(memberHasPermission(SRV, PLAIN, 'MANAGE_MESSAGES')).toBe(false);
+  });
+  it('a KICKED moderator whose member_roles linger loses the permission (requires current membership)', () => {
+    expect(memberHasPermission(SRV, MOD, 'MANAGE_MESSAGES')).toBe(true); // still a member
+    removeServerMember(SRV, MOD); // drops from members; member_roles assignment may remain
+    expect(getState().servers[SRV].members).not.toContain(MOD);
+    expect(memberHasPermission(SRV, MOD, 'MANAGE_MESSAGES')).toBe(false);
   });
 });
 

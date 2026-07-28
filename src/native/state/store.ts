@@ -586,6 +586,10 @@ export function memberHasPermission(serverId: string, peerId: string, permission
   const server = _state.servers[serverId];
   if (!server || !peerId) return false;
   if (server.owner_peer_id === peerId) return true;
+  // A removed member's `member_roles` assignment can linger after removeServerMember drops
+  // them from `members`; require CURRENT membership so a kicked moderator's stale role can't
+  // keep authorizing pin/unpin (or any) privileged operations.
+  if (!(server.members ?? []).includes(peerId)) return false;
   const roleIds = server.member_roles?.[peerId] ?? [];
   if (roleIds.length === 0) return false;
   const roles = server.roles ?? [];
@@ -637,6 +641,13 @@ export function setMemberRoles(serverId: string, peerId: string, roleIds: string
   });
 }
 
+/** True when peerId is a current participant of the given scope (DM participant or server member). */
+export function isScopeMember(scopeId: string, scopeType: string, serverId: string | undefined, peerId: string): boolean {
+  if (!peerId) return false;
+  if (scopeType === 'dm') return (_state.dms[scopeId]?.participants ?? []).includes(peerId);
+  return serverId ? (_state.servers[serverId]?.members ?? []).includes(peerId) : false;
+}
+
 export function addPollVote(messageId: string, optionIndex: number, peerId: string): boolean {
   // Returns true if this is a new vote (not a duplicate).
   let isNew = false;
@@ -644,8 +655,13 @@ export function addPollVote(messageId: string, optionIndex: number, peerId: stri
     const msg = s.messages.find(m => m.id === messageId);
     if (!msg) return {};
     const votes = msg.poll_votes ?? {};
+    // Single-choice: a peer holds at most ONE vote across all options. Reject if the peer
+    // already appears in ANY option's voter list — previously only the selected option was
+    // checked, so after a reload (where the UI no longer remembers the prior selection) the
+    // same identity could stack a vote onto every option.
+    const alreadyVoted = Object.values(votes).some(voters => voters.includes(peerId));
+    if (alreadyVoted) return {};
     const voters = votes[optionIndex] ?? [];
-    if (voters.includes(peerId)) return {};
     isNew = true;
     return {
       messages: s.messages.map(m => m.id === messageId

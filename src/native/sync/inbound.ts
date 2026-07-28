@@ -7,7 +7,7 @@ import {
   decodePeerStreamRequest, encodePeerStreamResponse,
 } from '../families/peerstream.js';
 import { PROTOCOLS } from '../families/families.js';
-import { addMessage, editMessage as storeEditMessage, deleteMessage as storeDeleteMessage, pinMessage as storePinMessage, updatePresenceEntry, addReaction, removeReaction, getState, updateServer, upsertPeer, addFriendRequest, acceptFriendByPeer, ensureDm, bumpUnread, getActiveScope, removeServerMembership, removeServerMember, addPollVote, memberHasPermission, addReport } from '../state/store.js';
+import { addMessage, editMessage as storeEditMessage, deleteMessage as storeDeleteMessage, pinMessage as storePinMessage, updatePresenceEntry, addReaction, removeReaction, getState, updateServer, upsertPeer, addFriendRequest, acceptFriendByPeer, ensureDm, bumpUnread, getActiveScope, removeServerMembership, removeServerMember, addPollVote, memberHasPermission, isScopeMember, addReport } from '../state/store.js';
 import { nativeAnnouncePresence, broadcastServerUpdate, rotateCrowdEpoch } from '../state/mutations.js';
 import { publishNativeSnapshot } from '../state/snapshot.js';
 import { decryptInboundEnvelope, getScopeCrypto, applyCrowdRoot, type DecryptedMessage } from './secureEnvelope.js';
@@ -424,6 +424,13 @@ function handleNotifyPush(payload: Record<string, unknown>, remotePeerId: string
     const messageId = String(payload.message_id ?? '');
     const optionIndex = Number(payload.option_index ?? -1);
     if (!messageId || optionIndex < 0) return;
+    // AUTHORIZATION: only a CURRENT participant of the poll's scope may vote. Connection
+    // authentication proves who sent it, not that they belong to the channel/DM — without
+    // this check a kicked member (or any peer that learned the message id) could keep
+    // changing poll results after removal. Resolve the scope from the message we hold.
+    const msg = getState().messages.find(m => m.id === messageId);
+    if (!msg) return;
+    if (!isScopeMember(msg.scope_id, msg.scope_type, msg.server_id, fromPeerId)) return;
     addPollVote(messageId, optionIndex, fromPeerId);
     publishNativeSnapshot();
     return;

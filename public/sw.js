@@ -3,11 +3,37 @@
 // assets. It NEVER caches API/relay/blob traffic: message delivery, presence, and
 // E2EE material must always go to the live network, and caching ciphertext or
 // control responses could surface stale or sensitive data.
-const CACHE = 'harmolyn-shell-v1';
+const CACHE = 'harmolyn-shell-v2';
 const APP_SHELL = ['/', '/index.html', '/manifest.webmanifest', '/icon.svg', '/favicon.ico'];
 
+// On a first visit the service worker activates AFTER the page's hashed JS/CSS have
+// already loaded, so those requests never pass through the fetch handler and never land
+// in the cache. If the user then goes offline before a second controlled visit, the
+// cached document opens but its bundle is missing and the launch fails. To make the
+// promised first-visit offline launch real, fetch index.html at install time, parse the
+// hashed assets it references, and precache them alongside the shell.
+async function precacheShellAndBundle(cache) {
+  await cache.addAll(APP_SHELL);
+  try {
+    const res = await fetch('/index.html', { cache: 'reload' });
+    if (!res.ok) return;
+    await cache.put('/index.html', res.clone());
+    const html = await res.text();
+    const urls = new Set();
+    const re = /(?:src|href)\s*=\s*"([^"]+)"/g;
+    let m;
+    while ((m = re.exec(html)) !== null) {
+      const u = m[1];
+      // Same-origin hashed build assets only (the /assets/ chunks + module preloads).
+      if (u.startsWith('/assets/') || /\.(js|css|woff2?)$/.test(u)) urls.add(u);
+    }
+    // Add individually so one 404 can't fail the whole precache (addAll is atomic).
+    await Promise.allSettled([...urls].map((u) => cache.add(u)));
+  } catch { /* offline/parse failure — runtime cache-first still fills in later */ }
+}
+
 self.addEventListener('install', (event) => {
-  event.waitUntil(caches.open(CACHE).then((c) => c.addAll(APP_SHELL)).then(() => self.skipWaiting()));
+  event.waitUntil(caches.open(CACHE).then((c) => precacheShellAndBundle(c)).then(() => self.skipWaiting()));
 });
 
 self.addEventListener('activate', (event) => {

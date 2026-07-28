@@ -1216,11 +1216,30 @@ export function nativeCastPollVote(messageId: string, optionIndex: number): void
   const msg = getState().messages.find(m => m.id === messageId);
   if (!msg) return;
   const scopeMembers = getScopeMembers(msg.scope_id, msg.scope_type, msg.server_id);
-  if (scopeMembers.length <= 1) return;
-  void getPeerSync()?.broadcastToScope(scopeMembers, PROTOCOLS.notify, 'notify.push', {
+  const targets = scopeMembers.filter(m => m !== peerId);
+  if (targets.length === 0) return;
+  const payload = {
     kind: 'poll_vote',
     message_id: messageId,
     option_index: optionIndex,
     from_peer_id: peerId,
-  });
+  };
+  // Best-effort broadcast, then DURABLY queue the vote for any member that was offline.
+  // Poll results are never otherwise reconciled (history merge de-dups an existing poll
+  // message by id and won't update its vote tallies), so a fire-and-forget send would
+  // leave an offline member permanently showing stale results. The outbox drain retries
+  // notify.push to the missed peers when they reconnect.
+  void (async () => {
+    const sync = getPeerSync();
+    let undelivered: string[] = targets;
+    if (sync) {
+      try {
+        const res = await sync.broadcastToScope(targets, PROTOCOLS.notify, 'notify.push', payload);
+        undelivered = Array.isArray(res) ? res : [];
+      } catch { undelivered = targets; }
+    }
+    if (undelivered.length) {
+      enqueueOutbox({ id: uid(), targets: undelivered, protocol: PROTOCOLS.notify, operation: 'notify.push', payload, created_at: nowISO(), attempts: 0 });
+    }
+  })();
 }
