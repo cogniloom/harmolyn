@@ -5,9 +5,25 @@ import { sha256 } from '@noble/hashes/sha2.js';
 import { gcm as aesGcm } from '@noble/ciphers/aes.js';
 import type { XoreinAttachment } from '../../types.js';
 
-const CONTROL_BASE = 'https://node.xorein.com/v1';
+const DEFAULT_NODE = 'https://node.xorein.com';
 const BLOB_KEY_INFO = 'xorein/blob/v1/encryption-key';
 const BLOB_NONCE_INFO = 'xorein/blob/v1/nonce';
+
+/**
+ * The blob support node ORIGIN (scheme+host, no /v1) the local deployment is configured to
+ * use. On a self-hosted/custom-node build this comes from VITE_XOREIN_CONTROL_ENDPOINT so a
+ * user's ciphertext + filename never silently go to the default Harmolyn node. Matches how the
+ * rest of the control API resolves its endpoint (xoreinControl.ts, store.ts toRuntimeSnapshot).
+ */
+function configuredNodeOrigin(): string {
+  const raw = import.meta.env?.VITE_XOREIN_CONTROL_ENDPOINT?.trim();
+  return (raw || DEFAULT_NODE).replace(/\/+$/, '');
+}
+
+/** The /v1 API base for a node origin. */
+function apiBase(origin: string): string {
+  return `${origin.replace(/\/+$/, '')}/v1`;
+}
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -23,6 +39,9 @@ export interface BlobRef {
   filename: string;
   contentType: string;
   size: number;
+  /** Node origin (scheme+host) the ciphertext was uploaded to, so a recipient on a different
+   *  configured node still fetches it from where it actually lives. */
+  origin?: string;
 }
 
 // ── Binary ↔ base64 helpers (chunked to avoid call-stack overflows) ────────
@@ -82,7 +101,8 @@ export async function uploadBlob(
 
   const ctData = 'data:application/octet-stream;base64,' + toBase64(ciphertext);
 
-  const res = await fetch(`${CONTROL_BASE}/uploads`, {
+  const origin = configuredNodeOrigin();
+  const res = await fetch(`${apiBase(origin)}/uploads`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ filename, content_type: 'application/octet-stream', data: ctData }),
@@ -90,7 +110,7 @@ export async function uploadBlob(
   if (!res.ok) throw new Error(`blob upload: ${res.status}`);
   const json = await res.json() as { id: string };
 
-  return { id: json.id, contentHash: hash, key, nonce, filename, contentType, size: data.length };
+  return { id: json.id, contentHash: hash, key, nonce, filename, contentType, size: data.length, origin };
 }
 
 /**
@@ -98,7 +118,10 @@ export async function uploadBlob(
  * Requires the BlobRef (containing the key) from the original upload.
  */
 export async function downloadBlob(ref: BlobRef): Promise<Uint8Array> {
-  const res = await fetch(`${CONTROL_BASE}/uploads/${encodeURIComponent(ref.id)}`);
+  // Fetch from the node the blob was uploaded to (carried on the ref), falling back to the
+  // locally-configured node for older refs without an origin.
+  const base = apiBase(ref.origin || configuredNodeOrigin());
+  const res = await fetch(`${base}/uploads/${encodeURIComponent(ref.id)}`);
   if (!res.ok) throw new Error(`blob download: ${res.status}`);
   const json = await res.json() as { data: string };
 
@@ -137,6 +160,7 @@ export function blobRefToAttachment(ref: BlobRef): XoreinAttachment {
     key: attB64url(ref.key),
     nonce: attB64url(ref.nonce),
     content_hash: ref.contentHash,
+    origin: ref.origin,
   };
 }
 
@@ -149,6 +173,7 @@ function attachmentToBlobRef(att: XoreinAttachment): BlobRef {
     filename: att.name,
     contentType: att.content_type,
     size: att.size,
+    origin: att.origin,
   };
 }
 

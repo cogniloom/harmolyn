@@ -52,11 +52,15 @@ import { Channel, AppState, ConnectionState, MessageLayout, XoreinRuntimeSnapsho
 import { AlertTriangle, Home, Compass, Users as UsersIcon, Settings as SettingsIcon, Menu, Loader2 } from 'lucide-react';
 import { generateTheme } from '@/utils/themeGenerator';
 import { safeStorageGet, safeStorageSet } from '@/lib/browserStorage';
+import { ProductTour, TOUR_DISMISSED_KEY } from '@/components/onboarding/ProductTour';
+import { applyStoredAccessibilityPrefs } from '@/lib/accessibility';
 import { usePersistentState } from '@/hooks/usePersistentState';
 import { safeLocationSearch } from '@/lib/browserLocation';
 import { safeViewportSize } from '@/lib/browserViewport';
 import { normalizeLayoutUsers, normalizeRuntimePeerId, normalizeRuntimeVoiceSession, resolveLayoutDirectMessageUser } from './layoutRuntime';
 import { useRuntimeBootstrapState } from '@/lib/xoreinRuntimeContext';
+import { readNotificationPreferences } from './NotificationSettings';
+import { useOnlineStatus } from '@/hooks/useOnlineStatus';
 
 const MESSAGE_LAYOUT_STORAGE_KEY = 'harmolyn:settings:message-layout';
 
@@ -77,18 +81,7 @@ export const Layout: React.FC = () => {
   // Apply saved accessibility preferences on startup so they take effect before
   // the user opens the settings page (e.g. font size persists across reloads).
   useEffect(() => {
-    try {
-      const raw = localStorage.getItem('harmolyn:settings:accessibility');
-      if (!raw) return;
-      const prefs = JSON.parse(raw) as { fontSize?: string; saturation?: number; highContrast?: boolean; reducedMotion?: boolean };
-      const sizeMap: Record<string, string> = { small: '13px', default: '15px', large: '17px', xlarge: '19px' };
-      if (prefs.fontSize) document.documentElement.style.fontSize = sizeMap[prefs.fontSize] ?? '15px';
-      if (typeof prefs.saturation === 'number' && prefs.saturation !== 100) {
-        document.body.style.filter = `saturate(${prefs.saturation}%)`;
-      }
-      if (prefs.highContrast) document.documentElement.classList.add('high-contrast');
-      if (prefs.reducedMotion) document.documentElement.classList.add('reduce-motion');
-    } catch { /* best effort */ }
+    applyStoredAccessibilityPrefs();
   }, []);
 
   const shellData = useSyncExternalStore(subscribeShellRuntimeData, readShellRuntimeData, readShellRuntimeData);
@@ -110,6 +103,8 @@ export const Layout: React.FC = () => {
   // It opens the AuthFlow on its friendly welcome step rather than dumping the
   // heavy security primer on load (the primer is one tap away via "learn more").
   const [showWelcome, setShowWelcome] = useState(() => !safeStorageGet(() => window.localStorage, 'harmolyn_onboarding_dismissed'));
+  const [showTour, setShowTour] = useState(false);
+  const hasProductTour = useFeature('communityOnboarding');
   const [showFriends, setShowFriends] = useState(initialUtilityScreen === 'friends');
   const [authScreen, setAuthScreen] = useState<'welcome' | 'login' | 'register' | null>(initialUtilityScreen === 'login' || initialUtilityScreen === 'register' ? initialUtilityScreen : null);
   const [showQuickSwitcher, setShowQuickSwitcher] = useState(false);
@@ -139,15 +134,32 @@ export const Layout: React.FC = () => {
     .filter((r) => r.status === 'pending' && r.from_peer_id && r.from_peer_id !== currentPeerId).length;
 
   const desktopNotifications = useFeature('desktopNotifications');
+  const isOnline = useOnlineStatus();
 
-  // Request desktop Notification permission once when the flag is on and the
-  // browser supports it. We ask lazily (on first render, not on a user gesture)
-  // which is acceptable for notification permission — the browser will show its
-  // own prompt if needed; if the user denies we just stay toast-only.
+  // Request desktop Notification permission on the FIRST user gesture, never on
+  // cold load. A permission prompt before the user has interacted is a dark pattern
+  // and browsers tend to auto-block it; deferring to a real interaction is both
+  // more respectful and more likely to be granted.
   useEffect(() => {
-    if (desktopNotifications && typeof Notification !== 'undefined' && Notification.permission === 'default') {
-      void Notification.requestPermission();
-    }
+    if (!desktopNotifications || typeof Notification === 'undefined' || Notification.permission !== 'default') return;
+    // Honor the user's stored Desktop Notifications toggle: if they've turned it off we
+    // must NOT prompt — otherwise the very pointer-down that flips the toggle off would
+    // itself open the OS permission dialog before the toggle's click handler runs.
+    if (!readNotificationPreferences().desktopEnabled) return;
+    const ask = () => {
+      window.removeEventListener('pointerdown', ask);
+      window.removeEventListener('keydown', ask);
+      // Re-check at gesture time: the preference may have changed since we registered.
+      if (Notification.permission === 'default' && readNotificationPreferences().desktopEnabled) {
+        void Notification.requestPermission();
+      }
+    };
+    window.addEventListener('pointerdown', ask, { once: true });
+    window.addEventListener('keydown', ask, { once: true });
+    return () => {
+      window.removeEventListener('pointerdown', ask);
+      window.removeEventListener('keydown', ask);
+    };
   }, [desktopNotifications]);
 
   // Notifications: the native layer dispatches `harmolyn:notify` CustomEvents for
@@ -159,9 +171,21 @@ export const Layout: React.FC = () => {
     const handler = (event: Event) => {
       const detail = (event as CustomEvent).detail as { kind?: string; title?: string; body?: string } | undefined;
       if (!detail || !detail.body) return;
+      // Honor the user's notification preferences (previously stored but never read):
+      //  • "Nothing" mutes everything;
+      //  • "Mentions only" keeps direct events (DMs, friend requests, direct
+      //    mentions) but drops broadcast @everyone/@role notices;
+      //  • suppressEveryone/suppressRoles drop those broadcast pings specifically.
+      const prefs = readNotificationPreferences();
+      if (prefs.globalLevel === 'none') return;
+      const kind = detail.kind ?? '';
+      if (prefs.suppressEveryone && kind === 'everyone') return;
+      if (prefs.suppressRoles && kind === 'role') return;
+      if (prefs.globalLevel === 'mentions' && (kind === 'everyone' || kind === 'role' || kind === 'channel')) return;
       toast.info(detail.body, detail.title || 'Harmolyn');
       if (
         desktopNotifications &&
+        prefs.desktopEnabled &&
         typeof Notification !== 'undefined' &&
         Notification.permission === 'granted' &&
         typeof document !== 'undefined' &&
@@ -204,6 +228,19 @@ export const Layout: React.FC = () => {
       setAuthScreen('welcome');
     }
   }, [showWelcome, hasIdentity, identityLocked, authScreen]);
+
+  // Product tour: a plain-language walkthrough shown once, right after a new user
+  // has an identity and the auth flow has closed. Distinct from the security primer
+  // (that lives in AuthFlow) — this answers "how do I use the app?". Gated on the
+  // communityOnboarding flag and a one-time localStorage key.
+  useEffect(() => {
+    if (!hasProductTour) return;
+    if (hasIdentity && !identityLocked && authFlowStep === null && !state.showSettings) {
+      if (!safeStorageGet(() => window.localStorage, TOUR_DISMISSED_KEY)) {
+        setShowTour(true);
+      }
+    }
+  }, [hasProductTour, hasIdentity, identityLocked, authFlowStep, state.showSettings]);
 
   useEffect(() => {
     if (currentPeerId) {
@@ -867,6 +904,11 @@ export const Layout: React.FC = () => {
     <div ref={mainRef} className="flex h-screen w-full bg-bg-0 overflow-hidden font-sans relative" style={themeStyle}>
       {/* Streamer mode: slim top-bar notification (no full-screen blocker). */}
       <StreamerTopBar />
+      {!isOnline && (
+        <div role="status" className="fixed top-0 inset-x-0 z-[300] bg-accent-warning/90 text-black text-center text-[12px] font-semibold py-1.5 px-3">
+          You’re offline. Messages you send will be delivered when your connection returns.
+        </div>
+      )}
       {bootstrapState.status !== 'idle' && bootstrapState.status !== 'ready' && (
         <div className="fixed top-4 left-1/2 -translate-x-1/2 z-[280] w-[min(720px,calc(100vw-24px))]">
           <div className={`glass-card rounded-r3 backdrop-blur-xl shadow-2xl px-4 py-3 flex items-center gap-3 ${
@@ -910,6 +952,9 @@ export const Layout: React.FC = () => {
       {identityLocked && <UnlockScreen />}
       {!identityLocked && authFlowStep && (
         <AuthFlow initialStep={authFlowStep} onClose={closeAuthFlow} />
+      )}
+      {showTour && !identityLocked && !authFlowStep && (
+        <ProductTour onClose={() => setShowTour(false)} />
       )}
       <AnimatePresence mode="wait">
         {state.showSettings && (

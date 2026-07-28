@@ -42,10 +42,12 @@ import {
   Edit3,
   Camera,
   Speaker,
+  FileText,
 } from 'lucide-react';
 import QRCode from 'qrcode';
 import { User as UserType, type MessageLayout } from '@/types';
 import { NotificationSettings } from '@/components/NotificationSettings';
+import { LegalDocViewer } from '@/components/legal/LegalDocViewer';
 import { useFeature } from '@/hooks/useFeature';
 import { usePerformanceMode } from '@/hooks/usePerformanceMode';
 import { usePersistentState } from '@/hooks/usePersistentState';
@@ -71,6 +73,10 @@ import { unlockAndActivateVaultIdentity, downloadIdentityBackup, downloadActiveI
 import { SwitchingOverlay } from '@/components/SwitchingOverlay';
 import { PendingButton } from '@/components/ui/PendingButton';
 import { safeStorageRemove } from '@/lib/browserStorage';
+import { applyAccessibilityPrefs } from '@/lib/accessibility';
+import { useTranslation } from 'react-i18next';
+import { setLocale } from '@/lib/locale';
+import i18n, { SUPPORTED_LANGUAGES, isRtlLocale } from '@/i18n';
 import { canCopyTextToClipboardSafely, copyTextToClipboardSafely } from '@/components/contextMenuUtils';
 import { resolveAvatarSrc } from '@/lib/avatar';
 import { useEscapeKey } from '@/hooks/useEscapeKey';
@@ -104,12 +110,6 @@ interface SettingsScreenProps {
   /** Open directly on this section (e.g. 'audio-video' from the voice cog). */
   initialSection?: string;
   onClose: () => void;
-  onOpenDonations?: () => void;
-  onOpenShop?: () => void;
-  onOpenQuests?: () => void;
-  onOpenBoost?: () => void;
-  onOpenEvents?: () => void;
-  hasActiveServer?: boolean;
   onLogOut?: () => void;
   messageLayout?: MessageLayout;
   onSetMessageLayout?: (layout: MessageLayout) => void;
@@ -146,6 +146,7 @@ interface AccessibilityPreferences {
   colorBlindMode: 'none' | 'protanopia' | 'deuteranopia' | 'tritanopia';
   ttsEnabled: boolean;
   sttEnabled: boolean;
+  simpleMode: boolean;
 }
 
 const AUTH_TOKEN_STORAGE_KEYS = [
@@ -155,7 +156,7 @@ const AUTH_TOKEN_STORAGE_KEYS = [
 ] as const;
 
 const SOURCE_URL = import.meta.env.VITE_SOURCE_URL ?? 'https://github.com/xorein/hybrid';
-const APP_VERSION = '0.0.0';
+const APP_VERSION = __APP_VERSION__;
 const LICENSE_URL = 'https://www.gnu.org/licenses/agpl-3.0.html';
 const SPEC_LICENSE_URL = 'https://creativecommons.org/licenses/by-sa/4.0/';
 
@@ -178,6 +179,7 @@ const ACCESSIBILITY_DEFAULTS: AccessibilityPreferences = {
   colorBlindMode: 'none',
   ttsEnabled: false,
   sttEnabled: false,
+  simpleMode: false,
 };
 
 const FONT_SIZES: Array<{ key: AccessibilityPreferences['fontSize']; label: string; size: string }> = [
@@ -191,12 +193,6 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
   user,
   initialSection,
   onClose,
-  onOpenDonations,
-  onOpenShop,
-  onOpenQuests,
-  onOpenBoost,
-  onOpenEvents,
-  hasActiveServer = false,
   onLogOut,
   messageLayout = 'modern',
   onSetMessageLayout,
@@ -212,11 +208,6 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
   const [logoutConfirmOpen, setLogoutConfirmOpen] = useState(false);
   const registerRelayMutation = useRegisterRelay();
   const removeRelayMutation = useRemoveRelay();
-  const hasDonations = useFeature('donations');
-  const hasShop = useFeature('shop');
-  const hasQuests = useFeature('quests');
-  const hasServerBoost = useFeature('serverBoost');
-  const hasScheduledEvents = useFeature('scheduledEvents');
 
   useEffect(() => {
     if (!feedback) {
@@ -228,15 +219,6 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
   }, [feedback]);
 
   const showFeedback = (tone: FeedbackTone, message: string) => setFeedback({ tone, message });
-
-  const handleOpenSupport = (label: string, action?: () => void) => {
-    if (action) {
-      action();
-      return;
-    }
-
-    showFeedback('info', `${label} is not available from this browser session.`);
-  };
 
   const performLogout = () => {
     setLogoutConfirmOpen(false);
@@ -282,14 +264,6 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
           <SettingsItem icon={<Eye size={16} />} label="Streamer Mode" active={activeSection === 'streamer'} onClick={() => setActiveSection('streamer')} />
           <SettingsItem icon={<Smartphone size={16} />} label="Mobile Sync" active={activeSection === 'mobile'} onClick={() => setActiveSection('mobile')} />
           <SettingsItem icon={<Info size={16} />} label="About & Legal" active={activeSection === 'about'} onClick={() => setActiveSection('about')} />
-
-          <div className="h-6" />
-          <div className="micro-label text-white/20 px-3 mb-3">Support</div>
-          {hasDonations && <SettingsItem icon={<Heart size={16} />} label="Donate" active={false} onClick={() => handleOpenSupport('Donate', onOpenDonations)} />}
-          {hasShop && <SettingsItem icon={<ShoppingBag size={16} />} label="Shop" active={false} onClick={() => handleOpenSupport('Shop', onOpenShop)} />}
-          {hasQuests && <SettingsItem icon={<Trophy size={16} />} label="Quests" active={false} onClick={() => handleOpenSupport('Quests', onOpenQuests)} />}
-          {hasServerBoost && hasActiveServer && <SettingsItem icon={<Zap size={16} />} label="Boost Server" active={false} onClick={() => handleOpenSupport('Boost Server', onOpenBoost)} />}
-          {hasScheduledEvents && hasActiveServer && <SettingsItem icon={<Calendar size={16} />} label="Events" active={false} onClick={() => handleOpenSupport('Events', onOpenEvents)} />}
 
           <div className="h-6" />
           <div className="border-t border-white/5 my-3 mx-3" />
@@ -1510,6 +1484,64 @@ const LAYOUTS: { key: MessageLayout; label: string; desc: string }[] = [
   { key: 'terminal', label: 'Terminal', desc: 'IRC-style: time · name · message inline' },
 ];
 
+/**
+ * Language & region picker. Selecting a language changes i18next's active language
+ * (translating the UI where catalogs exist) AND persists the locale via setLocale,
+ * which drives all Intl date/time/number formatting app-wide — so it always has a
+ * real, visible effect, not just a stored preference.
+ */
+const LanguageSection: React.FC = () => {
+  const { t } = useTranslation('settings');
+  const isDev = Boolean(import.meta.env?.DEV);
+  const options = SUPPORTED_LANGUAGES.filter((l) => isDev || !l.devOnly);
+  // Seed the picker from the STORED preference only (not navigator.language, which
+  // getLocale() falls back to) — an unstored or unsupported resolved locale like
+  // "en-US" isn't a <select> option and would render the control blank. Map anything
+  // not offered to "system" so the default is shown selected.
+  const [current, setCurrent] = useState<string>(() => {
+    let stored: string | null = null;
+    try { stored = typeof localStorage !== 'undefined' ? localStorage.getItem('harmolyn:locale') : null; } catch { stored = null; }
+    return stored && options.some((l) => l.code === stored) ? stored : 'system';
+  });
+
+  const choose = (code: string) => {
+    if (code === 'system') {
+      setLocale(null);
+      const sys = (typeof navigator !== 'undefined' && navigator.language) || 'en';
+      void i18n.changeLanguage(sys);
+      setCurrent('system');
+      return;
+    }
+    setLocale(code);
+    void i18n.changeLanguage(code);
+    setCurrent(code);
+  };
+
+  const activeRtl = current !== 'system' && isRtlLocale(current);
+
+  return (
+    <section className="mb-8">
+      <h3 className="micro-label text-white/40 border-b border-white/5 pb-2 mb-4">{t('language.section')}</h3>
+      <div className="glass-card rounded-r2 p-4 border border-white/10">
+        <label htmlFor="language-select" className="text-white font-bold text-sm">{t('language.label')}</label>
+        <p className="text-[10px] text-white/40 mb-3">{t('language.desc')}</p>
+        <select
+          id="language-select"
+          value={current}
+          onChange={(e) => choose(e.target.value)}
+          className="w-full bg-bg-0/60 border border-white/10 rounded-r2 px-3 py-2 text-sm text-white focus:outline-none focus:border-primary/50"
+        >
+          <option value="system">{t('language.systemDefault')}</option>
+          {options.map((l) => (
+            <option key={l.code} value={l.code}>{l.label}</option>
+          ))}
+        </select>
+        {activeRtl && <p className="text-[10px] text-primary/70 mt-2">{t('language.rtlNote')}</p>}
+      </div>
+    </section>
+  );
+};
+
 const AppearanceSection: React.FC<{
   messageLayout: MessageLayout;
   onSetMessageLayout?: (layout: MessageLayout) => void;
@@ -1548,6 +1580,8 @@ const AppearanceSection: React.FC<{
         <h2 className="text-[26px] font-bold text-white mb-2 font-display tracking-tight">Appearance</h2>
         <p className="micro-label text-white/30">Layout, colors, and visual preferences</p>
       </header>
+
+      <LanguageSection />
 
       {/* ── LARGE LIVE PREVIEW ──────────────────────────────────── */}
       <div className="mb-8 rounded-r2 overflow-hidden border border-white/10 shadow-2xl" style={{ background: theme.background, minHeight: 300 }}>
@@ -1695,10 +1729,6 @@ const AppearanceSection: React.FC<{
   );
 };
 
-const FONT_SIZE_MAP: Record<AccessibilityPreferences['fontSize'], string> = {
-  small: '13px', default: '15px', large: '17px', xlarge: '19px',
-};
-
 const CB_FILTERS: Record<string, string> = {
   protanopia:   '0.567 0.433 0 0 0  0.558 0.442 0 0 0  0 0.242 0.758 0 0  0 0 0 1 0',
   deuteranopia: '0.625 0.375 0 0 0  0.7 0.3 0 0 0  0 0.3 0.7 0 0  0 0 0 1 0',
@@ -1740,22 +1770,23 @@ const CB_MODE_LABELS: { key: AccessibilityPreferences['colorBlindMode']; label: 
 ];
 
 const AccessibilitySection: React.FC = () => {
+  const { t } = useTranslation('settings');
   const [preferences, setPreferences] = usePersistentState<AccessibilityPreferences>('harmolyn:settings:accessibility', ACCESSIBILITY_DEFAULTS);
   const { perfMode, togglePerfMode } = usePerformanceMode();
   const [ttsTestResult, setTtsTestResult] = useState<string | null>(null);
   const [sttListening, setSttListening] = useState(false);
   const [sttPreview, setSttPreview] = useState('');
 
-  // Apply visual effects
+  // Apply visual effects. Saturation goes on the html element here (not body) so it
+  // stacks with the color-blind body filter without clobbering it. Destructured so the
+  // dep array covers exactly the fields applyAccessibilityPrefs reads (not tts/stt/cb).
+  const { fontSize, highContrast, reducedMotion, dyslexicFont, simpleMode, saturation } = preferences;
   useEffect(() => {
-    document.documentElement.style.fontSize = FONT_SIZE_MAP[preferences.fontSize] ?? '15px';
-    document.documentElement.classList.toggle('high-contrast', preferences.highContrast);
-    document.documentElement.classList.toggle('reduce-motion', preferences.reducedMotion);
-    document.documentElement.classList.toggle('dyslexic-font', preferences.dyslexicFont);
-    // Saturation stacks with color-blind filter; apply as CSS filter on html element
-    const satPart = preferences.saturation !== 100 ? `saturate(${preferences.saturation}%)` : '';
-    document.documentElement.style.filter = satPart;
-  }, [preferences.fontSize, preferences.highContrast, preferences.reducedMotion, preferences.dyslexicFont, preferences.saturation]);
+    applyAccessibilityPrefs(
+      { fontSize, highContrast, reducedMotion, dyslexicFont, simpleMode, saturation },
+      { applySaturationOnHtml: true },
+    );
+  }, [fontSize, highContrast, reducedMotion, dyslexicFont, simpleMode, saturation]);
 
   // Dyslexic font CDN load
   useEffect(() => {
@@ -1808,11 +1839,19 @@ const AccessibilitySection: React.FC = () => {
   return (
     <>
       <header className="mb-8">
-        <h2 className="text-[26px] font-bold text-white mb-2 font-display tracking-tight">Accessibility</h2>
-        <p className="micro-label text-white/30">Vision · Motion · Voice · Font settings</p>
+        <h2 className="text-[26px] font-bold text-white mb-2 font-display tracking-tight">{t('accessibility.title')}</h2>
+        <p className="micro-label text-white/30">{t('accessibility.subtitle')}</p>
       </header>
 
       <div className="space-y-6">
+        {/* ── SIMPLE MODE ───────────────────── */}
+        <section>
+          <h3 className="micro-label text-white/40 border-b border-white/5 pb-2 mb-4">{t('accessibility.simplicity')}</h3>
+          <ToggleCard label={t('accessibility.simpleMode')}
+            desc={t('accessibility.simpleModeDesc')}
+            checked={preferences.simpleMode} onToggle={() => set('simpleMode', !preferences.simpleMode)} />
+        </section>
+
         {/* ── DYSLEXIA ──────────────────────── */}
         <section>
           <h3 className="micro-label text-white/40 border-b border-white/5 pb-2 mb-4">Reading</h3>
@@ -2582,14 +2621,44 @@ function normalizeRelayAddrs(value: unknown): string[] {
   return normalized;
 }
 
-const AboutSection: React.FC = () => (
+const AboutSection: React.FC = () => {
+  const [openDoc, setOpenDoc] = useState<'terms' | 'privacy' | 'guidelines' | null>(null);
+  const legalLinks: { id: 'terms' | 'privacy' | 'guidelines'; title: string; desc: string }[] = [
+    { id: 'terms', title: 'Terms of Service', desc: 'The agreement for using this instance' },
+    { id: 'privacy', title: 'Privacy Policy', desc: 'What is (and isn’t) collected' },
+    { id: 'guidelines', title: 'Community Guidelines', desc: 'Acceptable use — the rules for everyone' },
+  ];
+  return (
   <>
     <header className="mb-10">
       <h2 className="text-[26px] font-bold text-white mb-2 font-display tracking-tight">ABOUT // LEGAL</h2>
-      <p className="micro-label text-white/30">LICENSE // SOURCE // ATTRIBUTION</p>
+      <p className="micro-label text-white/30">TERMS // PRIVACY // LICENSE</p>
     </header>
 
+    {openDoc && <LegalDocViewer docId={openDoc} onClose={() => setOpenDoc(null)} />}
+
     <div className="space-y-4">
+      <div className="grid gap-3">
+        {legalLinks.map((link) => (
+          <button
+            key={link.id}
+            onClick={() => setOpenDoc(link.id)}
+            className="focus-ring text-left glass-card rounded-r2 p-5 border border-white/10 flex items-center justify-between group hover:border-primary/30 transition-all"
+          >
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center text-primary">
+                <FileText size={18} />
+              </div>
+              <div>
+                <div className="text-white font-bold text-sm">{link.title}</div>
+                <div className="text-[10px] text-white/40">{link.desc}</div>
+              </div>
+            </div>
+            <ExternalLink size={16} className="text-white/30 group-hover:text-primary" />
+          </button>
+        ))}
+      </div>
+
       <div className="glass-card rounded-r2 p-5 border border-white/10">
         <div className="flex items-center gap-3 mb-3">
           <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center text-primary">
@@ -2650,7 +2719,8 @@ const AboutSection: React.FC = () => (
       </div>
     </div>
   </>
-);
+  );
+};
 
 const ToggleCard: React.FC<{ label: string; desc: string; checked: boolean; onToggle: () => void }> = ({ label, desc, checked, onToggle }) => (
   <div className="glass-card rounded-r2 p-4 border border-white/10 flex items-center justify-between">

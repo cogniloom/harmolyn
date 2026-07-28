@@ -1,5 +1,67 @@
 # xorein Protocol Gaps
 
+> **2026-07-27 — GA-readiness hardening (Tier 0/1/2).** A large security-correctness +
+> consumer-readiness pass landed. Highlights, by area:
+>
+> **Security correctness (Tier 0 — all client-side, all tested):**
+> - **Fail-closed messaging.** Inbound chat rejects anything not carrying the scope's
+>   required E2EE envelope (seal for DMs, crowd for channels) — the plaintext-accept
+>   downgrade path in `sync/inbound.ts` is gone (`decodeInboundMessage`, `handleChatEdit`).
+> - **Real security badge.** Each message carries the mode it was actually en/decrypted
+>   under (`security_mode`/`encrypted`, `types.ts`); the ChatArea badge is derived from
+>   real messages, not the scope type, and downgrades to danger if any `clear` is present.
+> - **Crowd epoch rotation works.** `ChannelCrypto.setRoot` is epoch-versioned (was
+>   first-root-wins); `sync.update` now propagates `crowd_root`/`crowd_epoch`/`roles`/
+>   `member_roles`; the owner rotates on kick AND join; new joiners get zero pre-join
+>   history by default. A kicked member is cryptographically locked out (`crowd/rotation.test.ts`).
+> - **Voice SFrame fails closed.** The publicly-derivable stub key is deleted;
+>   `voiceSecurityMode`/`deriveVoicePeerKey` agree, and SFrame is only enabled with a real key.
+> - **Encrypted state at rest.** Native state is AES-256-GCM encrypted under a key derived
+>   from the identity seed (was cleartext localStorage incl. crowd_root/invite_secret/bodies);
+>   the raw remember-me AES key is replaced by a non-extractable WebCrypto key in IndexedDB.
+> - **Seal hardening.** One-time prekeys are consumed (single-use) + replenished; the bundle
+>   rotates on expiry/low OPKs; a fetched bundle is bound to the dialed peer id (relay-swap MITM).
+> - **Key verification.** Signal-style hybrid (Ed25519+ML-DSA) safety numbers + TOFU pinning
+>   with change detection; `KeyVerification` screen reachable from the DM security badge.
+> - **Pin authorization.** Pins require MANAGE_MESSAGES (were forgeable by any member).
+>
+> **Consumer readiness (Tier 1):** pinch-zoom + text-selection restored (WCAG); real
+> `APP_VERSION`; `fileUploads` flipped on (the E2EE attachment feature was complete but
+> hidden); fake moderation stats replaced with real counts; NotificationSettings are now
+> honored; **monetization (donations/shop/quests/boosts) + 16 orphaned mock components
+> deleted**; in-app **Terms/Privacy/Community-Guidelines** + a blocking **age/consent gate**
+> at registration; an **abuse-reporting** flow (ReportModal) that delivers P2P to the server
+> owner; **PWA** (installable + offline service worker) + offline banner + gesture-gated
+> notification permission; locale-aware dates.
+>
+> **Resilience (Tier 2):** a **durable outbound queue** — messages composed while the relay
+> is down are persisted (encrypted) and replayed on reconnect instead of being discarded.
+>
+> **Filed against `cogniloom/xorein`:** issues #27–#31 (relay CGO/SQLCipher stub, invalid
+> `--mode` flag, `RelayQueue` unwired, plaintext control send-path, missing rendezvous/mailbox
+> endpoints).
+>
+> **Delivered since:** member-served history fallback + cursor pagination (WS-D); onboarding
+> product tour + "simple mode" (WS-F); voice trickle-ICE / ICE-restart / reconnect-with-backoff
+> + peer-SFU election behind `voiceScaleSfu` (WS-B); WebRTC (`@libp2p/webrtc`) + DCUtR direct
+> transport + rendezvous register/discover behind `directTransport` (WS-C, ships dark until a
+> 2nd relay `[INFRA]` exists); i18n runtime (react-i18next + ICU), language picker, RTL
+> direction, and non-Latin font fallbacks (WS-E foundation).
+>
+> **Still open:**
+> - **i18n long-tail string sweep.** The runtime, per-namespace catalogs, pseudo-locale test
+>   guard, language picker, and RTL/direction are in place, and the first-run product tour +
+>   Settings language/accessibility surfaces are localized. The remaining ~55 components
+>   (hotspots: `ChatArea`, `ServerSettingsScreen`, the rest of `SettingsScreen`, `AuthFlow`,
+>   `SecurityOnboarding`, `legalDocs`) still carry English literals and fall back to English at
+>   runtime. This is mechanical `t('…')` wrapping + catalog authoring per file, best done with
+>   per-file review (much of it rich instructional JSX needing `<Trans>`); track it as staged
+>   work, not a blocker — the picker already localizes all date/number/time formatting app-wide.
+> - **Live smoketests (need infra, not code):** WebRTC hole-punch (2 relays + real browsers),
+>   voice media/trickle/SFU forwarding (coturn + browsers), relay-container CGO build (podman/CI).
+> - **Self-hosted subsetted webfonts.** Today non-Latin scripts use the OS system-font stack
+>   (no tofu); shipping subsetted Noto webfonts for pixel-consistent rendering is follow-up.
+
 This document tracks Harmolyn UI features that **cannot be fully wired yet** because
 the xorein local control API does not expose the required endpoints. Each gap lists
 the endpoint(s) the runtime would need to add. Until then, the corresponding feature

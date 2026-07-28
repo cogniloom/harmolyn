@@ -5,9 +5,17 @@ import { describe, it, expect } from 'vitest';
 import { SealSessions, type FetchBundle, type SerializedSealState } from './session.js';
 import { ChannelCrypto } from '../crowd/channel.js';
 import { generateSigningIdentity, type HybridSigningKey } from '../crypto/hybrid.js';
+import { identityKeyBlob } from '../identity/safetyNumber.js';
+import { buildBundle } from './bundle.js';
 
 function mkSigning(): HybridSigningKey {
   return generateSigningIdentity();
+}
+
+function b64bytes(b: Uint8Array): string {
+  let s = '';
+  for (let i = 0; i < b.length; i++) s += String.fromCharCode(b[i]);
+  return btoa(s);
 }
 
 describe('SealSessions (1:1 DM E2EE)', () => {
@@ -64,6 +72,69 @@ describe('SealSessions (1:1 DM E2EE)', () => {
     const wire = await a.encrypt('b', new TextEncoder().encode('secret'), async () => b.serveBundle());
     const tampered = { ...wire, ct: btoa('x'.repeat(atob(wire.ct).length)) };
     expect(() => b.decrypt('a', tampered)).toThrow();
+  });
+
+  it('does not poison the session or burn an OPK when a first init fails to authenticate', async () => {
+    const bob = new SealSessions('bob', mkSigning());
+    const aliceKey = mkSigning();
+
+    // A first-contact init whose ciphertext is garbage: X3DH still derives the ratchet,
+    // but AEAD auth fails. The failed attempt must NOT commit a session or consume the OPK.
+    const alice1 = new SealSessions('alice', aliceKey);
+    const w1 = await alice1.encrypt('bob', new TextEncoder().encode('m1'), async () => bob.serveBundle());
+    const wBad = { ...w1, ct: btoa('x'.repeat(atob(w1.ct).length)) };
+    expect(() => bob.decrypt('alice', wBad)).toThrow();
+
+    // A fresh valid first message from the same identity must still establish + decrypt —
+    // previously the poisoned session made this fail (bob would skip X3DH and mis-decrypt).
+    const alice2 = new SealSessions('alice', aliceKey);
+    const w2 = await alice2.encrypt('bob', new TextEncoder().encode('m2'), async () => bob.serveBundle());
+    expect(new TextDecoder().decode(bob.decrypt('alice', w2))).toBe('m2');
+  });
+
+  it('retains the rotated bundle so a concurrent first-contact under the OLD bundle still decrypts', async () => {
+    const bobKey = mkSigning();
+    // Bob starts with just OPK_LOW_WATERMARK+1 (6) one-time prekeys, so the FIRST accepted
+    // handshake drops the count to 5 (≤ watermark) and triggers a bundle rotation.
+    const built = buildBundle('bob', bobKey, 6);
+    const oldBundle = built.bundle; // what both initiators fetch (before the rotation)
+    const bob = new SealSessions('bob', bobKey, {
+      persisted: {
+        bundle: built.bundle,
+        priv: { spkPriv: b64bytes(built.priv.spkPriv), opkPrivs: built.priv.opkPrivs.map(b64bytes), mlkemSk: b64bytes(built.priv.mlkemSk) },
+        sessions: [],
+        consumedOpks: [],
+      },
+    });
+
+    // Initiator 1 fetches the old bundle and handshakes — this consumes an OPK and rotates.
+    const alice1 = new SealSessions('alice1', mkSigning());
+    const w1 = await alice1.encrypt('bob', new TextEncoder().encode('one'), async () => oldBundle);
+    expect(new TextDecoder().decode(bob.decrypt('alice1', w1))).toBe('one');
+
+    // Initiator 2 also fetched the OLD (now-rotated-away) bundle. Its init references the old
+    // SPK/OPK/ML-KEM key; without retention bob would derive the wrong secret and fail. With
+    // the retained bundle it still decrypts. (alice1's consumed OPK is zeroed in the shared
+    // bundle, so alice2 deterministically picks a different, still-available OPK.)
+    const alice2 = new SealSessions('alice2', mkSigning());
+    const w2 = await alice2.encrypt('bob', new TextEncoder().encode('two'), async () => oldBundle);
+    expect(new TextDecoder().decode(bob.decrypt('alice2', w2))).toBe('two');
+  });
+
+  it('pins the initiator hybrid identity on an inbound first-contact DM (responder TOFU)', async () => {
+    const pinned: Array<[string, string]> = [];
+    const bob = new SealSessions('bob', mkSigning(), { onPeerIdentity: (p, blob) => pinned.push([p, blob]) });
+    const aliceKey = mkSigning();
+    const alice = new SealSessions('alice', aliceKey);
+
+    const w = await alice.encrypt('bob', new TextEncoder().encode('hi'), async () => bob.serveBundle());
+    bob.decrypt('alice', w);
+
+    expect(pinned).toHaveLength(1);
+    expect(pinned[0][0]).toBe('alice');
+    // The responder pins the SAME hybrid blob the encrypt side would derive for alice, so
+    // both directions compute an identical safety number.
+    expect(pinned[0][1]).toBe(identityKeyBlob(aliceKey.edPublic, aliceKey.mldsaPublic));
   });
 
   it('throws (no plaintext fallback) when a peer bundle cannot be fetched', async () => {

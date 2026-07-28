@@ -17,13 +17,13 @@ vi.mock("@/hooks/useFeature", async () => {
 
 const channel: Channel = { id: "ch-1", name: "general", type: "text", categoryId: "cat-1" };
 
-function renderChatArea(securityMode?: string) {
+function renderChatArea(securityMode?: string, messages: Message[] = []) {
   const queryClient = new QueryClient();
   return render(
     <QueryClientProvider client={queryClient}>
     <ChatArea
       channel={channel}
-      messages={[]}
+      messages={messages}
       users={[]}
       mobileMenuOpen={false}
       onToggleMobileMenu={() => {}}
@@ -44,6 +44,31 @@ describe("ChatArea", () => {
   it("renders the negotiated security mode in the header", () => {
     renderChatArea("seal");
     expect(screen.getByText(/SEAL \/\/ 1:1 E2EE/i)).toBeTruthy();
+  });
+
+  it("treats unstamped legacy messages as insecure in the native-path badge", () => {
+    (window as unknown as Record<string, unknown>).__HARMOLYN_NATIVE_ACTIVE__ = true;
+    try {
+      const legacy: Message = { id: "m-legacy", userId: "u1", content: "old message", timestamp: "2026-01-01T00:00:00Z" };
+      renderChatArea(undefined, [legacy]);
+      // No provenance recorded → the badge must NOT claim E2EE; it downgrades to the
+      // insecure "clear" state rather than showing Crowd for a channel.
+      expect(screen.getByText(/UNENCRYPTED \/\/ DO NOT TRUST/i)).toBeTruthy();
+    } finally {
+      delete (window as unknown as Record<string, unknown>).__HARMOLYN_NATIVE_ACTIVE__;
+    }
+  });
+
+  it("keeps the E2EE badge when every message is provenance-stamped (native path)", () => {
+    (window as unknown as Record<string, unknown>).__HARMOLYN_NATIVE_ACTIVE__ = true;
+    try {
+      const stamped: Message = { id: "m1", userId: "u1", content: "hi", timestamp: "2026-01-01T00:00:00Z", securityMode: "crowd", encrypted: true };
+      renderChatArea(undefined, [stamped]);
+      expect(screen.getByText(/CROWD \/\/ CHANNEL E2EE/i)).toBeTruthy();
+      expect(screen.queryByText(/UNENCRYPTED \/\/ DO NOT TRUST/i)).toBeNull();
+    } finally {
+      delete (window as unknown as Record<string, unknown>).__HARMOLYN_NATIVE_ACTIVE__;
+    }
   });
 
   it("does not show the removed channel follow control", () => {

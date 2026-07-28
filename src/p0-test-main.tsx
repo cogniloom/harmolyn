@@ -12,6 +12,7 @@ import {
   encodePeerStreamResponse, decodePeerStreamResponse,
   type PeerStreamRequest, type PeerStreamResponse,
 } from './native/families/peerstream';
+import { PROTOCOLS } from './native/families/families';
 import type { Libp2p } from 'libp2p';
 
 declare global {
@@ -28,6 +29,7 @@ declare global {
       decodePeerStreamResponse: typeof decodePeerStreamResponse;
       multiaddr: typeof multiaddr;
       peerIdFromString: typeof peerIdFromString;
+      PROTOCOLS: typeof PROTOCOLS;
       RELAY_PEER_ID: typeof RELAY_PEER_ID;
       RELAY_MULTIADDR: typeof RELAY_MULTIADDR;
       node: Libp2p | null;
@@ -57,6 +59,7 @@ window.__p0 = {
   decodePeerStreamResponse,
   multiaddr,
   peerIdFromString,
+  PROTOCOLS,
   RELAY_PEER_ID,
   RELAY_MULTIADDR,
   node: null,

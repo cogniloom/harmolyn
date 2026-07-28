@@ -2,8 +2,23 @@
 // the mutation facade from the engine's internal session map. Mirrors the
 // pattern in src/native/sync/registry.ts.
 import type { VoiceSession } from './session.js';
+import { getState } from '../state/store.js';
 
 const _sessions = new Map<string, VoiceSession>();
+
+/**
+ * Rekey any active voice session on a server whose Crowd root just rotated (join/kick/leave)
+ * — re-deriving SFrame keys, dropping removed members' live connections, and reconnecting
+ * remaining members under the new key. Safe to call when no call is in progress.
+ */
+export function rekeyVoiceForServer(serverId: string): void {
+  const server = getState().servers[serverId];
+  if (!server) return;
+  const members = server.members ?? [];
+  for (const channelId of Object.keys(server.channels ?? {})) {
+    _sessions.get(channelId)?.rekey(members);
+  }
+}
 
 export function registerVoiceSession(session: VoiceSession): void {
   _sessions.set(session.channelId, session);

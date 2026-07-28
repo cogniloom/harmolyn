@@ -30,6 +30,14 @@ export function useSendDmMessage() {
   });
 }
 
+export function useLoadOlderHistory() {
+  const m = useRuntimeMutations();
+  return useMutation({
+    mutationFn: ({ serverId, channelId }: { serverId: string; channelId: string }) =>
+      m.loadOlderHistory(serverId, channelId),
+  });
+}
+
 export function useEditMessage() {
   const m = useRuntimeMutations();
   return useMutation({
@@ -74,6 +82,32 @@ export function usePinMessage() {
   return useMutation({
     mutationFn: ({ channelId, messageId }: { channelId: string; messageId: string }) =>
       m.pinMessage(channelId, messageId),
+  });
+}
+
+/** Mark or unmark a peer's identity as verified after confirming the safety number. */
+export function useSetPeerVerified() {
+  const m = useRuntimeMutations();
+  return useMutation({
+    mutationFn: ({ peerId, verified }: { peerId: string; verified: boolean }) =>
+      m.setPeerVerified(peerId, verified),
+  });
+}
+
+/** Submit an abuse report (delivered P2P to the server owner for server-scoped content). */
+export function useSubmitReport() {
+  const m = useRuntimeMutations();
+  return useMutation({
+    mutationFn: (input: Parameters<typeof m.submitReport>[0]) => m.submitReport(input),
+  });
+}
+
+/** Owner-side moderation: mark a received report resolved/dismissed (or reopen it). */
+export function useResolveReport() {
+  const m = useRuntimeMutations();
+  return useMutation({
+    mutationFn: ({ reportId, resolved }: { reportId: string; resolved?: boolean }) =>
+      m.resolveReport(reportId, resolved),
   });
 }
 

@@ -7,7 +7,7 @@
 //
 // getState() is mocked so no real browser store is needed.
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { deriveVoicePeerKey } from './keys';
+import { deriveVoicePeerKey, voiceSecurityMode } from './keys';
 import { encryptFrame, decryptFrame } from './mediashield';
 import * as store from '../state/store';
 
@@ -100,5 +100,57 @@ describe('deriveVoicePeerKey', () => {
     // The ciphertext (+ GCM tag) must not be byte-identical to the plaintext.
     const ctPayload = ct.slice(0, plaintext.length);
     expect(ctPayload).not.toEqual(plaintext);
+  });
+});
+
+// ── Fail-closed behaviour (Tier-0 A4) ──────────────────────────────────────────
+// Without a real shared secret there is NO SFrame key and NO 'crowd' mode — the
+// old code returned a publicly-derivable placeholder and reported 'crowd' anyway.
+
+describe('deriveVoicePeerKey / voiceSecurityMode — fail closed', () => {
+  const CHANNEL_NO_ROOT = 'voice-channel-no-root';
+  const SERVER_NO_ROOT = 'server-no-root';
+  const DM_CHANNEL = 'dm-voice-channel';
+
+  const stateWithoutRoot = {
+    servers: {
+      [SERVER_NO_ROOT]: {
+        id: SERVER_NO_ROOT,
+        // no crowd_root seeded
+        channels: { [CHANNEL_NO_ROOT]: { id: CHANNEL_NO_ROOT, type: 'voice', name: 'General' } },
+        members: [PEER_A, PEER_B],
+      },
+    },
+    dms: { [DM_CHANNEL]: { id: DM_CHANNEL, participants: [PEER_A, PEER_B] } },
+    identity: { peer_id: PEER_A },
+    messages: {},
+    peers: {},
+    relay_addrs: [],
+    voice_sessions: [],
+  };
+
+  beforeEach(() => {
+    vi.mocked(store.getState).mockReturnValue(stateWithoutRoot as unknown as ReturnType<typeof store.getState>);
+  });
+
+  it('returns null (no placeholder key) for a server channel without a crowd_root', () => {
+    expect(deriveVoicePeerKey(CHANNEL_NO_ROOT, PEER_A)).toBeNull();
+  });
+
+  it('returns null for a DM voice channel (no shared voice-key export yet)', () => {
+    expect(deriveVoicePeerKey(DM_CHANNEL, PEER_A)).toBeNull();
+  });
+
+  it("voiceSecurityMode is 'clear' when no real key can be derived", () => {
+    expect(voiceSecurityMode(CHANNEL_NO_ROOT)).toBe('clear');
+    expect(voiceSecurityMode(DM_CHANNEL)).toBe('clear');
+  });
+
+  it("voiceSecurityMode is 'crowd' only when a real crowd_root exists", () => {
+    vi.mocked(store.getState).mockReturnValue({
+      servers: { s: { id: 's', crowd_root: btoa(String.fromCharCode(...new Uint8Array(32).fill(7))), channels: { c: { id: 'c' } }, members: [] } },
+      dms: {}, identity: { peer_id: PEER_A }, messages: {}, peers: {}, relay_addrs: [], voice_sessions: [],
+    } as unknown as ReturnType<typeof store.getState>);
+    expect(voiceSecurityMode('c')).toBe('crowd');
   });
 });

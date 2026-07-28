@@ -2,9 +2,9 @@ import React from 'react';
 import { Bell, Volume2, AtSign, BellOff } from 'lucide-react';
 import { usePersistentState } from '@/hooks/usePersistentState';
 
-type NotifLevel = 'all' | 'mentions' | 'none';
+export type NotifLevel = 'all' | 'mentions' | 'none';
 
-interface NotificationPreferences {
+export interface NotificationPreferences {
   globalLevel: NotifLevel;
   desktopEnabled: boolean;
   soundEnabled: boolean;
@@ -13,7 +13,8 @@ interface NotificationPreferences {
   suppressRoles: boolean;
 }
 
-const STORAGE_KEY = 'harmolyn:settings:notifications';
+export const NOTIFICATION_SETTINGS_STORAGE_KEY = 'harmolyn:settings:notifications';
+const STORAGE_KEY = NOTIFICATION_SETTINGS_STORAGE_KEY;
 
 const DEFAULT_PREFERENCES: NotificationPreferences = {
   globalLevel: 'mentions',
@@ -76,7 +77,15 @@ export const NotificationSettings: React.FC = () => {
               label="Desktop Notifications"
               desc="Show OS-level notifications"
               checked={preferences.desktopEnabled}
-              onChange={(value) => setPreferences((prev) => ({ ...prev, desktopEnabled: value }))}
+              onChange={(value) => {
+                setPreferences((prev) => ({ ...prev, desktopEnabled: value }));
+                // Turning the toggle ON is a user gesture — request OS permission now, so
+                // notifications work immediately instead of only after a reload (the Layout
+                // first-gesture effect doesn't re-run when this stored pref changes).
+                if (value && typeof Notification !== 'undefined' && Notification.permission === 'default') {
+                  void Notification.requestPermission();
+                }
+              }}
             />
             <ToggleRow
               label="Notification Sounds"
@@ -119,6 +128,21 @@ export const NotificationSettings: React.FC = () => {
     </>
   );
 };
+
+/**
+ * Read the saved notification preferences synchronously from storage. Used by the
+ * notification delivery path (Layout) so the user's choices — "Nothing", "Mentions
+ * only", suppress @everyone/@role — are actually honored, not just stored.
+ */
+export function readNotificationPreferences(): NotificationPreferences {
+  try {
+    if (typeof localStorage === 'undefined') return DEFAULT_PREFERENCES;
+    const raw = localStorage.getItem(STORAGE_KEY);
+    return raw ? normalizeNotificationPreferences(JSON.parse(raw)) : DEFAULT_PREFERENCES;
+  } catch {
+    return DEFAULT_PREFERENCES;
+  }
+}
 
 function normalizeNotificationPreferences(value: unknown): NotificationPreferences {
   if (!isPlainObject(value)) {

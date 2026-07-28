@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Category, Channel, Server, User } from '@/types';
-import { X, Settings, Hash, Shield, Users, Link, Volume2, Crown, Pencil, Trash2, Plus, Copy, Check, FileText, Clock, Filter, ShieldAlert, Ban, AlertTriangle, Search, Bot, Key } from 'lucide-react';
+import { X, Settings, Hash, Shield, Users, Link, Volume2, Crown, Pencil, Trash2, Plus, Copy, Check, FileText, Clock, Filter, ShieldAlert, Ban, AlertTriangle, Search, Bot, Key, Flag } from 'lucide-react';
 import { useFeature } from '@/hooks/useFeature';
 import { useEscapeKey } from '@/hooks/useEscapeKey';
 import { copyTextToClipboardSafely, safeConfirm } from '@/components/contextMenuUtils';
@@ -11,13 +11,14 @@ import { useRuntimeMutations } from '@/hooks/runtime/useRuntimeMutations';
 import { buildJoinDeepLink } from '@/protocol/deeplink';
 import { computeInviteToken } from '@/native/sync/invite';
 import { useRuntimeSnapshot } from '@/lib/xoreinRuntimeContext';
+import { ReportInbox } from '@/components/ReportInbox';
 
 interface ServerSettingsScreenProps {
   server: Server;
   onClose: () => void;
 }
 
-type SettingsSection = 'overview' | 'roles' | 'channels' | 'members' | 'invites' | 'audit-log' | 'automod' | 'bots';
+type SettingsSection = 'overview' | 'roles' | 'channels' | 'members' | 'invites' | 'reports' | 'audit-log' | 'automod' | 'bots';
 type FeedbackTone = 'error' | 'info' | 'success';
 
 interface FeedbackState {
@@ -606,6 +607,8 @@ export const ServerSettingsScreen: React.FC<ServerSettingsScreenProps> = ({ serv
     { id: 'channels', label: 'Channels', icon: <Hash size={16} /> },
     { id: 'members', label: 'Members', icon: <Users size={16} /> },
     { id: 'invites', label: 'Invites', icon: <Link size={16} /> },
+    // Reports inbox is owner-only — reports are delivered P2P to the server owner.
+    ...(isOwner ? [{ id: 'reports' as SettingsSection, label: 'Reports', icon: <Flag size={16} /> }] : []),
     ...(hasAuditLog ? [{ id: 'audit-log' as SettingsSection, label: 'Audit Log', icon: <FileText size={16} /> }] : []),
     ...(hasAutoMod ? [{ id: 'automod' as SettingsSection, label: 'AutoMod', icon: <ShieldAlert size={16} /> }] : []),
     ...(hasBotsFeature ? [{ id: 'bots' as SettingsSection, label: 'Bots', icon: <Bot size={16} /> }] : []),
@@ -705,6 +708,10 @@ export const ServerSettingsScreen: React.FC<ServerSettingsScreenProps> = ({ serv
               onRotateInvite={() => void handleRotateInvite()}
               onRevokeInvite={() => void handleRevokeInvite()}
             />
+          )}
+
+          {activeSection === 'reports' && isOwner && (
+            <ReportInbox serverId={server.id} />
           )}
 
           {activeSection === 'audit-log' && hasAuditLog && (
@@ -1333,12 +1340,12 @@ const AutoModSection: React.FC<{
     </div>
 
     <div className="mt-8">
-      <div className="micro-label text-white/30 mb-3">QUARANTINE // STATS // 30 DAYS</div>
+      <div className="micro-label text-white/30 mb-3">AUTOMOD // RULES</div>
       <div className="grid grid-cols-3 gap-3">
         {[
-          { label: 'BLOCKED', value: '0', icon: <Ban size={14} /> },
-          { label: 'TIMEOUTS', value: '0', icon: <Clock size={14} /> },
-          { label: 'ALERTS', value: '0', icon: <AlertTriangle size={14} /> },
+          { label: 'ACTIVE', value: String(rules.filter((r) => r.enabled).length), icon: <ShieldAlert size={14} /> },
+          { label: 'TOTAL', value: String(rules.length), icon: <Ban size={14} /> },
+          { label: 'ENFORCING', value: String(rules.filter((r) => r.enabled && r.actions.some((a) => /block|delete|timeout/i.test(a))).length), icon: <Clock size={14} /> },
         ].map((stat) => (
           <div key={stat.label} className="glass-card rounded-r2 p-4 border border-white/5 text-center">
             <div className="text-white/20 mb-2 flex justify-center">{stat.icon}</div>

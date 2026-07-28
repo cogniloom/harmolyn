@@ -1,0 +1,6 @@
+{
+  "turnWarning": "Voice may not connect on this network — no relay server is available. Try a different network if you can't be heard.",
+  "connecting": "Connecting…",
+  "connected": "Connected",
+  "reconnecting": "Reconnecting…"
+}

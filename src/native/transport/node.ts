@@ -6,7 +6,9 @@
 import { createLibp2p } from 'libp2p';
 import { webSockets } from '@libp2p/websockets';
 import { webTransport } from '@libp2p/webtransport';
+import { webRTC } from '@libp2p/webrtc';
 import { circuitRelayTransport } from '@libp2p/circuit-relay-v2';
+import { dcutr } from '@libp2p/dcutr';
 import { noise } from '@chainsafe/libp2p-noise';
 import { yamux } from '@chainsafe/libp2p-yamux';
 import { identify } from '@libp2p/identify';
@@ -14,6 +16,7 @@ import { ping } from '@libp2p/ping';
 import { multiaddr } from '@multiformats/multiaddr';
 import { peerIdFromString } from '@libp2p/peer-id';
 import { generateKeyPairFromSeed } from '@libp2p/crypto/keys';
+import { resolveFeatureFlag } from '../../config/featureFlags.js';
 import { AETHER_NOISE_PROLOGUE } from './prologue.js';
 import type { Libp2p } from 'libp2p';
 import type { PeerId } from '@libp2p/interface';
@@ -72,15 +75,24 @@ export async function createXoreinNode(opts: XoreinNodeOptions = {}) {
     ? await generateKeyPairFromSeed('Ed25519', opts.identity.edSeed)
     : undefined;
 
+  // Direct WebRTC transport + DCUtR hole-punching, opt-in via `directTransport`.
+  // When on, we also listen on `/p2p-circuit/webrtc` so a relayed connection can be
+  // upgraded to a direct browser↔browser WebRTC connection via DCUtR. Ships dark
+  // until a 2nd relay + gateway rendezvous exist (see the flag comment).
+  const directOn = resolveFeatureFlag('directTransport');
+
   const node = await createLibp2p({
     ...(privateKey ? { privateKey } : {}),
     addresses: {
       // Bare /p2p-circuit uses CircuitSearch mode (no automatic timeout dial).
-      listen: ['/p2p-circuit'],
+      // With direct transport on, also advertise a /webrtc listener over the circuit
+      // so DCUtR can upgrade relayed → direct.
+      listen: directOn ? ['/p2p-circuit', '/p2p-circuit/webrtc'] : ['/p2p-circuit'],
     },
     transports: [
       webSockets(),
       webTransport(),
+      ...(directOn ? [webRTC()] : []),
       circuitRelayTransport({
         // 30s for the actual HOP reservation exchange once connected.
         reservationCompletionTimeout: RELAY_RESERVATION_TIMEOUT_MS,
@@ -96,6 +108,10 @@ export async function createXoreinNode(opts: XoreinNodeOptions = {}) {
     services: {
       identify: identify(),
       ping: ping(),
+      // DCUtR (Direct Connection Upgrade through Relay): coordinates the
+      // simultaneous-open hole punch that turns a relayed circuit into a direct
+      // WebRTC connection. Only meaningful alongside the /webrtc listener above.
+      ...(directOn ? { dcutr: dcutr() } : {}),
     },
   });
 

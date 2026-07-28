@@ -1,0 +1,16 @@
+{
+  "accessibility": {
+    "title": "Accessibility",
+    "subtitle": "Vision · Motion · Voice · Font settings",
+    "simplicity": "Simplicity",
+    "simpleMode": "Simple Mode",
+    "simpleModeDesc": "Calmer, plain-language interface — softens stylized labels and technical accents throughout the app. Recommended if you find the default look busy."
+  },
+  "language": {
+    "section": "Language & Region",
+    "label": "Display language",
+    "desc": "Changes the app's language and date, time, and number formats.",
+    "systemDefault": "System default",
+    "rtlNote": "This language is displayed right-to-left."
+  }
+}

@@ -17,22 +17,23 @@ import { newGroup as newTreeGroup, addMember, treeEncrypt, treeDecrypt, type Gro
 import { newPeerKey, encryptFrame, decryptFrame, type PeerKey } from '../voice/mediashield.js';
 import { uploadBlob, downloadBlob, type BlobRef } from '../blobs/blobs.js';
 import { deliverOffline, drainDeliveries } from '../delivery/mailbox.js';
-import { serverRendezvousCID } from '../transport/rendezvous.js';
-import { initStore, setNativeIdentity, getState, updateState, upsertPeer, resetNativeStore, configureNativeStore, applyJoinedServer } from '../state/store.js';
+import { serverRendezvousCID, rendezvousRegister, rendezvousDiscover } from '../transport/rendezvous.js';
+import { initStore, setNativeIdentity, getState, updateState, upsertPeer, resetNativeStore, configureNativeStore, applyJoinedServer, mergeHistoryMessages, setStateEncryptionKey, pinPeerIdentity, removeServerMembership } from '../state/store.js';
+import { identityKeyBlob } from '../identity/safetyNumber.js';
 import { parseInviteMetadata } from '../../protocol/deeplink.js';
 import type { XoreinRuntimeServer, XoreinRuntimeMessage } from '../../types.js';
 import { publishNativeSnapshot } from '../state/snapshot.js';
 import { PeerSync } from '../sync/peersync.js';
-import { registerInboundHandlers, ingestMailboxChat } from '../sync/inbound.js';
+import { registerInboundHandlers, ingestMailboxChat, replayBufferedChannelMessages } from '../sync/inbound.js';
 import { registerPeerSync } from '../sync/registry.js';
 import { SealSessions } from '../seal/session.js';
 import { loadSealState, saveSealState } from '../seal/persist.js';
 import { ChannelCrypto } from '../crowd/channel.js';
-import { registerScopeCrypto, resetScopeCrypto } from '../sync/secureEnvelope.js';
+import { registerScopeCrypto, resetScopeCrypto, applyCrowdRoot } from '../sync/secureEnvelope.js';
 import { registerOfflineIdentity, resetOfflineIdentity, drainOfflineChat } from '../delivery/offline.js';
 import { PROTOCOLS, RECOVERY_OPS } from '../families/families.js';
 import { unframeMessage, frameMessage, decodePeerStreamRequest, encodePeerStreamResponse } from '../families/peerstream.js';
-import { VOICE_OPS, type VoicePresenceRequest, type VoiceOfferRequest } from '../voice/signaling.js';
+import { VOICE_OPS, type VoicePresenceRequest, type VoiceOfferRequest, type VoiceIceRequest } from '../voice/signaling.js';
 import {
   handleRecoveryStore, handleRecoveryRequest, handleRecoveryDeliver,
   distributeRecovery, sendRecoveryRequest, approveRecovery, denyRecovery,
@@ -40,7 +41,7 @@ import {
 import { encryptSyncState, captureSyncState, restorePendingSyncState, registerStateSyncHandler, type EncryptedSyncBlob } from '../state/stateSync.js';
 import { getRecoveryContacts } from '../recovery/custody.js';
 import { VoiceSession } from '../voice/session.js';
-import { registerVoiceSession, getVoiceSession, clearVoiceSession } from '../voice/registry.js';
+import { registerVoiceSession, getVoiceSession, clearVoiceSession, rekeyVoiceForServer } from '../voice/registry.js';
 import { resolveFeatureFlag } from '../../config/featureFlags.js';
 import {
   nativeSendChannelMessage,
@@ -63,6 +64,7 @@ import {
   nativeAnnouncePresence,
   nativeEnsureDm,
   nativeEnsureDirectMessage,
+  nativeDrainOutbox,
 } from '../state/mutations.js';
 
 // Re-export all primitives for use by consumers.
@@ -151,6 +153,13 @@ export interface NativeEngineOptions {
  *   engine.transport.getCircuitAddrs()  // reachable circuit addresses
  *   await engine.stop();        // clean shutdown
  */
+// An authoritative "you are not a member here" rejection from a server owner's sync.join —
+// distinct from a transient unreachable/malformed response (null). Used to reconcile a kick
+// that was missed while offline by dropping the stale server locally.
+function isMembershipRejection(error: string | undefined): boolean {
+  return error === 'invalid_invite';
+}
+
 export class XoreinNativeEngine {
   private readonly opts: NativeEngineOptions;
   private _identity: XoreinIdentity | null = null;
@@ -227,6 +236,11 @@ export class XoreinNativeEngine {
       this._identity = await loadOrCreateGuestIdentity();
     }
 
+    // Install the at-rest state-encryption key (derived from the unlocked identity
+    // seed) BEFORE initStore() so it can decrypt an existing encrypted blob and so
+    // every subsequent persist() writes ciphertext — crowd roots, invite secrets and
+    // message bodies never touch disk in cleartext.
+    setStateEncryptionKey(this._identity.edSeed);
     // Bootstrap the local state store with this identity.
     initStore();
     // If the persisted store belongs to a *different* identity (a new guest
@@ -245,6 +259,9 @@ export class XoreinNativeEngine {
       peer_id: this._identity.peerId,
       created_at: new Date().toISOString(),
       ...(persistedProfile ? { profile: persistedProfile } : {}),
+      // Our own hybrid public identity, so the UI can render the safety number a
+      // contact verifies against.
+      identity_key: identityKeyBlob(this._identity.edPub, this._identity.mldsaPub),
     });
     // If we just recovered this identity on a new device, a guardian delivered an
     // encrypted snapshot of the account state — decrypt it with the identity key
@@ -268,6 +285,9 @@ export class XoreinNativeEngine {
     const seal = new SealSessions(identity.peerId, identitySigningKey(identity), {
       persisted: persistedSeal,
       onChange: guestMode ? undefined : (state) => saveSealState(identity, state),
+      // TOFU-pin each contact's verified hybrid identity so the UI can show a
+      // safety number and warn if it ever changes (relay swap / re-key).
+      onPeerIdentity: (peerId, identityKeyB64) => pinPeerIdentity(peerId, identityKeyB64),
     });
     const channels = new ChannelCrypto();
     registerScopeCrypto({ seal, channels, fetchBundle: (peerId) => this.peerSync.fetchBundle(peerId) });
@@ -316,9 +336,21 @@ export class XoreinNativeEngine {
           // resil-2: pull any messages deposited in our zero-knowledge mailbox
           // while we were offline.
           this.drainOfflineMailbox();
+          // Reconcile joined servers: re-pull each owner's authoritative record so a
+          // membership/epoch change we missed while offline (new crowd_root, roles) is
+          // applied — otherwise we'd stay stuck on a stale epoch and fail to decrypt.
+          void this.reconcileJoinedServers();
+          // Replay our own durable outbound queue: messages composed while the relay
+          // was down now go out (or into recipients' mailboxes) instead of being lost.
+          void nativeDrainOutbox();
           // Announce we're online to friends + co-members (and keep a light
           // heartbeat) so they don't show us — and we don't show them — as offline.
           this.startPresenceHeartbeat();
+          // Register ourselves in each joined server's rendezvous namespace so other
+          // members can discover our circuit addresses for a direct WebRTC upgrade.
+          // Gated on directTransport (dark by default) — the endpoint is the external
+          // gateway, so this never fires on the default path.
+          void this.registerServerRendezvous();
         } else if (s === 'disconnected') {
           this.stopPresenceHeartbeat();
           this.emitActivity(
@@ -397,6 +429,9 @@ export class XoreinNativeEngine {
             } else if (req.operation === VOICE_OPS.offer) {
               if (session) reply(await session.handleOffer(payload as unknown as VoiceOfferRequest, remotePeerId), req.requestId);
               else reply({ ok: false, error: 'not_in_channel' }, req.requestId);
+            } else if (req.operation === VOICE_OPS.ice) {
+              if (session) reply(session.handleIce(payload as unknown as VoiceIceRequest, remotePeerId), req.requestId);
+              else reply({ ok: false }, req.requestId);
             } else if (req.operation === VOICE_OPS.leave) {
               session?.handlePresence({ session_id: channelId, action: 'leave' }, remotePeerId);
               reply({ ok: true }, req.requestId);
@@ -464,10 +499,69 @@ export class XoreinNativeEngine {
    * Re-announcing covers peers who connect after us or live on a different relay —
    * without it, presence only ever updates when someone happens to type.
    */
+  /**
+   * On (re)connect, re-pull each joined server's authoritative record from its owner.
+   * Membership/epoch changes (join/kick/leave) are distributed by a fire-and-forget
+   * sync.update; a member who was OFFLINE when it fired never receives the new crowd_root
+   * and would be stuck on a stale epoch — unable to decrypt any subsequent channel traffic.
+   * A re-pull (sync.join is exempt from the invite check for an existing member) reconciles
+   * the root/epoch, roles/membership, and any messages missed while offline. Best-effort and
+   * idempotent (applyJoinedServer de-dups by id; the crypto re-seeds the new root lazily).
+   */
+  private async reconcileJoinedServers(): Promise<void> {
+    const me = this._identity?.peerId;
+    if (!me) return;
+    const displayName = getState().identity?.profile?.display_name;
+    const servers = Object.values(getState().servers)
+      .filter(s => s.owner_peer_id && s.owner_peer_id !== me && (s.members ?? []).includes(me));
+    let changed = false;
+    for (const s of servers) {
+      try {
+        const priorEpoch = typeof s.crowd_epoch === 'number' ? s.crowd_epoch : -1;
+        const data = await this.peerSync.joinServer(s.owner_peer_id, s.id, displayName);
+        // Reconcile a MISSED KICK: if we were removed while offline, our persisted snapshot
+        // still lists us as a member, so this re-pull reaches the owner and is authoritatively
+        // rejected ({ ok:false } with a membership error). Drop the stale server locally so it
+        // stops showing indefinitely. A null response is "unreachable/malformed" (not a
+        // rejection) and is retried on the next reconnect, so it must NOT trigger removal.
+        if (data && data.ok === false && isMembershipRejection(data.error)) {
+          removeServerMembership(s.id);
+          changed = true;
+          continue;
+        }
+        if (data?.ok && data.server) {
+          const nextServer = data.server as XoreinRuntimeServer;
+          applyJoinedServer(nextServer, (data.messages ?? []) as XoreinRuntimeMessage[]);
+          changed = true;
+          // If the re-pulled snapshot advanced the Crowd epoch while we were offline (a
+          // rotation we missed — e.g. a member was kicked), install the new root into the
+          // live channel crypto, replay any future-epoch ciphertext that raced ahead of it,
+          // and rekey any active voice call. applyJoinedServer only updates the store; the
+          // crypto/voice side must be re-seeded here or we'd stay on the stale key and fail
+          // to decrypt current-epoch channel and voice traffic.
+          const nextEpoch = typeof nextServer.crowd_epoch === 'number' ? nextServer.crowd_epoch : -1;
+          if (typeof nextServer.crowd_root === 'string' && nextEpoch > priorEpoch) {
+            applyCrowdRoot(nextServer.id);
+            replayBufferedChannelMessages(nextServer.id);
+            rekeyVoiceForServer(nextServer.id);
+          }
+        }
+      } catch { /* owner unreachable — retried on the next reconnect */ }
+    }
+    if (changed) publishNativeSnapshot();
+  }
+
   private startPresenceHeartbeat(): void {
     this.stopPresenceHeartbeat();
     nativeAnnouncePresence();
-    this._presenceTimer = setInterval(() => nativeAnnouncePresence(), 25_000);
+    this._presenceTimer = setInterval(() => {
+      nativeAnnouncePresence();
+      // Also drain the outbound queue on the heartbeat, not only on our own transport
+      // (re)connect. A first-contact pending_seal DM is queued while WE are already
+      // connected but the RECIPIENT is offline; when they later come online there is no
+      // sender-side connect event, so without this periodic retry it would never ship.
+      void nativeDrainOutbox();
+    }, 25_000);
   }
 
   private stopPresenceHeartbeat(): void {
@@ -575,7 +669,169 @@ export class XoreinNativeEngine {
         console.warn('[xorein/join] P2P join dial failed, using local stub:', err);
       }
     }
+
+    // Member-served fallback: the owner is offline/unreachable. Try each seed member
+    // carried in the invite. DARK by default (memberServedHistory): a joined member's
+    // server record has the owner-only invite_secret stripped, so the seed's
+    // verifyInviteToken always fails for a new joiner — the fallback can't actually be
+    // granted without a delegatable capability — and served history isn't individually
+    // authenticated. Until owner-signed invites/history exist, skip seeds and fall
+    // through to the local stub (membership reconciles when the owner returns).
+    const seeds = resolveFeatureFlag('memberServedHistory')
+      ? (meta.seeds ?? []).filter(s => s && s !== me && s !== meta.ownerPeerId)
+      : [];
+    for (const seed of seeds) {
+      try {
+        const data = await this.peerSync.joinServer(
+          seed,
+          meta.serverId,
+          getState().identity?.profile?.display_name,
+          meta.inviteToken,
+        );
+        if (data?.ok && data.server) {
+          const server = data.server as XoreinRuntimeServer;
+          applyJoinedServer(server, (data.messages ?? []) as XoreinRuntimeMessage[]);
+          upsertPeer({
+            peer_id: seed,
+            role: 'peer',
+            addresses: Array.isArray(data.addresses) ? data.addresses : [],
+            last_seen_at: new Date().toISOString(),
+          });
+          publishNativeSnapshot();
+          console.info('[xorein/join] owner offline; joined via member seed', seed);
+          return server;
+        }
+      } catch {
+        // try the next seed
+      }
+    }
+
     return nativeJoinServer(deeplink, { name: meta.serverName, ownerPeerId: meta.ownerPeerId });
+  }
+
+  /**
+   * Load older history for a channel by paging backwards from the oldest message
+   * we currently hold. Dials the server owner first, then falls back to other
+   * members, asking each for the page before our earliest known message. Returns
+   * how many new messages were merged and whether more remain older than the page
+   * (`hasMore`), so the UI can decide whether to keep the "load older" affordance.
+   */
+  async pullOlderHistory(serverId: string, channelId: string): Promise<{ added: number; hasMore: boolean; unavailable?: boolean }> {
+    const state = getState();
+    const server = state.servers[serverId];
+    const me = this._identity?.peerId;
+    if (!server) return { added: 0, hasMore: false };
+
+    // Oldest local message for this channel is our cursor (exclusive). The cursor is
+    // (created_at, id) — a total order — so a page boundary that lands on a timestamp
+    // shared by several messages doesn't skip the rest of them on the next pull.
+    const scopeMsgs = state.messages
+      .filter(m => m.server_id === serverId && m.scope_id === channelId && m.created_at)
+      .sort((a, b) =>
+        String(a.created_at).localeCompare(String(b.created_at)) ||
+        String(a.id).localeCompare(String(b.id)));
+    const oldest = scopeMsgs[0];
+    // For an EMPTY channel use a max cursor (not our local clock): if the owner's clock
+    // is ahead, a now()-based cursor would exclude their newer messages and, once an
+    // older page merges, later pulls cursor from that older record — leaving a
+    // permanent gap for the omitted interval. A far-future sentinel bounds nothing, so
+    // the first page is simply the newest retained messages. Once we hold history, the
+    // oldest record's (created_at, id) bounds the next page.
+    const before = oldest ? String(oldest.created_at) : '9999-12-31T23:59:59.999Z';
+    const beforeId = oldest ? String(oldest.id) : '￿';
+
+    // Authoritative history comes from the OWNER only: served message copies are not
+    // individually signed, so trusting an arbitrary member's page would let it inject
+    // forged messages into permanent channel history. Member-served fallback is opt-in
+    // (memberServedHistory, dark) until history carries owner signatures.
+    const candidates = resolveFeatureFlag('memberServedHistory')
+      ? [server.owner_peer_id, ...server.members].filter((p, i, arr) => p && p !== me && arr.indexOf(p) === i)
+      : [server.owner_peer_id].filter(p => p && p !== me);
+
+    for (const peer of candidates) {
+      // Paging is a member operation — the responder exempts existing members from
+      // the invite-token check, so none is needed here.
+      const data = await this.peerSync.pullHistory(peer, serverId, channelId, before, beforeId, 50);
+      if (data?.ok && Array.isArray(data.messages)) {
+        // Defense-in-depth: only merge messages actually scoped to THIS server+channel,
+        // so a compromised/buggy responder can't smuggle records into other scopes.
+        const scoped = (data.messages as XoreinRuntimeMessage[])
+          .filter(m => m && m.server_id === serverId && m.scope_id === channelId);
+        const added = mergeHistoryMessages(scoped);
+        if (added > 0 || scoped.length > 0) {
+          publishNativeSnapshot();
+          return { added, hasMore: Boolean(data.has_more) };
+        }
+        // Peer answered but had nothing new — a definitive "no older here".
+        return { added: 0, hasMore: Boolean(data.has_more) };
+      }
+    }
+    // No candidate answered (owner/members all unreachable right now). This is a
+    // TRANSIENT failure, not proven exhaustion — signal `unavailable` so the UI keeps
+    // the "load older" affordance for a retry when connectivity returns, rather than
+    // treating it as authoritative end-of-history.
+    return { added: 0, hasMore: false, unavailable: true };
+  }
+
+  /**
+   * Register this node in the rendezvous namespace of each joined server so other
+   * members can discover our circuit addresses for a direct WebRTC upgrade. The
+   * namespace is derived from a member-shared secret (the crowd_root), so it is not
+   * enumerable by non-members (spec 31 §3.5). Gated on `directTransport` — the
+   * endpoint is the external gateway, so nothing fires on the default path.
+   */
+  private async registerServerRendezvous(): Promise<void> {
+    if (!resolveFeatureFlag('directTransport')) return;
+    const me = this._identity?.peerId;
+    if (!me) return;
+    const addrs = this.peerSync.localCircuitAddrs();
+    if (!addrs.length) return;
+    const state = getState();
+    for (const serverId of state.joined_server_ids) {
+      const server = state.servers[serverId];
+      const rootB64 = server?.crowd_root;
+      if (!rootB64) continue;
+      try {
+        const secret = Uint8Array.from(atob(rootB64), c => c.charCodeAt(0));
+        const namespace = serverRendezvousCID(secret);
+        if (!namespace) continue;
+        await rendezvousRegister(namespace, me, addrs);
+      } catch { /* gateway unavailable / bad root — best effort, dark feature */ }
+    }
+  }
+
+  /**
+   * Discover other members' circuit addresses for a server via rendezvous and
+   * record them as known peers, so a direct WebRTC upgrade (DCUtR) has addresses to
+   * dial. Gated on `directTransport`. Returns the number of peers learned.
+   */
+  async discoverServerPeers(serverId: string): Promise<number> {
+    if (!resolveFeatureFlag('directTransport')) return 0;
+    const server = getState().servers[serverId];
+    const rootB64 = server?.crowd_root;
+    if (!rootB64) return 0;
+    const me = this._identity?.peerId;
+    try {
+      const secret = Uint8Array.from(atob(rootB64), c => c.charCodeAt(0));
+      const namespace = serverRendezvousCID(secret);
+      if (!namespace) return 0;
+      const peers = await rendezvousDiscover(namespace);
+      let learned = 0;
+      for (const p of peers) {
+        if (!p.peer_id || p.peer_id === me) continue;
+        upsertPeer({
+          peer_id: p.peer_id,
+          role: 'peer',
+          addresses: Array.isArray(p.addrs) ? p.addrs : [],
+          last_seen_at: new Date().toISOString(),
+        });
+        learned++;
+      }
+      if (learned) publishNativeSnapshot();
+      return learned;
+    } catch {
+      return 0;
+    }
   }
 
   /** Record the always-on bootstrap relay as a reachable known peer. */

@@ -64,7 +64,10 @@ describe('IdentityCert', () => {
   it('rejects a cert with tampered peer_id', async () => {
     const id = await generateIdentity();
     const cert = createIdentityCert(id);
-    cert.peer_id = cert.peer_id.slice(0, -1) + 'X';
+    // Flip the last char to a GUARANTEED-different one — appending a fixed 'X' would be
+    // a no-op (still a valid cert) ~1/58 of the time when the peer_id already ends in X.
+    const last = cert.peer_id.slice(-1);
+    cert.peer_id = cert.peer_id.slice(0, -1) + (last === 'X' ? 'Y' : 'X');
     expect(verifyIdentityCert(cert)).toBe(false);
   });
 

@@ -15,6 +15,12 @@ import type { XoreinAttachment } from '../../types.js';
 export interface DecryptedMessage {
   body: string;
   media?: XoreinAttachment[];
+  /**
+   * The mode this message was actually decrypted under. Present only on messages
+   * that were genuinely E2EE (seal for DMs, crowd for channels); the caller stamps
+   * it onto the stored message so the UI badge reflects real encryption.
+   */
+  mode?: 'seal' | 'crowd';
 }
 
 /**
@@ -77,11 +83,51 @@ function rootBytesForServer(serverId: string): Uint8Array | null {
   }
 }
 
+/** The owner-authoritative Crowd epoch for a server (0 when absent/legacy). */
+function crowdEpochForServer(serverId: string): number {
+  const server = getState().servers[serverId] as { crowd_epoch?: number } | undefined;
+  const e = server?.crowd_epoch;
+  return typeof e === 'number' && e >= 0 ? e : 0;
+}
+
+/**
+ * Install the server's CURRENT (root, epoch) into the live ChannelCrypto. Called
+ * on every send/receive (a seed or a no-op) and after the owner rotates so the
+ * new epoch takes effect immediately. Returns false when no crypto/root is available.
+ */
+function seedChannelRoot(serverId: string): boolean {
+  if (!_crypto) return false;
+  const root = rootBytesForServer(serverId);
+  if (!root) return false;
+  _crypto.channels.setRoot(serverId, root, crowdEpochForServer(serverId));
+  return true;
+}
+
+/**
+ * Apply a server's current Crowd root+epoch into the live crypto. Used by the
+ * rotation paths (owner kick/join) and by the member-side sync.update handler so a
+ * rotated root takes effect without waiting for the next message.
+ */
+export function applyCrowdRoot(serverId: string): void {
+  seedChannelRoot(serverId);
+}
+
 function serverIdForChannel(channelId: string): string | undefined {
   const server = Object.values(getState().servers).find(s =>
     Object.keys(s.channels ?? {}).includes(channelId),
   );
   return server?.id;
+}
+
+/**
+ * The security mode a channel message for `serverId` will actually be sent under:
+ * `crowd` when the shared epoch root is seeded (the message will be E2EE), else
+ * `clear` — meaning encryption is impossible right now and the message can only be
+ * kept local. Lets the send path stamp the true mode on the stored message without
+ * re-deriving root availability.
+ */
+export function channelSecurityMode(serverId: string): 'crowd' | 'clear' {
+  return rootBytesForServer(serverId) ? 'crowd' : 'clear';
 }
 
 /**
@@ -115,10 +161,7 @@ export function encryptChannelEnvelope(
   body: string,
   media?: XoreinAttachment[],
 ): Record<string, unknown> | null {
-  if (!_crypto) return null;
-  const root = rootBytesForServer(serverId);
-  if (!root) return null;
-  _crypto.channels.setRoot(serverId, root);
+  if (!seedChannelRoot(serverId)) return null;
   try {
     const wire: CrowdWire = _crypto.channels.encrypt(serverId, senderId, utf8(encodePlaintext(body, media)));
     return { ...base, enc: 'crowd', crowd: wire };
@@ -144,7 +187,7 @@ export function decryptInboundEnvelope(
     if (enc === 'seal') {
       const wire = payload.seal as SealWire | undefined;
       if (!wire) return null;
-      return decodePlaintext(fromUtf8(_crypto.seal.decrypt(remotePeerId, wire)));
+      return { ...decodePlaintext(fromUtf8(_crypto.seal.decrypt(remotePeerId, wire))), mode: 'seal' };
     }
     if (enc === 'crowd') {
       const wire = payload.crowd as CrowdWire | undefined;
@@ -154,10 +197,8 @@ export function decryptInboundEnvelope(
       const serverId = (typeof payload.server_id === 'string' && payload.server_id)
         || serverIdForChannel(scopeId);
       if (!serverId) return null;
-      const root = rootBytesForServer(serverId);
-      if (!root) return null;
-      _crypto.channels.setRoot(serverId, root);
-      return decodePlaintext(fromUtf8(_crypto.channels.decrypt(serverId, wire)));
+      if (!seedChannelRoot(serverId)) return null;
+      return { ...decodePlaintext(fromUtf8(_crypto.channels.decrypt(serverId, wire))), mode: 'crowd' };
     }
   } catch {
     return null;

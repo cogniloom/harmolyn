@@ -18,6 +18,8 @@ import {
   leaveVoice as storeLeaveVoice,
   setVoiceParticipant,
   setVoiceConnectionState,
+  setVoiceSecurityMode,
+  setVoiceTurnUnavailable,
   upsertPeer,
 } from '../state/store.js';
 import { publishNativeSnapshot } from '../state/snapshot.js';
@@ -27,14 +29,20 @@ import { createEncryptTransform, createDecryptTransform, type PeerKey } from './
 import {
   fetchTurnCredentials, VOICE_OPS,
   type VoicePresenceRequest, type VoicePresenceResponse,
-  type VoiceOfferRequest, type VoiceOfferResponse,
+  type VoiceOfferRequest, type VoiceOfferResponse, type VoiceIceRequest,
 } from './signaling.js';
 import { VoiceActivityMonitor } from './activity.js';
+import { IceCandidateBuffer, ReconnectScheduler, hasTurnServer, sfuConnectTargets } from './reliability.js';
 import { PROTOCOLS } from '../families/families.js';
+import { resolveFeatureFlag } from '../../config/featureFlags.js';
 
 // ── Insertable Streams capability probe ───────────────────────────────────────
 
 type InsertableCap = 'scriptTransform' | 'encodedStreams' | 'none';
+
+// Grace window after ICE 'disconnected' before we escalate to recovery — most
+// disconnects are transient network blips that self-heal well within this.
+const DISCONNECT_GRACE_MS = 3000;
 
 function insertableStreamsCapability(): InsertableCap {
   if (typeof RTCRtpSender === 'undefined') return 'none';
@@ -43,7 +51,10 @@ function insertableStreamsCapability(): InsertableCap {
   return 'none';
 }
 
-function attachSenderTransform(sender: RTCRtpSender, pk: PeerKey, cap: Exclude<InsertableCap, 'none'>): void {
+// Returns true only if the SFrame transform was actually installed. A false return
+// means media falls back to DTLS-only, so the caller must NOT keep claiming Crowd
+// protection (badge honesty — never overclaim encryption the pipeline didn't apply).
+function attachSenderTransform(sender: RTCRtpSender, pk: PeerKey, cap: Exclude<InsertableCap, 'none'>): boolean {
   try {
     if (cap === 'scriptTransform') {
       const worker = new Worker(new URL('./mediashield-worker.ts', import.meta.url), { type: 'module' });
@@ -55,10 +66,11 @@ function attachSenderTransform(sender: RTCRtpSender, pk: PeerKey, cap: Exclude<I
       const ts = new TransformStream({ transform: createEncryptTransform(pk) });
       readable.pipeThrough(ts).pipeTo(writable);
     }
-  } catch { /* SFrame is defense-in-depth; DTLS already protects mesh media */ }
+    return true;
+  } catch { return false; }
 }
 
-function attachReceiverTransform(receiver: RTCRtpReceiver, pk: PeerKey, cap: Exclude<InsertableCap, 'none'>): void {
+function attachReceiverTransform(receiver: RTCRtpReceiver, pk: PeerKey, cap: Exclude<InsertableCap, 'none'>): boolean {
   try {
     if (cap === 'scriptTransform') {
       const worker = new Worker(new URL('./mediashield-worker.ts', import.meta.url), { type: 'module' });
@@ -70,7 +82,8 @@ function attachReceiverTransform(receiver: RTCRtpReceiver, pk: PeerKey, cap: Exc
       const ts = new TransformStream({ transform: createDecryptTransform(pk) });
       readable.pipeThrough(ts).pipeTo(writable);
     }
-  } catch { /* see attachSenderTransform */ }
+    return true;
+  } catch { return false; }
 }
 
 // ── AV preference helpers ─────────────────────────────────────────────────────
@@ -286,6 +299,19 @@ function serverMembersForChannel(channelId: string): string[] {
   return [];
 }
 
+/**
+ * Peers permitted to signal in this voice channel, or null if it is NOT a server channel
+ * (e.g. an ad-hoc/DM call) where no membership roster applies. Distinct from
+ * serverMembersForChannel (which returns [] for a non-server channel) so callers can tell
+ * "no roster → allow" apart from "empty roster → deny".
+ */
+function voiceSignalingRoster(channelId: string): string[] | null {
+  for (const server of Object.values(getState().servers)) {
+    if (server.channels && channelId in server.channels) return server.members ?? [];
+  }
+  return null;
+}
+
 function selfProfile(): { display_name?: string; avatar?: string } {
   const p = getState().identity?.profile ?? {};
   return { display_name: p.display_name, avatar: p.avatar };
@@ -310,7 +336,15 @@ interface PeerConn {
   localKinds: Record<string, TrackKind>;
   // mid → kind for tracks THIS peer sends us (learned from their offer/answer).
   remoteKinds: Record<string, TrackKind>;
+  // Trickle-ICE candidate buffer (applies early candidates once the remote SDP is set).
+  iceBuffer: IceCandidateBuffer;
+  // Grace timer started on 'disconnected' — cancelled if it recovers, else escalates.
+  disconnectTimer: ReturnType<typeof setTimeout> | null;
 }
+
+// Cap on ICE candidates buffered for a peer that has no PeerConn yet (pre-offer),
+// so a flood of trickled candidates can't grow memory unbounded before the offer.
+const MAX_PREOFFER_ICE = 32;
 
 // ── VoiceSession ─────────────────────────────────────────────────────────────
 
@@ -338,9 +372,18 @@ export class VoiceSession {
   private cap: InsertableCap = 'none';
   private useSframe = false;
   private localKey: PeerKey | null = null;
+  private securityMode: 'crowd' | 'clear' = 'clear';
   private iceServers: RTCIceServer[] = [];
 
   private peers = new Map<string, PeerConn>();
+  // Reconnect schedulers live OUTSIDE PeerConn, keyed by peerId, so a scheduled full
+  // redial (which replaces the PeerConn) preserves the exponential-backoff attempt
+  // count instead of resetting to zero and looping forever at the initial delay.
+  private reconnectSchedulers = new Map<string, ReconnectScheduler>();
+  // ICE candidates that arrived before this peer's offer (no PeerConn yet). Drained
+  // into the connection's buffer once handleOffer/connectToPeer creates it — otherwise
+  // a TURN/srflx candidate that races ahead of the SDP is lost, breaking restrictive NATs.
+  private preOfferIce = new Map<string, RTCIceCandidateInit[]>();
   private remoteStreams = new Map<string, MediaStream>();   // audio + camera
   private remoteScreens = new Map<string, MediaStream>();    // screen share
   private remoteKeys = new Map<string, PeerKey>();
@@ -366,10 +409,18 @@ export class VoiceSession {
    */
   async start(): Promise<void> {
     this.cap = insertableStreamsCapability();
-    // SFrame only for server (Crowd) channels where a real shared key exists;
-    // DM/other modes rely on DTLS (mesh has no forwarding intermediary).
-    this.useSframe = this.cap !== 'none' && voiceSecurityMode(this.channelId) === 'crowd';
-    if (this.useSframe) this.localKey = deriveVoicePeerKey(this.channelId, this.localPeerId);
+    // SFrame only for server (Crowd) channels where a REAL shared key can be
+    // derived. deriveVoicePeerKey fails closed (returns null) when no crowd_root
+    // exists, so useSframe hinges on an actual key — never a placeholder. Without
+    // one, media relies on DTLS (the mesh has no forwarding intermediary), which is
+    // honest rather than a false "encrypted" label.
+    this.localKey = voiceSecurityMode(this.channelId) === 'crowd'
+      ? deriveVoicePeerKey(this.channelId, this.localPeerId)
+      : null;
+    this.useSframe = this.cap !== 'none' && this.localKey !== null;
+    // Publish the honest media security mode: crowd only when SFrame is genuinely
+    // active (a real key), else clear (DTLS-only). The badge never overclaims.
+    this.securityMode = this.useSframe ? 'crowd' : 'clear';
 
     // 1) Capture the microphone. Failure does NOT block the join — you can join
     //    a voice channel without a working mic (you simply can't be heard).
@@ -400,6 +451,7 @@ export class VoiceSession {
     storeJoinVoice(this.channelId, this.localPeerId);
     setVoiceParticipant(this.channelId, this.localPeerId, { muted: false, video: false, screen_sharing: false });
     setVoiceConnectionState(this.channelId, 'connecting');
+    setVoiceSecurityMode(this.channelId, this.securityMode);
     publishNativeSnapshot();
 
     // 3) Speaking ring for self.
@@ -407,6 +459,10 @@ export class VoiceSession {
 
     // 4) Best-effort mesh: discover who is already here and dial them.
     this.iceServers = await fetchTurnCredentials().catch(() => [] as RTCIceServer[]);
+    // Surface an honest warning when no TURN relay is available: on restrictive or
+    // symmetric NATs a STUN-only mesh may never connect, and the user deserves to
+    // know rather than watch a call spin forever.
+    setVoiceTurnUnavailable(this.channelId, !hasTurnServer(this.iceServers));
     void this.announceAndConnect();
 
     // 5) Sample per-peer connection quality (RTT/jitter/loss) for the UI readout.
@@ -440,8 +496,22 @@ export class VoiceSession {
     setVoiceConnectionState(this.channelId, 'connected');
     publishNativeSnapshot();
 
+    // Choose the connect topology. Full mesh by default (each peer ↔ every other).
+    // Under the peer-SFU flag, connect only along the coordinator star: a
+    // non-coordinator dials just the elected coordinator; the coordinator dials all.
+    // The elected coordinator is deterministic across peers (min peer-id), so both
+    // ends agree without negotiation. SFrame keys are per-sender, so a coordinator
+    // relaying frames only ever handles ciphertext.
+    const presentIds = present.map(p => p.peerId);
+    let dialTargets = presentIds;
+    if (resolveFeatureFlag('voiceScaleSfu')) {
+      const roster = [this.localPeerId, ...presentIds];
+      const allowed = new Set(sfuConnectTargets(this.localPeerId, roster));
+      dialTargets = presentIds.filter(p => allowed.has(p));
+    }
+
     // The newcomer is always the offerer to already-present peers (avoids glare).
-    for (const { peerId } of present) void this.connectToPeer(peerId);
+    for (const peerId of dialTargets) void this.connectToPeer(peerId);
   }
 
   /** Gracefully leave: notify members, tear down peer connections, release media. */
@@ -470,7 +540,13 @@ export class VoiceSession {
     this.screenStream = null;
     this.cameraTrack = null;
 
-    for (const { pc } of this.peers.values()) { try { pc.close(); } catch { /* already closed */ } }
+    for (const entry of this.peers.values()) {
+      if (entry.disconnectTimer) { clearTimeout(entry.disconnectTimer); entry.disconnectTimer = null; }
+      try { entry.pc.close(); } catch { /* already closed */ }
+    }
+    for (const s of this.reconnectSchedulers.values()) s.cancel();
+    this.reconnectSchedulers.clear();
+    this.preOfferIce.clear();
     this.peers.clear();
     for (const peerId of this.remoteStreams.keys()) this.callbacks.onParticipantLeft?.(peerId);
     this.remoteStreams.clear();
@@ -617,6 +693,11 @@ export class VoiceSession {
 
   /** A member announced join/leave. Returns OUR state for this channel. */
   handlePresence(req: VoicePresenceRequest, remotePeerId: string): VoicePresenceResponse {
+    if (!this.maySignal(remotePeerId)) {
+      // A removed member trying to rejoin: force-drop any lingering state and refuse.
+      this.dropPeer(remotePeerId);
+      return { ok: false, in_channel: false, muted: this.muted, video: this.isCameraOn, screen_sharing: this.isScreenSharing };
+    }
     if (req.action === 'leave') {
       this.dropPeer(remotePeerId);
       storeLeaveVoice(this.channelId, remotePeerId);
@@ -645,6 +726,9 @@ export class VoiceSession {
   /** A peer sent us an SDP offer (initial connect or renegotiation). */
   async handleOffer(req: VoiceOfferRequest, remotePeerId: string): Promise<VoiceOfferResponse> {
     if (this.stopped) return { ok: false, error: 'not_in_channel' };
+    // SECURITY: reject an offer from a peer who is not a current member of the channel's
+    // server, so a kicked member can't recreate a connection after the rekey dropped it.
+    if (!this.maySignal(remotePeerId)) { this.dropPeer(remotePeerId); return { ok: false, error: 'not_a_member' }; }
     let entry = this.peers.get(remotePeerId);
     if (!entry) entry = this.createPeerConn(remotePeerId);
     entry.remoteKinds = { ...entry.remoteKinds, ...(req.kinds ?? {}) };
@@ -656,10 +740,19 @@ export class VoiceSession {
       return { ok: false, error: 'glare' };
     }
     try {
+      // A renegotiation / ICE-restart offer begins a NEW ICE generation. Candidates for
+      // that generation travel on a separate voice.ice stream and can arrive BEFORE this
+      // offer; if the buffer is still "ready" from the previous negotiation they'd be
+      // applied against the outgoing remote description and discarded. Close the gate so
+      // they re-buffer until the new remote description lands, then flushIce re-opens it.
+      if (pc.currentRemoteDescription != null) {
+        entry.iceBuffer.reset();
+      }
       if (offerCollision) {
         await pc.setLocalDescription({ type: 'rollback' } as RTCLocalSessionDescriptionInit).catch(() => undefined);
       }
       await pc.setRemoteDescription({ type: 'offer', sdp: req.sdp });
+      this.flushIce(entry);
       const prefs = readAvPrefs();
       preferCodecs(pc);
       const answer = await pc.createAnswer();
@@ -688,19 +781,207 @@ export class VoiceSession {
       makingOffer: false,
       localKinds: {},
       remoteKinds: {},
+      iceBuffer: new IceCandidateBuffer(),
+      disconnectTimer: null,
     };
     this.peers.set(remotePeerId, entry);
+
+    // Adopt any ICE candidates that arrived before this connection existed (they were
+    // buffered pre-offer). They queue in the iceBuffer and flush once the remote SDP lands.
+    const early = this.preOfferIce.get(remotePeerId);
+    if (early) {
+      this.preOfferIce.delete(remotePeerId);
+      for (const c of early) entry.iceBuffer.accept(c);
+    }
 
     // Add our current local tracks (mic + camera + screen if active).
     this.localStream?.getTracks().forEach(track => this.addTrackToPc(entry, track, track.kind === 'video' ? 'camera' : 'audio'));
     this.screenStream?.getTracks().forEach(track => this.addTrackToPc(entry, track, track.kind === 'video' ? 'screen' : 'audio'));
 
     pc.ontrack = (e) => this.onRemoteTrack(remotePeerId, entry, e);
+
+    // Trickle ICE: ship each candidate to the peer the instant it's gathered, so
+    // connectivity can establish without waiting for the full gather to embed
+    // candidates in the SDP (the old blocking waitForIce path).
+    pc.onicecandidate = (e) => {
+      if (!e.candidate) return;
+      const peerSync = getPeerSync();
+      if (!peerSync) return;
+      const req: VoiceIceRequest = {
+        session_id: this.channelId,
+        from_peer_id: this.localPeerId,
+        candidate: e.candidate.candidate,
+        sdp_mid: e.candidate.sdpMid,
+        sdp_mline_index: e.candidate.sdpMLineIndex,
+      };
+      void peerSync.sendToPeer(remotePeerId, PROTOCOLS.voice, VOICE_OPS.ice, req);
+    };
+
+    // Perfect negotiation: renegotiate on our own track add/remove, guarded so we
+    // never collide with an in-flight offer (makingOffer) or a rollback state.
+    pc.onnegotiationneeded = () => {
+      if (entry.makingOffer || pc.signalingState !== 'stable') return;
+      void this.renegotiate(remotePeerId, entry);
+    };
+
+    // ICE-level recovery: distinct from connectionState so we react to the ICE
+    // agent's own failed/disconnected before DTLS gives up.
+    pc.oniceconnectionstatechange = () => {
+      // A redial replaces the map entry; the superseded connection's late events must
+      // not drive recovery/teardown of its replacement. Ignore once we're not current.
+      if (this.peers.get(remotePeerId) !== entry) return;
+      const st = pc.iceConnectionState;
+      if (st === 'connected' || st === 'completed') {
+        // Recovered: clear any grace timer + reconnect budget.
+        if (entry.disconnectTimer) { clearTimeout(entry.disconnectTimer); entry.disconnectTimer = null; }
+        this.schedulerFor(remotePeerId).reset();
+      } else if (st === 'failed') {
+        this.recoverPeer(remotePeerId, entry);
+      } else if (st === 'disconnected') {
+        // Transient blips self-heal; give it a grace window before escalating.
+        if (!entry.disconnectTimer) {
+          entry.disconnectTimer = setTimeout(() => {
+            entry.disconnectTimer = null;
+            if (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed') {
+              this.recoverPeer(remotePeerId, entry);
+            }
+          }, DISCONNECT_GRACE_MS);
+        }
+      }
+    };
+
     pc.onconnectionstatechange = () => {
+      // Same guard: a stale connection reaching 'closed' after a redial must not call
+      // dropPeer (which would close the live replacement and discard its scheduler).
+      if (this.peers.get(remotePeerId) !== entry) return;
       const st = pc.connectionState;
-      if (st === 'failed' || st === 'closed') this.dropPeer(remotePeerId);
+      if (st === 'closed') this.dropPeer(remotePeerId);
+      else if (st === 'failed') this.recoverPeer(remotePeerId, entry);
     };
     return entry;
+  }
+
+  /**
+   * A server membership change (join/kick/leave) rotated this channel's crowd_root. The
+   * SFrame keys were derived once from the OLD root, so: re-derive our key from the new
+   * root; permanently drop any connected peer no longer in `members` (a removed member's
+   * open WebRTC connection must stop decrypting media immediately, not linger on the old
+   * key); and redial the remaining members so a fresh connection re-attaches SFrame
+   * transforms under the NEW key. No-op for non-crowd (DTLS-only) channels.
+   */
+  rekey(members: string[]): void {
+    if (this.stopped) return;
+    const wasSframe = this.useSframe;
+    this.localKey = voiceSecurityMode(this.channelId) === 'crowd'
+      ? deriveVoicePeerKey(this.channelId, this.localPeerId)
+      : null;
+    this.useSframe = this.cap !== 'none' && this.localKey !== null;
+    this.remoteKeys.clear(); // re-derived per peer on the next connection from the new root
+    const roster = new Set(members);
+    for (const peerId of [...this.peers.keys()]) {
+      if (!roster.has(peerId)) {
+        this.dropPeer(peerId); // removed member: permanent teardown, no reconnect
+      } else if (wasSframe || this.useSframe) {
+        this.scheduleReconnect(peerId); // remaining member: redial to re-attach new-key transforms
+      }
+    }
+  }
+
+  /**
+   * SECURITY: only current members of the channel's server may signal in a server voice
+   * call. Without this, a kicked member (who still knows the channel id + a peer address)
+   * could re-offer and recreate a connection after the rekey tore it down — and on a
+   * browser without insertable streams (DTLS-only media) receive the call's unwrapped
+   * audio/video. Ad-hoc/DM calls (no owning server) have no roster and are not gated.
+   */
+  private maySignal(remotePeerId: string): boolean {
+    const roster = voiceSignalingRoster(this.channelId);
+    return roster === null || roster.includes(remotePeerId);
+  }
+
+  /** Per-peer reconnect scheduler, created on demand and preserved across redials. */
+  private schedulerFor(peerId: string): ReconnectScheduler {
+    let s = this.reconnectSchedulers.get(peerId);
+    if (!s) { s = new ReconnectScheduler(); this.reconnectSchedulers.set(peerId, s); }
+    return s;
+  }
+
+  /** Apply a trickled ICE candidate from a peer (buffering pre-remote-description). */
+  handleIce(req: VoiceIceRequest, remotePeerId: string): { ok: boolean } {
+    if (this.stopped) return { ok: false };
+    // SECURITY: don't buffer/apply candidates from a non-member (see maySignal).
+    if (!this.maySignal(remotePeerId)) return { ok: false };
+    const init: RTCIceCandidateInit = {
+      candidate: req.candidate,
+      sdpMid: req.sdp_mid ?? undefined,
+      sdpMLineIndex: req.sdp_mline_index ?? undefined,
+    };
+    const entry = this.peers.get(remotePeerId);
+    if (!entry) {
+      // No connection yet — the candidate raced ahead of the offer. Buffer it (bounded)
+      // so createPeerConn can adopt it, instead of dropping a possibly-only-viable route.
+      const buf = this.preOfferIce.get(remotePeerId) ?? [];
+      if (buf.length < MAX_PREOFFER_ICE) { buf.push(init); this.preOfferIce.set(remotePeerId, buf); }
+      return { ok: true };
+    }
+    for (const c of entry.iceBuffer.accept(init)) {
+      void entry.pc.addIceCandidate(c).catch(() => { /* stale/duplicate candidate */ });
+    }
+    return { ok: true };
+  }
+
+  /** The remote SDP is now set — apply any candidates that arrived early. */
+  private flushIce(entry: PeerConn): void {
+    entry.iceBuffer.markRemoteReady();
+    for (const c of entry.iceBuffer.flush()) {
+      void entry.pc.addIceCandidate(c).catch(() => { /* stale/duplicate candidate */ });
+    }
+  }
+
+  /**
+   * Recover a peer whose ICE failed/stalled: the impolite side (offerer) triggers
+   * an ICE restart immediately; if that can't be issued (or keeps failing), fall
+   * back to a full backed-off reconnect (tear down + redial). Never a permanent
+   * drop for a recoverable state — that was the old bug (a blip killed the call).
+   */
+  private recoverPeer(remotePeerId: string, entry: PeerConn): void {
+    if (this.stopped) return;
+    // The impolite peer owns restart to avoid both sides restarting at once (glare).
+    if (!entry.polite && entry.pc.signalingState === 'stable') {
+      let restarted = false;
+      try {
+        entry.pc.restartIce();
+        entry.iceBuffer.reset();
+        restarted = true;
+      } catch { /* restartIce unavailable — fall through to full reconnect */ }
+      if (restarted) {
+        // restartIce() resolves synchronously and never rejects, so the only real
+        // signal that recovery worked is whether renegotiation lands a usable answer.
+        // Await it; if the peer never answers (unreachable / no answer), fall back to
+        // a backed-off full reconnect instead of sitting failed forever.
+        void this.renegotiate(remotePeerId, entry, { iceRestart: true }).then((ok) => {
+          if (ok || this.stopped) return;
+          if (this.peers.get(remotePeerId) !== entry) return; // superseded by a redial
+          this.scheduleReconnect(remotePeerId);
+        });
+        return;
+      }
+    }
+    // Otherwise schedule a backed-off full reconnect (redial from scratch).
+    this.scheduleReconnect(remotePeerId);
+  }
+
+  /**
+   * Schedule a backed-off full reconnect (tear down + redial). The scheduler is keyed
+   * by peerId (not the PeerConn) so the attempt count and backoff survive the redial's
+   * connection replacement — no infinite retry at the base delay.
+   */
+  private scheduleReconnect(remotePeerId: string): void {
+    this.schedulerFor(remotePeerId).schedule(() => {
+      if (this.stopped || !this.peers.has(remotePeerId)) return;
+      this.dropPeer(remotePeerId, { keepScheduler: true });
+      void this.connectToPeer(remotePeerId);
+    });
   }
 
   private addTrackToPc(entry: PeerConn, track: MediaStreamTrack, kind: TrackKind): void {
@@ -708,7 +989,35 @@ export class VoiceSession {
     const sender = entry.pc.addTrack(track, ...(stream ? [stream] : []));
     const transceiver = entry.pc.getTransceivers().find(t => t.sender === sender);
     if (transceiver?.mid) entry.localKinds[transceiver.mid] = kind;
-    if (this.useSframe && this.localKey) attachSenderTransform(sender, this.localKey, this.cap as Exclude<InsertableCap, 'none'>);
+    if (this.useSframe && this.localKey) {
+      const ok = attachSenderTransform(sender, this.localKey, this.cap as Exclude<InsertableCap, 'none'>);
+      if (!ok) this.downgradeSframe();
+    }
+  }
+
+  /**
+   * The SFrame pipeline could not be installed on a track (probe said supported, but
+   * constructing the worker/transform threw). Media is now DTLS-only, so stop claiming
+   * Crowd protection and republish the honest `clear` badge — never overclaim what the
+   * pipeline didn't actually apply.
+   */
+  private downgradeSframe(): void {
+    if (!this.useSframe && this.securityMode === 'clear') return;
+    this.useSframe = false;
+    this.securityMode = 'clear';
+    setVoiceSecurityMode(this.channelId, 'clear');
+    publishNativeSnapshot();
+    // Existing peer connections may still carry SFrame sender/receiver transforms attached
+    // before the failure, leaving media half-encrypted: we can no longer install matching
+    // transforms, so peers' encrypted frames would be undecryptable and our outgoing frames
+    // inconsistent. Rebuild every live connection under the now-uniform clear mode instead of
+    // only flipping the badge — a backed-off reconnect drops the stale transforms and
+    // renegotiates fresh, clear PeerConns (addTrackToPc no longer attaches a transform once
+    // useSframe is false), and the remote observes the renegotiation. Full cross-peer mode
+    // signaling remains the documented live voice smoketest.
+    for (const peerId of [...this.peers.keys()]) {
+      this.scheduleReconnect(peerId);
+    }
   }
 
   /** Add a freshly-acquired local track (camera/screen) to every peer + renegotiate. */
@@ -734,16 +1043,26 @@ export class VoiceSession {
     await this.renegotiate(remotePeerId, entry);
   }
 
-  private async renegotiate(remotePeerId: string, entry: PeerConn): Promise<void> {
+  /**
+   * Send an offer to a peer. Returns true when negotiation is progressing (we applied
+   * the peer's answer, or hit glare so the polite peer will answer our offer), false
+   * when it could not complete (peer unreachable / no usable answer / exception). The
+   * boolean lets ICE-restart recovery decide whether to fall back to a full reconnect —
+   * most callers ignore it (renegotiation there is best-effort).
+   */
+  private async renegotiate(remotePeerId: string, entry: PeerConn, opts: { iceRestart?: boolean } = {}): Promise<boolean> {
     const peerSync = getPeerSync();
-    if (!peerSync) return;
+    if (!peerSync) return false;
     try {
       entry.makingOffer = true;
       const prefs = readAvPrefs();
       preferCodecs(entry.pc);
-      const offer = await entry.pc.createOffer();
+      const offer = await entry.pc.createOffer(opts.iceRestart ? { iceRestart: true } : undefined);
       await entry.pc.setLocalDescription({ type: offer.type, sdp: tuneAudioSdp(offer.sdp ?? '', prefs) });
       await tuneSenders(entry.pc, prefs);
+      // Trickle: send the offer with whatever candidates are ready now; the rest
+      // arrive over voice.ice. waitForIce only nudges the very first host candidates
+      // into the initial SDP for a faster start on already-open ports.
       await this.waitForIce(entry.pc);
       const req: VoiceOfferRequest = {
         session_id: this.channelId,
@@ -755,10 +1074,13 @@ export class VoiceSession {
       if (resp?.ok && resp.sdp) {
         entry.remoteKinds = { ...entry.remoteKinds, ...(resp.kinds ?? {}) };
         await entry.pc.setRemoteDescription({ type: 'answer', sdp: resp.sdp });
-      } else if (resp?.error === 'glare') {
-        // The polite peer will answer our offer via its own handleOffer path.
+        this.flushIce(entry);
+        return true;
       }
-    } catch { /* peer unreachable / negotiation failed — non-fatal */ }
+      // Glare is not a failure: the polite peer will answer our offer via its own
+      // handleOffer path, so negotiation is still progressing.
+      return resp?.error === 'glare';
+    } catch { /* peer unreachable / negotiation failed */ return false; }
     finally { entry.makingOffer = false; }
   }
 
@@ -771,7 +1093,10 @@ export class VoiceSession {
       if (rk) { this.remoteKeys.set(remotePeerId, rk); }
     }
     const rk = this.remoteKeys.get(remotePeerId);
-    if (this.useSframe && rk) attachReceiverTransform(e.receiver, rk, this.cap as Exclude<InsertableCap, 'none'>);
+    if (this.useSframe && rk) {
+      const ok = attachReceiverTransform(e.receiver, rk, this.cap as Exclude<InsertableCap, 'none'>);
+      if (!ok) this.downgradeSframe();
+    }
 
     // Nudge the jitter buffer toward interactivity. Network propagation is the
     // floor (speed of light, ~tens of ms intercontinental) and not ours to set;
@@ -806,9 +1131,20 @@ export class VoiceSession {
     publishNativeSnapshot();
   }
 
-  private dropPeer(remotePeerId: string): void {
+  private dropPeer(remotePeerId: string, opts: { keepScheduler?: boolean } = {}): void {
     const entry = this.peers.get(remotePeerId);
-    if (entry) { try { entry.pc.close(); } catch { /* gone */ } this.peers.delete(remotePeerId); }
+    if (entry) {
+      if (entry.disconnectTimer) { clearTimeout(entry.disconnectTimer); entry.disconnectTimer = null; }
+      try { entry.pc.close(); } catch { /* gone */ }
+      this.peers.delete(remotePeerId);
+    }
+    // A scheduled redial keeps the scheduler (it owns the in-flight reconnect + backoff
+    // count); a real teardown cancels and forgets it, and drops any pre-offer ICE buffer.
+    if (!opts.keepScheduler) {
+      this.reconnectSchedulers.get(remotePeerId)?.cancel();
+      this.reconnectSchedulers.delete(remotePeerId);
+      this.preOfferIce.delete(remotePeerId);
+    }
     this.activity.removeStream(remotePeerId);
     this.remoteStreams.delete(remotePeerId);
     this.remoteScreens.delete(remotePeerId);
@@ -828,7 +1164,11 @@ export class VoiceSession {
     return entry.localKinds;
   }
 
-  private waitForIce(pc: RTCPeerConnection, timeoutMs = 2500): Promise<void> {
+  // With trickle ICE the bulk of candidates flow over voice.ice, so we no longer
+  // block the offer/answer on a full gather. This is a short nudge to fold the
+  // instantly-available host candidates into the initial SDP for a faster first
+  // connection; everything else trickles.
+  private waitForIce(pc: RTCPeerConnection, timeoutMs = 400): Promise<void> {
     if (pc.iceGatheringState === 'complete') return Promise.resolve();
     return new Promise<void>(resolve => {
       const done = () => { pc.removeEventListener('icegatheringstatechange', check); resolve(); };

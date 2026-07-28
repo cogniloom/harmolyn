@@ -1,0 +1,44 @@
+{
+  "tour": {
+    "start": "START USING HARMOLYN",
+    "welcome": {
+      "title": "Welcome to Harmolyn",
+      "body": "A private place to talk with friends and communities. Here's a quick tour of the main parts — it takes less than a minute, and you can skip it any time.",
+      "privacyNote": "Everything you send is private by default. Look for the lock badge at the top of each chat."
+    },
+    "servers": {
+      "title": "Servers are communities",
+      "leftColumn": "The column on the left",
+      "leftColumnBody": "Each round icon is a server — a community you've joined or created. Tap one to open it.",
+      "joining": "Joining and creating",
+      "joiningBody": "Use the + button to create your own server or paste an invite link a friend shared with you."
+    },
+    "channels": {
+      "title": "Channels organize the talk",
+      "text": "Text channels",
+      "textBody": "Inside a server, channels split conversations by topic. Tap a channel name to read and post in it.",
+      "finding": "Finding things",
+      "findingBody": "Search looks through the messages already on your device — results show how complete they are, so you're never misled."
+    },
+    "dms": {
+      "title": "Direct messages",
+      "oneToOne": "One-to-one chats",
+      "oneToOneBody": "Direct messages are private conversations between you and one other person, end-to-end encrypted.",
+      "friends": "Adding friends",
+      "friendsBody": "Add someone as a friend to start a direct message. You only need their handle — no phone number or email."
+    },
+    "voice": {
+      "title": "Voice and video",
+      "channels": "Voice channels",
+      "channelsBody": "Tap a voice channel to join a live call. Others in the channel can hear you, and you can turn your camera or screen-share on when you want.",
+      "note": "If your network can't connect a call directly, Harmolyn tells you plainly instead of failing silently."
+    },
+    "settings": {
+      "title": "You're all set",
+      "customize": "Make it yours",
+      "customizeBody": "Open Settings to change your name, pick a language, adjust text size, or turn on Simple Mode for a calmer, plainer look.",
+      "safety": "Keep your account safe",
+      "safetyBody": "Create an encrypted backup of your identity early — it's the only way to recover your account if you lose your device."
+    }
+  }
+}

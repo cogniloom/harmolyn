@@ -60,6 +60,8 @@ export const CAPABILITY_MAP: CapabilityEntry[] = [
     description: 'Create a new server with a fresh crowd root and invite secret' },
   { name: 'joinServerByInvite', route: 'native', p2pPropagated: true,
     description: 'Join a server by deeplink; dials owner P2P to pull manifest' },
+  { name: 'loadOlderHistory', route: 'native', p2pPropagated: true,
+    description: 'Page older channel history from the owner or any reachable member (cursor pull)' },
   { name: 'createChannel', route: 'native', p2pPropagated: true,
     description: 'Create a channel and broadcast the updated server to members' },
   { name: 'updateChannel', route: 'native', p2pPropagated: true,
@@ -141,13 +143,35 @@ export const CAPABILITY_MAP: CapabilityEntry[] = [
   { name: 'getIdentityBackup', route: 'http', p2pPropagated: false,
     description: 'Download encrypted identity backup via HTTP' },
 
-  // ── Roles / moderation (still HTTP until native role model ships) ──────────
-  { name: 'createRole', route: 'http', p2pPropagated: false,
-    description: 'Create a server role via HTTP (rolesManagement flag gated)' },
-  { name: 'assignRole', route: 'http', p2pPropagated: false,
-    description: 'Assign a role to a member via HTTP (rolesManagement flag gated)' },
+  // ── Roles / governance (native: owner-authoritative, synced via sync.update) ──
+  { name: 'createRole', route: 'native', p2pPropagated: true,
+    description: 'Create a server role; owner-authoritative, propagated via sync.update' },
+  { name: 'updateRole', route: 'native', p2pPropagated: true,
+    description: 'Rename/recolor/repermission a role; propagated via sync.update' },
+  { name: 'deleteRole', route: 'native', p2pPropagated: true,
+    description: 'Delete a server role; propagated via sync.update' },
+  { name: 'assignRole', route: 'native', p2pPropagated: true,
+    description: 'Assign roles to a member; propagated via sync.update' },
   { name: 'moderationAction', route: 'http', p2pPropagated: false,
     description: 'Kick/ban/mute via HTTP (moderation flag gated)' },
+
+  // ── Polls ─────────────────────────────────────────────────────────────────
+  { name: 'castPollVote', route: 'native', p2pPropagated: true,
+    description: 'Cast a poll vote; broadcast to scope members via notify.push' },
+
+  // ── Search (client-side, local index) ─────────────────────────────────────
+  { name: 'searchMessages', route: 'native-local', p2pPropagated: false,
+    description: 'Full-text search over the local message store (no network)' },
+
+  // ── Identity verification (safety numbers) ────────────────────────────────
+  { name: 'setPeerVerified', route: 'native-local', p2pPropagated: false,
+    description: 'Mark a peer identity verified out-of-band (local trust flag)' },
+
+  // ── Abuse reporting ───────────────────────────────────────────────────────
+  { name: 'submitReport', route: 'native', p2pPropagated: true,
+    description: 'Submit an abuse report; delivered P2P to the server owner for server scope' },
+  { name: 'resolveReport', route: 'native', p2pPropagated: false,
+    description: 'Owner-side moderation: mark a received report resolved/dismissed (local state)' },
 
   // ── Notifications ─────────────────────────────────────────────────────────
   { name: 'markNotificationsRead', route: 'http', p2pPropagated: false,

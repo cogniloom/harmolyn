@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Harmolyn">
+  <rect width="512" height="512" fill="#0d1a1b"/>
+  <path d="M196 176v160M316 176v160M196 256h120" fill="none" stroke="#13ddec" stroke-width="34" stroke-linecap="round"/>
+  <circle cx="256" cy="256" r="15" fill="#13ddec"/>
+</svg>

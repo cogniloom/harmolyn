@@ -26,7 +26,7 @@ import {
   nativeJoinServer,
   nativeEnsureDirectMessage,
   nativeCreateRole, nativeUpdateRole, nativeDeleteRole, nativeAssignRole, nativeCastPollVote,
-  nativeSearchMessages,
+  nativeSearchMessages, nativeSetPeerVerified, nativeSubmitReport, nativeResolveReport, type ReportInput,
 } from '@/native/state/mutations';
 import { saveCurrentToVault } from '@/native/identity/storage';
 import { mergeNativeIdentityProfile, getState } from '@/native/state/store';
@@ -165,6 +165,13 @@ export function useRuntimeMutations() {
         setActiveScope: (scopeId: string | null) => Promise.resolve(nativeSetActiveScope(scopeId)),
         markScopeRead: (scopeId: string) => Promise.resolve(nativeMarkScopeRead(scopeId)),
 
+        // Identity verification (safety numbers) — native
+        setPeerVerified: (peerId: string, verified: boolean) => Promise.resolve(nativeSetPeerVerified(peerId, verified)),
+        // Abuse reporting — native (delivered P2P to the server owner for server scope)
+        submitReport: (input: ReportInput) => Promise.resolve(nativeSubmitReport(input)),
+        // Owner-side moderation: mark a received report resolved/dismissed — native
+        resolveReport: (reportId: string, resolved?: boolean) => Promise.resolve(nativeResolveReport(reportId, resolved)),
+
         // Presence — native
         updatePresence: (opts: { status: string; status_text?: string; typing_in_scope?: string }) =>
           Promise.resolve(nativeUpdatePresence(opts.status, opts)),
@@ -195,6 +202,9 @@ export function useRuntimeMutations() {
         // owner is offline. engine is non-null on the native path.
         joinServerByInvite: (deeplink: string) =>
           engine ? engine.joinServer(deeplink) : Promise.resolve(nativeJoinServer(deeplink)),
+        // Page older channel history from the owner or any reachable member.
+        loadOlderHistory: (serverId: string, channelId: string) =>
+          engine ? engine.pullOlderHistory(serverId, channelId) : Promise.resolve({ added: 0, hasMore: false }),
         pinMessage: (channelId: string, messageId: string) => Promise.resolve(nativePinMessage(channelId, messageId)),
         unpinMessage: (channelId: string, messageId: string) => Promise.resolve(nativeUnpinMessage(channelId, messageId)),
         createRole: (serverId: string, opts: { role_name: string; permissions_bitfield?: number }) =>
@@ -269,6 +279,9 @@ export function useRuntimeMutations() {
       revokeInvite: (serverId: string) => Promise.resolve(nativeRevokeInvite(serverId)),
       setActiveScope: (scopeId: string | null) => Promise.resolve(nativeSetActiveScope(scopeId)),
       markScopeRead: (scopeId: string) => Promise.resolve(nativeMarkScopeRead(scopeId)),
+      setPeerVerified: (peerId: string, verified: boolean) => Promise.resolve(nativeSetPeerVerified(peerId, verified)),
+      submitReport: (input: ReportInput) => Promise.resolve(nativeSubmitReport(input)),
+      resolveReport: (reportId: string, resolved?: boolean) => Promise.resolve(nativeResolveReport(reportId, resolved)),
       updatePresence: (opts: { status: string; status_text?: string; typing_in_scope?: string }) =>
         updatePresence(snap, opts),
       joinVoiceChannel: (channelId: string) => joinVoiceChannel(snap, channelId),
@@ -278,6 +291,7 @@ export function useRuntimeMutations() {
       addFriendRequest: (peerAddr: string) => sendFriendRequest(snap, peerAddr),
       ensureDirectMessage: (peerId: string) => nativeEnsureDirectMessage(peerId),
       joinServerByInvite: (deeplink: string) => joinServerByInvite(snap, deeplink),
+      loadOlderHistory: (_serverId: string, _channelId: string) => Promise.resolve({ added: 0, hasMore: false }),
       pinMessage: (channelId: string, messageId: string) => pinMessage(snap, channelId, messageId),
       unpinMessage: (channelId: string, messageId: string) => unpinMessage(snap, channelId, messageId),
       createRole: (serverId: string, opts: { role_name: string; permissions_bitfield?: number }) => createRole(snap, serverId, opts),

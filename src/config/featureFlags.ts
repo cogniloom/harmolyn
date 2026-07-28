@@ -42,13 +42,11 @@ export const FEATURES = {
   // ─── Channel / forum extras ───────────────────────────────
   channelFollowing: false,
 
-  // ─── Settings / support surfaces ─────────────────────────
-  // No payment/entitlement or event endpoints in xorein. See PROTOCOL_GAPS.md.
-  donations: false,
-  shop: false,
-  quests: false,
-  serverBoost: false,
-  scheduledEvents: false,
+  // Monetization (donations/shop/quests/server boosts) and scheduled events were
+  // removed for v1: xorein is a pure P2P network with no payment, ledger, or event
+  // primitives, so those surfaces could only ever mutate localStorage. The dead
+  // components + flags were deleted rather than shipped dark. Revisit only if the
+  // network grows the matching protocol primitives (see docs/PROTOCOL_GAPS.md).
 
   // ─── Server moderation / admin extras ────────────────────
   // Real control-API endpoints: GET /v1/servers/{id}/audit, /v1/servers/{id}/automod/rules,
@@ -60,8 +58,6 @@ export const FEATURES = {
   // ─── User ────────────────────────────────────────────────
   userStatus: true,
   profileCustomization: true,
-  // No per-server member profile (nickname/bio) endpoint. See PROTOCOL_GAPS.md.
-  serverProfile: false,
   friendsList: true,
   userPopout: true,
 
@@ -71,8 +67,11 @@ export const FEATURES = {
   messageReplies: true,
   pinnedMessages: true,
   messageEditing: true,
-  // No attachment/blob upload endpoint in xorein. See PROTOCOL_GAPS.md.
-  fileUploads: false,
+  // Client-side-encrypted attachments: the file is AES-256-GCM encrypted in-browser
+  // (src/native/blobs/), uploaded as OPAQUE ciphertext to the support node's
+  // /v1/uploads, and the key travels only inside the E2EE message body. Fully wired
+  // in ChatArea + AttachmentView with SHA-256 integrity verification on download.
+  fileUploads: true,
   emojiPicker: true,
   typingIndicators: true,
   linkEmbeds: true,
@@ -106,8 +105,12 @@ export const FEATURES = {
   // kind-tagged signaling track so peers render it as a dedicated stream.
   screenShare: true,
   voiceControlBar: true,
-  // No sound-asset model or sound-effect playback endpoint. See PROTOCOL_GAPS.md.
-  soundboard: false,
+  // voiceScaleSfu: opt-in peer-SFU topology for large voice channels. A single
+  // elected coordinator (min peer-id over the roster) accepts each participant's
+  // SFrame-opaque media and re-forwards it, so non-coordinators hold one connection
+  // instead of N-1. SFrame keys are per-sender, so the coordinator relays ciphertext
+  // it cannot read. Ships dark until the forwarding media path is smoke-tested live.
+  voiceScaleSfu: false,
 
   // ─── Channels ────────────────────────────────────────────
   textVoiceChannels: true,
@@ -118,8 +121,6 @@ export const FEATURES = {
   privateChannels: true,
   channelCreationFlow: true,
   channelPinsView: true,
-  // No membership-application model. See PROTOCOL_GAPS.md.
-  serverApplications: false,
 
   // ─── Server ──────────────────────────────────────────────
   serverSettings: true,
@@ -175,6 +176,20 @@ export const FEATURES = {
   // Override via localStorage 'harmolyn:feature-overrides' to revert to
   // full HTTP for one release if issues are found in production.
   nativeEngine: true,
+  // memberServedHistory: opt-in fallback that pulls a server's read-copy history from
+  // ordinary MEMBERS (invite seeds / cursor paging) when the owner is offline. Ships
+  // DARK: served messages aren't individually authenticated, so a malicious member
+  // could serve forged history, and seeds can't verify the owner-only invite secret
+  // anyway. Until history carries owner signatures, only the owner serves authoritative
+  // history; with this flag off, paging/join fall back to owner-only + a local stub.
+  memberServedHistory: false,
+  // directTransport: opt-in direct browser↔browser WebRTC transport + DCUtR
+  // hole-punching, upgrading relayed circuits to direct connections when the NAT
+  // allows. Ships DARK: it needs a 2nd relay + gateway rendezvous to be useful, and
+  // hole-punch success is a live smoketest (2 relays + real browsers). Turning it on
+  // only ADDS the /webrtc transport + dcutr service + rendezvous discovery; the
+  // relayed path is unaffected, so it degrades cleanly.
+  directTransport: false,
 } as const;
 
 /** Union type of all feature flag keys */

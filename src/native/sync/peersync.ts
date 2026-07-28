@@ -8,11 +8,46 @@ import { callFamily } from '../families/peerstream.js';
 import { PROTOCOLS } from '../families/families.js';
 import { RELAY_MULTIADDR } from '../transport/node.js';
 import { getState } from '../state/store.js';
+import { resolveFeatureFlag } from '../../config/featureFlags.js';
 import type { PrekeyBundle } from '../seal/bundle.js';
 
 // Derive the expected circuit address for a peer using the standard relay.
 function circuitAddr(peerId: string, relayMultiaddr = RELAY_MULTIADDR): string {
   return `${relayMultiaddr}/p2p-circuit/p2p/${peerId}`;
+}
+
+// The WebRTC-upgradeable form of a peer's circuit address: dialing this lets DCUtR
+// hole-punch the relayed connection up to a direct browser↔browser WebRTC link.
+// Only used when the `directTransport` flag is on (the /webrtc transport is loaded).
+export function webrtcCircuitAddr(peerId: string, relayMultiaddr = RELAY_MULTIADDR): string {
+  return `${relayMultiaddr}/p2p-circuit/webrtc/p2p/${peerId}`;
+}
+
+/** True when an address is a WebRTC-upgradeable circuit address. */
+function isWebrtcCircuit(addr: string): boolean {
+  return addr.includes('/p2p-circuit/webrtc/');
+}
+
+/**
+ * Choose the best dial address for a peer from the addresses it advertised.
+ * Pure so the selection policy is unit-testable. With `directOn`, a
+ * WebRTC-upgradeable circuit address wins (DCUtR can hole-punch it to a direct
+ * link); otherwise any circuit address; otherwise a synthesized fallback against
+ * the default relay (the /webrtc form under direct transport).
+ */
+export function selectPeerAddr(
+  advertised: string[],
+  peerId: string,
+  relayMultiaddr: string,
+  directOn: boolean,
+): string {
+  if (directOn) {
+    const wrtc = advertised.find(isWebrtcCircuit);
+    if (wrtc) return wrtc;
+  }
+  const anyCircuit = advertised.find(a => a.includes('p2p-circuit'));
+  if (anyCircuit) return anyCircuit;
+  return directOn ? webrtcCircuitAddr(peerId, relayMultiaddr) : circuitAddr(peerId, relayMultiaddr);
 }
 
 function jsonBytes(obj: unknown): Uint8Array {
@@ -75,9 +110,8 @@ export class PeerSync {
     // 3) fall back to the default relay.
     const direct = this.peerAddrs.get(peerId);
     if (direct) return direct;
-    const advertised = getState().peers?.[peerId]?.addresses?.find(a => a.includes('p2p-circuit'));
-    if (advertised) return advertised;
-    return circuitAddr(peerId, this.relayMultiaddr);
+    const advertised = getState().peers?.[peerId]?.addresses ?? [];
+    return selectPeerAddr(advertised, peerId, this.relayMultiaddr, resolveFeatureFlag('directTransport'));
   }
 
   private get localPeerId(): string {
@@ -116,7 +150,48 @@ export class PeerSync {
     );
     if (!resp.payload) return null;
     try {
-      return JSON.parse(new TextDecoder().decode(resp.payload)) as { ok?: boolean; server?: unknown; messages?: unknown[]; addresses?: string[] };
+      return JSON.parse(new TextDecoder().decode(resp.payload)) as { ok?: boolean; error?: string; server?: unknown; messages?: unknown[]; addresses?: string[] };
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Pull a page of older history for a server we already belong to, from any
+   * reachable member (owner or a peer). `before` is a created_at ISO cursor
+   * (exclusive); the responder returns up to `limit` messages that precede it plus
+   * a `has_more` flag. Returns null if the peer is unreachable or declined.
+   */
+  async pullHistory(
+    fromPeerId: string,
+    serverId: string,
+    channelId: string,
+    before: string,
+    beforeId: string,
+    limit: number,
+    inviteToken?: string,
+  ): Promise<{ ok?: boolean; messages?: unknown[]; has_more?: boolean } | null> {
+    if (!this.node || fromPeerId === this.localPeerId) return null;
+    try {
+      const resp = await callFamily(
+        this.node,
+        this.addrOf(fromPeerId),
+        PROTOCOLS.sync,
+        'sync.pull',
+        jsonBytes({
+          server_id: serverId,
+          channel_id: channelId,
+          peer_id: this.localPeerId,
+          before,
+          before_id: beforeId,
+          limit,
+          invite_token: inviteToken,
+          addresses: this.localCircuitAddrs(),
+        }),
+        crypto.randomUUID(),
+      );
+      if (!resp?.payload) return null;
+      return JSON.parse(new TextDecoder().decode(resp.payload)) as { ok?: boolean; messages?: unknown[]; has_more?: boolean };
     } catch {
       return null;
     }

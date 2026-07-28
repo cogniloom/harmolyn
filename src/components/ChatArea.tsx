@@ -4,6 +4,7 @@ import { Channel, Message, User, MessageLayout, XoreinAttachment } from '@/types
 import { AttachmentView } from '@/components/AttachmentView';
 import { generateTheme } from '@/utils/themeGenerator';
 import { resolveSecurityMode } from '@/lib/securityMode';
+import { formatDateTime } from '@/lib/locale';
 import { renderMarkdown } from '@/utils/markdown';
 import { EmojiPicker } from '@/components/EmojiPicker';
 import { StickerPicker } from '@/components/StickerPicker';
@@ -22,7 +23,9 @@ import { InboxPanel } from '@/components/InboxPanel';
 import { MentionAutocomplete } from '@/components/MentionAutocomplete';
 import { useToast } from '@/lib/toastBus';
 import { useFeature } from '@/hooks/useFeature';
-import { useSendChannelMessage, useSendDmMessage, useEditMessage, useDeleteMessage, useAddReaction, useRemoveReaction, usePinMessage, useUnpinMessage, useCastPollVote } from '@/hooks/runtime/mutations';
+import { useSendChannelMessage, useSendDmMessage, useEditMessage, useDeleteMessage, useAddReaction, useRemoveReaction, usePinMessage, useUnpinMessage, useCastPollVote, useLoadOlderHistory, useSetPeerVerified, useSubmitReport } from '@/hooks/runtime/mutations';
+import { KeyVerification } from '@/components/KeyVerification';
+import { ReportModal, type ReportSubmission } from '@/components/ReportModal';
 import { markNotificationsRead, searchNotifications } from '@/lib/xoreinControl';
 import { uploadEncryptedAttachment } from '@/native/blobs/blobs';
 import { useContextMenu } from '@/components/GlobalContextMenuContext';
@@ -32,7 +35,7 @@ import {
   readPersistedChatScopeState,
   writePersistedChatScopeState,
 } from '@/protocol/client';
-import { Hash, Bell, Pin, Users, Search, MoreHorizontal, MessageSquare, AtSign, Smile, Sticker, PlusCircle, X, Send, LayoutTemplate, Menu, Trash2, MicOff, Image, FileText, Reply, CornerUpRight, Pencil, Check, PanelRightClose, Forward, BarChart3, Link2, ArrowDown, MessageCircle, Inbox, Star, Lock, AlertTriangle, Clock, WifiOff } from 'lucide-react';
+import { Hash, Bell, Pin, Users, Search, MoreHorizontal, MessageSquare, AtSign, Smile, Sticker, PlusCircle, X, Send, LayoutTemplate, Menu, Trash2, MicOff, Image, FileText, Reply, CornerUpRight, Pencil, Check, PanelRightClose, Forward, BarChart3, Link2, ArrowDown, MessageCircle, Inbox, Star, Lock, AlertTriangle, Clock, WifiOff, Flag } from 'lucide-react';
 import { useEscapeKey } from '@/hooks/useEscapeKey';
 import { usePersistentState } from '@/hooks/usePersistentState';
 import { PREVIEW_STORAGE_KEYS } from '@/config/storageKeys';
@@ -359,10 +362,10 @@ interface ComposerFeedback {
 
 const MESSAGE_ID_PREFIX = 'local-msg-';
 
-const formatTimestamp = (value = Date.now()) => new Intl.DateTimeFormat('en-US', {
+const formatTimestamp = (value = Date.now()) => formatDateTime(new Date(value), {
   hour: 'numeric',
   minute: '2-digit',
-}).format(new Date(value));
+});
 
 const buildMessageElementId = (messageId: string) => `chat-message-${messageId}`;
 
@@ -385,14 +388,34 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   hasIdentity = false,
   onOpenAuth,
 }) => {
-  // When the native engine is the live data path, conversations are genuinely
-  // E2E-encrypted — Seal (X3DH + Double Ratchet) for DMs, Crowd (sender-key
-  // broadcast) for channels — so the badge reports that real mode instead of the
-  // HTTP bridge's "unspecified". Off the native path we defer to the negotiated
-  // value (never silently claiming encryption the wire doesn't provide).
+  // The security badge is derived from what ACTUALLY happened on the wire, never
+  // from the scope type. On the native path each message carries the real mode it
+  // was encrypted/decrypted under (`securityMode`): inbound messages only exist
+  // after successful decryption, and outbound messages are marked `clear` only when
+  // encryption was impossible and they were kept local. So: if any message in the
+  // conversation is `clear`, the badge downgrades to the danger state (warning the
+  // user their traffic isn't protected); otherwise it shows the real E2EE mode.
+  // An empty conversation shows its expected mode (the next message is guaranteed
+  // encrypted by the fail-closed send path). Off the native path we defer to the
+  // negotiated value and never claim encryption the wire didn't provide.
   const nativeActive = typeof window !== 'undefined'
     && (window as unknown as { __HARMOLYN_NATIVE_ACTIVE__?: boolean }).__HARMOLYN_NATIVE_ACTIVE__ === true;
-  const conversationMode = nativeActive ? (isDM ? 'seal' : 'crowd') : securityMode;
+  const anyClearMessage = useMemo(
+    () => messages.some((m) => {
+      if (m.isSystem) return false;
+      if (m.securityMode === 'clear' || m.encrypted === false) return true;
+      // Unstamped legacy messages — persisted before provenance stamping and, under the
+      // old inbound path, possibly accepted as plaintext — carry NEITHER securityMode nor
+      // `encrypted`. Their provenance is unknown, so treat them as insecure rather than let
+      // the badge over-claim E2EE for pre-upgrade history. (Every current send/receive path
+      // stamps provenance, so this only ever matches genuinely-unstamped legacy records.)
+      return m.securityMode == null && m.encrypted == null;
+    }),
+    [messages],
+  );
+  const conversationMode = nativeActive
+    ? (anyClearMessage ? 'clear' : (isDM ? 'seal' : 'crowd'))
+    : securityMode;
   const securityBadge = resolveSecurityMode(conversationMode);
   const channelFollowingEnabled = useFeature('channelFollowing');
   const [followedChannels, setFollowedChannels] = usePersistentState<string[]>(PREVIEW_STORAGE_KEYS.channelFollows, []);
@@ -406,6 +429,10 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   const scrollRef = useRef<HTMLDivElement>(null);
   const [showPinned, setShowPinned] = useState(false);
   const [showSecuritySummary, setShowSecuritySummary] = useState(false);
+  const [showKeyVerification, setShowKeyVerification] = useState(false);
+  const setPeerVerified = useSetPeerVerified();
+  const submitReport = useSubmitReport();
+  const [reportTarget, setReportTarget] = useState<{ messageId: string; userId: string; content: string; label: string } | null>(null);
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [showStickerPicker, setShowStickerPicker] = useState(false);
   const [hoveredMessageId, setHoveredMessageId] = useState<string | null>(null);
@@ -452,6 +479,13 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   const pinMutation = usePinMessage();
   const unpinMutation = useUnpinMessage();
   const castPollVoteMutation = useCastPollVote();
+  const loadOlderMutation = useLoadOlderHistory();
+
+  // Older-history paging: whether more history is believed to exist further back,
+  // and a ref holding the scroll height captured just before a prepend so we can
+  // restore the viewport to the same messages instead of jumping.
+  const [hasMoreHistory, setHasMoreHistory] = useState(true);
+  const preserveScrollRef = useRef<number | null>(null);
 
   const [threadMessage, setThreadMessage] = useState<Message | null>(null);
   const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
@@ -567,10 +601,18 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
     if (hasThreads) mainItems.push({ label: 'Create Thread', icon: <MessageCircle size={13} />, onClick: () => setThreadMessage(msg) });
     if (hasMessageLinks) mainItems.push({ label: 'Copy Message Link', icon: <Link2 size={13} />, onClick: () => copyMessageLink(msg.id) });
 
-    const moderationItems = [
+    const moderationItems: { label: string; icon: React.ReactNode; onClick: () => void; danger?: boolean }[] = [
       { label: isMuted ? 'Unmute User' : 'Mute User', icon: <MicOff size={13} />, onClick: () => toggleMuteUser(msg.userId) },
-      { label: 'Delete Message', icon: <Trash2 size={13} />, onClick: () => deleteMessage(msg.id), danger: true },
     ];
+    if (!isMe) {
+      const author = normalizedUsers.find((u) => u.id === msg.userId);
+      moderationItems.push({
+        label: 'Report Message',
+        icon: <Flag size={13} />,
+        onClick: () => setReportTarget({ messageId: msg.id, userId: msg.userId, content: msg.content, label: `message from ${author?.username ?? 'this user'}` }),
+      });
+    }
+    moderationItems.push({ label: 'Delete Message', icon: <Trash2 size={13} />, onClick: () => deleteMessage(msg.id), danger: true });
 
     showMenu(e.clientX, e.clientY, [
       { items: mainItems },
@@ -901,8 +943,29 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   }, []);
 
   useEffect(() => {
+    // When we just prepended older history, keep the viewport anchored to the same
+    // messages (restore by the height delta) instead of snapping to the bottom.
+    if (preserveScrollRef.current != null && scrollRef.current) {
+      // Only consume the anchor once the prepended rows have actually rendered — i.e. the
+      // scroll height has grown past the value captured at pull time. This effect also runs
+      // for unrelated dependency changes (layout, an incoming message) that can fire before
+      // the older page commits; consuming the anchor then would compute a zero/late delta
+      // and snap the viewport. Hold the anchor until the content grows, then restore.
+      if (scrollRef.current.scrollHeight > preserveScrollRef.current) {
+        const delta = scrollRef.current.scrollHeight - preserveScrollRef.current;
+        scrollRef.current.scrollTop = delta;
+        preserveScrollRef.current = null;
+      }
+      return;
+    }
     scrollToBottom();
   }, [channel, messageLayout, normalizedMessages, searchQuery, scrollToBottom]);
+
+  // Reset the "more history" belief when switching channels, and track the active
+  // channel id in a ref so an in-flight history pull can detect a switch and discard
+  // its stale result rather than clobbering the new channel's state.
+  const channelRef = useRef(channel?.id);
+  useEffect(() => { channelRef.current = channel?.id; setHasMoreHistory(true); }, [channel?.id]);
 
   // Auto-expand the composer up to a capped max-height as the draft grows, then
   // let it scroll internally. Driven off inputValue so emoji/sticker/mention
@@ -1001,7 +1064,60 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   const runtimeSnapshot = liveShellData.runtimeSnapshot ?? null;
   const currentUserName = liveShellData.currentUser.username.toLowerCase();
 
+  // Safety-number verification data for a DM: the other participant's pinned hybrid
+  // identity + our own, resolved from the runtime snapshot. Undefined for channels.
+  const dmVerification = useMemo(() => {
+    if (!isDM || !channel || !runtimeSnapshot) return null;
+    const localPeerId = runtimeSnapshot.identity?.peer_id ?? '';
+    const dm = runtimeSnapshot.dms?.find((d) => d.id === channel.id);
+    const remotePeerId = dm?.participants?.find((p) => p !== localPeerId) ?? '';
+    if (!remotePeerId) return null;
+    const remotePeer = runtimeSnapshot.known_peers?.find((p) => p.peer_id === remotePeerId);
+    return {
+      localPeerId,
+      localIdentityKey: runtimeSnapshot.identity?.identity_key,
+      remotePeerId,
+      remoteIdentityKey: remotePeer?.identity_key,
+      verified: !!remotePeer?.identity_verified,
+      changed: !!remotePeer?.identity_changed,
+    };
+  }, [isDM, channel, runtimeSnapshot]);
+
   const forwardDestinations = useMemo<ForwardDestination[]>(() => buildForwardDestinations(liveShellData, normalizedUsers), [liveShellData, normalizedUsers]);
+
+  // The server that owns this channel (undefined for DMs) — needed for the cursor pull.
+  const historyServerId = useMemo(() => {
+    if (isDM || !channel) return undefined;
+    return runtimeSnapshot?.servers?.find(
+      (s) => Object.prototype.hasOwnProperty.call(s.channels ?? {}, channel.id),
+    )?.id;
+  }, [isDM, channel, runtimeSnapshot]);
+
+  const handleLoadOlder = useCallback(async () => {
+    if (!channel || !historyServerId || loadOlderMutation.isPending) return;
+    // Capture the channel this pull is for. If the user switches channels before it
+    // resolves, discard the stale result — otherwise channel A's response would clobber
+    // channel B's hasMoreHistory / scroll-preservation (shared state).
+    const requestedChannelId = channel.id;
+    preserveScrollRef.current = scrollRef.current?.scrollHeight ?? null;
+    try {
+      const res = await loadOlderMutation.mutateAsync({ serverId: historyServerId, channelId: requestedChannelId }) as { added: number; hasMore: boolean; unavailable?: boolean };
+      if (channelRef.current !== requestedChannelId) { preserveScrollRef.current = null; return; }
+      // A transient "unavailable" (owner/members unreachable) must NOT hide the button —
+      // keep it so the user can retry when connectivity returns. Only a definitive
+      // answer (has_more, or a real empty page) updates the exhausted state.
+      if (res.unavailable) setHasMoreHistory(true);
+      else setHasMoreHistory(res.hasMore);
+      // If nothing was actually prepended, release the scroll anchor now — the content
+      // won't grow, so the anchored-restore effect would otherwise hold it forever and
+      // wedge normal auto-scroll-to-bottom. Keep it only when rows were added.
+      if (res.added === 0) preserveScrollRef.current = null;
+    } catch {
+      // Network/exception is also transient — keep the retry affordance visible.
+      preserveScrollRef.current = null;
+      if (channelRef.current === requestedChannelId) setHasMoreHistory(true);
+    }
+  }, [channel, historyServerId, loadOlderMutation]);
 
   // Real typing state: peers whose presence reports typing_in_scope === this
   // channel/DM. Presence is keyed by peer id; for remote peers the peer id is the
@@ -1227,7 +1343,24 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
           messageLayout === 'bubbles' ? 'space-y-2.5' : 
           'space-y-6'
         }`} ref={scrollRef} onScroll={handleScroll}>
-        
+
+        {/* Load older history — only for server channels (DMs page differently) and
+            when not filtering. Shown even on an EMPTY channel (a recovered device
+            restores membership but not history — the owner can still serve the
+            retention window). Hidden only once the responder reports no more history. */}
+        {!isDM && !searchQuery && historyServerId && hasMoreHistory && (
+          <div className="flex justify-center pb-4">
+            <button
+              type="button"
+              onClick={handleLoadOlder}
+              disabled={loadOlderMutation.isPending}
+              className="text-xs font-semibold text-white/50 hover:text-primary border border-white/10 hover:border-primary/30 rounded-full px-4 py-1.5 transition-colors disabled:opacity-50"
+            >
+              {loadOlderMutation.isPending ? 'Loading…' : 'Load older messages'}
+            </button>
+          </div>
+        )}
+
         {messageLayout !== 'terminal' && !searchQuery && (
              <div className="pb-10 border-b border-white/5 mb-6">
                 <div className="w-20 h-20 rounded-2xl bg-gradient-to-br from-primary/30 to-transparent flex items-center justify-center mb-6 shadow-glow border border-primary/20 relative group">
@@ -1253,7 +1386,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
           {/* Deletion tombstone — shown instead of the original content */}
           if (msg.deletedAt) {
             const deletedUser = msg.deletedBy ? getUser(msg.deletedBy) : null;
-            const deletedWhen = msg.deletedAt ? new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }).format(new Date(msg.deletedAt)) : '';
+            const deletedWhen = msg.deletedAt ? formatDateTime(new Date(msg.deletedAt), { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '';
             return (
               <React.Fragment key={msg.id}>
                 {showUnreadDivider && (
@@ -1888,11 +2021,66 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                 Do not share anything sensitive in this conversation.
               </p>
             )}
-            <p className="text-[9px] leading-relaxed text-white/35 mt-3 font-mono">
-              Per-contact key verification is not exposed by the engine yet.
-            </p>
+            {isDM && dmVerification && (
+              <button
+                onClick={() => { setShowSecuritySummary(false); setShowKeyVerification(true); }}
+                className={`focus-ring mt-3 w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-full text-[11px] font-bold transition-all ${
+                  dmVerification.changed
+                    ? 'bg-accent-danger/15 text-accent-danger hover:brightness-110'
+                    : dmVerification.verified
+                      ? 'border border-accent-success/30 text-accent-success hover:bg-accent-success/10'
+                      : 'border border-white/10 text-white/70 hover:bg-white/5'
+                }`}
+              >
+                {dmVerification.changed
+                  ? 'Safety number changed — review'
+                  : dmVerification.verified
+                    ? 'Verified — view safety number'
+                    : 'Verify safety number'}
+              </button>
+            )}
           </div>
         </>
+      )}
+
+      {reportTarget && (
+        <ReportModal
+          targetLabel={reportTarget.label}
+          onClose={() => setReportTarget(null)}
+          onSubmit={(report: ReportSubmission) => {
+            const serverId = isDM
+              ? undefined
+              : runtimeSnapshot?.servers?.find((s) => Object.prototype.hasOwnProperty.call(s.channels ?? {}, channel?.id ?? ''))?.id;
+            submitReport.mutate({
+              targetKind: 'message',
+              targetId: reportTarget.messageId,
+              reportedPeerId: reportTarget.userId,
+              serverId,
+              channelId: isDM ? undefined : channel?.id,
+              contentExcerpt: reportTarget.content,
+              reason: report.reason,
+              details: report.details || undefined,
+            });
+            setReportTarget(null);
+            toast.success('Report submitted', serverId ? 'It has been sent to the server owner (and will retry if they are offline).' : 'Thanks — your report was recorded.');
+          }}
+        />
+      )}
+
+      {showKeyVerification && dmVerification && (
+        <KeyVerification
+          peerName={channel?.name?.trim() || 'this contact'}
+          localPeerId={dmVerification.localPeerId}
+          localIdentityKey={dmVerification.localIdentityKey}
+          remotePeerId={dmVerification.remotePeerId}
+          remoteIdentityKey={dmVerification.remoteIdentityKey}
+          verified={dmVerification.verified}
+          changed={dmVerification.changed}
+          onSetVerified={(verified) => {
+            setPeerVerified.mutate({ peerId: dmVerification.remotePeerId, verified });
+          }}
+          onClose={() => setShowKeyVerification(false)}
+        />
       )}
 
       {/* Inbox Panel */}

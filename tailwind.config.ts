@@ -15,9 +15,13 @@ export default {
     },
     extend: {
       fontFamily: {
-        sans: ['Space Grotesk', 'sans-serif'],
-        mono: ['Space Mono', 'monospace'],
-        display: ['Space Grotesk', 'sans-serif'],
+        // Latin display font first, then a broad system-font fallback stack so
+        // Cyrillic / Greek / CJK / Arabic / Hebrew / Thai / Devanagari text renders
+        // with the OS's native font instead of tofu boxes (Space Grotesk is
+        // Latin-only). No binary font assets shipped; the OS provides the coverage.
+        sans: ['Space Grotesk', 'system-ui', '-apple-system', 'Segoe UI', 'Noto Sans', 'Noto Sans CJK SC', 'Noto Sans Arabic', 'Noto Sans Hebrew', 'Noto Sans Thai', 'Noto Sans Devanagari', 'Arial', 'sans-serif'],
+        mono: ['Space Mono', 'ui-monospace', 'SFMono-Regular', 'Menlo', 'Noto Sans Mono', 'monospace'],
+        display: ['Space Grotesk', 'system-ui', '-apple-system', 'Segoe UI', 'Noto Sans', 'Noto Sans CJK SC', 'Noto Sans Arabic', 'sans-serif'],
       },
       colors: {
         border: "hsl(var(--border))",

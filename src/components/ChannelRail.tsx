@@ -145,8 +145,6 @@ interface ChannelRailProps {
   onLeaveServer?: () => void;
   /** Delete the server (owner). Navigates home afterwards. */
   onDeleteServer?: () => void;
-  onOpenDonations?: () => void;
-  onOpenApplications?: () => void;
   onOpenActivities?: () => void;
   onOpenSoundboard?: () => void;
   onOpenStage?: () => void;
@@ -178,8 +176,6 @@ export const ChannelRail: React.FC<ChannelRailProps> = ({
   onInvite,
   onLeaveServer,
   onDeleteServer,
-  onOpenDonations,
-  onOpenApplications,
   onOpenActivities,
   onOpenSoundboard,
   onOpenStage,
@@ -423,16 +419,6 @@ export const ChannelRail: React.FC<ChannelRailProps> = ({
           )}
         </div>
         <div className="flex items-center gap-1">
-          {onOpenDonations && (
-            <button onClick={onOpenDonations} className="theme-text-dim hover:text-accent-danger transition-colors" aria-label="Support Harmolyn" title="Donate">
-              <Heart size={14} />
-            </button>
-          )}
-          {!isHome && onOpenApplications && (
-            <button disabled={!connectivityEnabled} onClick={onOpenApplications} className="theme-text-dim hover:text-accent-warning transition-colors disabled:opacity-40 disabled:cursor-not-allowed" aria-label="Applications" title={!connectivityEnabled ? connectionState.detail : 'Applications'}>
-              <FileText size={14} />
-            </button>
-          )}
           {!isHome && onOpenServerSettings && (
             <button onClick={onOpenServerSettings} className="theme-text-dim hover:text-primary transition-colors" aria-label="Server Settings" title="Server Settings">
               <Settings size={14} />

@@ -68,10 +68,12 @@ export function deriveVoicePeerKey(channelId: string, peerId: string): PeerKey |
     }
   }
 
-  // STUB: DM/Seal and Tree mode voice — no shared secret available yet.
-  // Returns a deterministic placeholder so tests pass; MUST NOT ship enabled
-  // in production for these modes.
-  return deriveStubPeerKey(channelId, peerId);
+  // FAIL-CLOSED: without a real shared secret (crowd_root) there is no honest
+  // SFrame key. We return null rather than a derivable placeholder — the caller
+  // must then NOT enable SFrame, so media falls back to DTLS-only protection
+  // instead of being labelled "encrypted" behind a public key. A real Seal/Tree
+  // voice-key export will slot in here when it lands.
+  return null;
 }
 
 /** Derive a PeerKey from a Crowd (server) crowd_root. */
@@ -82,27 +84,15 @@ function deriveCrowdPeerKey(crowdRoot: Uint8Array, peerId: string): PeerKey {
 }
 
 /**
- * STUB: placeholder key derived from channelId for modes without a shared root.
- * Marked clearly so it is never mistaken for a real security primitive.
- * Replace when Seal session export (src/native/seal/session.ts) and Tree group-
- * secret accessor are implemented.
+ * Determine the effective SFrame security mode for a voice channel. This must
+ * agree with `deriveVoicePeerKey`: it returns `'crowd'` ONLY when a real shared
+ * root exists for the channel's server (so a real key can be derived and SFrame is
+ * genuine). A server channel without a seeded root — and every DM/other channel,
+ * for which no shared voice-key export exists yet — is `'clear'`: SFrame stays off
+ * and media is protected by DTLS alone, never by a placeholder key.
  */
-function deriveStubPeerKey(channelId: string, peerId: string): PeerKey {
-  // STUB: deterministic but NOT secure — replace for Seal/Tree voice.
-  const fakeSeed = utf8(`stub:${channelId}:${peerId}`);
-  const padded = new Uint8Array(32);
-  padded.set(fakeSeed.slice(0, 32));
-  return newPeerKey(peerId, padded);
-}
-
-/**
- * Determine the effective security mode for a voice channel.
- * Server channels → 'crowd'. DM channels → 'seal' (stub). Others → 'clear'.
- */
-export function voiceSecurityMode(channelId: string): 'crowd' | 'seal' | 'clear' {
-  if (serverIdForChannel(channelId)) return 'crowd';
-  // STUB: DM voice — to be replaced with real Seal detection.
-  const state = getState();
-  if (state.dms && channelId in (state.dms as Record<string, unknown>)) return 'seal';
+export function voiceSecurityMode(channelId: string): 'crowd' | 'clear' {
+  const serverId = serverIdForChannel(channelId);
+  if (serverId && rootBytesForServer(serverId)) return 'crowd';
   return 'clear';
 }

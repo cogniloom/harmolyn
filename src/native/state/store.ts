@@ -1,6 +1,9 @@
 // Native application-state store.
-// Maintains in-memory state and persists to localStorage (plain JSON).
-// This is the local-only first step; P2P sync layers on top in a future iteration.
+// Maintains in-memory state and persists it ENCRYPTED-AT-REST (AES-256-GCM under a
+// key derived from the unlocked identity seed). The in-memory `_state` is the
+// synchronous source of truth for getState(); persistence is a best-effort mirror.
+import { gcm } from '@noble/ciphers/aes.js';
+import { deriveKey } from '../seal/kdf.js';
 import type {
   XoreinRuntimeSnapshot,
   XoreinRuntimeServer,
@@ -13,9 +16,46 @@ import type {
   XoreinRuntimePeer,
   XoreinPresenceEntry,
   XoreinRuntimeIdentity,
+  XoreinReport,
+  XoreinOutboxEntry,
 } from '../../types.js';
 
 const STORAGE_KEY = 'harmolyn:native:state';
+
+// Cap the number of persisted messages so the at-rest blob can't grow without
+// bound and silently blow the storage quota (after which persist() would fail and
+// the app would quietly stop saving). In-memory state is unaffected; only what we
+// write to disk is trimmed to the most recent messages.
+const MAX_PERSISTED_MESSAGES = 5000;
+
+const STATE_KEY_LABEL = 'xorein/state/v1/at-rest';
+
+// AES-256 key for encrypting the at-rest state blob, derived from the unlocked
+// identity seed and held only in memory. Null before unlock (or in tests) — see
+// persist()/load() for the plaintext-legacy fallback used only when it is null.
+let _stateKey: Uint8Array | null = null;
+
+/**
+ * Install (or clear) the at-rest encryption key from the unlocked identity seed.
+ * MUST be called before initStore() so load() can decrypt an existing v2 blob.
+ * Passing null clears the key (e.g. on lock/logout).
+ */
+export function setStateEncryptionKey(seed: Uint8Array | null): void {
+  _stateKey = seed && seed.length > 0 ? deriveKey(seed, null, STATE_KEY_LABEL, 32) : null;
+}
+
+function b64encode(b: Uint8Array): string {
+  let s = '';
+  for (let i = 0; i < b.length; i++) s += String.fromCharCode(b[i]);
+  return btoa(s);
+}
+
+function b64decode(s: string): Uint8Array {
+  const bin = atob(s);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
 
 // Guests persist to sessionStorage (per-tab, session-scoped) so each browsing
 // session/tab is an isolated throwaway guest — no cross-tab clobber and a fresh
@@ -47,6 +87,10 @@ export interface NativeState {
   presence: Record<string, XoreinPresenceEntry>;
   /** Per-scope unread counts (channel id / dm id → count). Persisted. */
   unread: Record<string, number>;
+  /** Abuse reports (outbound copies + inbound ones received as a server owner). */
+  reports: XoreinReport[];
+  /** Durable outbound queue: encrypted envelopes awaiting a live transport. */
+  outbox: XoreinOutboxEntry[];
   /**
    * The scope (channel/dm) the user is currently viewing. In-memory only — never
    * restored from storage, so a reload doesn't suppress unread for a scope the
@@ -68,25 +112,85 @@ const EMPTY: NativeState = {
   relay_addrs: [],
   presence: {},
   unread: {},
+  reports: [],
+  outbox: [],
   active_scope: null,
 };
 
 let _state: NativeState = { ...EMPTY, servers: {}, dms: {} };
 
+/**
+ * Read and decode the persisted state blob. Handles two formats:
+ *   • v2 `{v:2,n,ct}` — AES-256-GCM encrypted under `_stateKey` (the only format
+ *     production ever writes once an identity is unlocked).
+ *   • legacy plaintext JSON — migrated forward on the next persist(). Kept only so
+ *     existing installs upgrade seamlessly; new writes are always encrypted.
+ * Returns null when nothing is stored or it can't be decoded.
+ */
+function readPersistedState(): NativeState | null {
+  const raw = _storage()?.getItem(STORAGE_KEY) ?? null;
+  if (!raw) return null;
+  let outer: unknown;
+  try { outer = JSON.parse(raw); } catch { return null; }
+  if (outer && typeof outer === 'object' && (outer as { v?: number }).v === 2) {
+    const env = outer as { n?: string; ct?: string };
+    if (!_stateKey || typeof env.n !== 'string' || typeof env.ct !== 'string') return null;
+    try {
+      const pt = gcm(_stateKey, b64decode(env.n)).decrypt(b64decode(env.ct));
+      return JSON.parse(new TextDecoder().decode(pt)) as NativeState;
+    } catch {
+      return null; // wrong key / tampered — start fresh rather than surface garbage
+    }
+  }
+  // Legacy plaintext (pre-encryption). Accept once so it migrates on next persist.
+  return outer as NativeState;
+}
+
+/**
+ * Rebuild the peers map from persisted state, keeping ONLY the durable trust pins and
+ * learned profile (identity_key / identity_verified / identity_changed / display_name
+ * / avatar / role) and dropping transient reachability (addresses, last_seen_at,
+ * source, public_key) which is repopulated on connect. This preserves safety-number
+ * verification and identity-change detection across reloads.
+ */
+function restorePeerTrust(persisted: Record<string, XoreinRuntimePeer> | undefined): Record<string, XoreinRuntimePeer> {
+  const out: Record<string, XoreinRuntimePeer> = {};
+  for (const [id, p] of Object.entries(persisted ?? {})) {
+    if (!p) continue;
+    // Only carry a peer forward if it holds trust/profile worth persisting — a peer
+    // known purely by a stale address contributes nothing and stays dropped.
+    if (!p.identity_key && !p.identity_verified && !p.identity_changed && !p.display_name && !p.avatar) continue;
+    out[id] = {
+      peer_id: p.peer_id ?? id,
+      ...(p.role ? { role: p.role } : {}),
+      ...(p.identity_key ? { identity_key: p.identity_key } : {}),
+      ...(p.identity_verified ? { identity_verified: true } : {}),
+      ...(p.identity_changed ? { identity_changed: true } : {}),
+      ...(p.display_name ? { display_name: p.display_name } : {}),
+      ...(p.avatar ? { avatar: p.avatar } : {}),
+      addresses: [],
+    };
+  }
+  return out;
+}
+
 function load(): NativeState {
   try {
-    const raw = _storage()?.getItem(STORAGE_KEY) ?? null;
-    if (raw) {
-      const parsed = JSON.parse(raw) as NativeState;
+    const parsed = readPersistedState();
+    if (parsed) {
       return {
         ...EMPTY,
         ...parsed,
         servers: parsed.servers ?? {},
         joined_server_ids: parsed.joined_server_ids ?? [],
-        // relay_addrs and peers are connection-derived: never restore stale
-        // values from a previous session, or the UI would report a reachable
-        // bootstrap path while actually offline. They are repopulated on connect.
-        peers: {},
+        // relay_addrs and peer REACHABILITY are connection-derived: never restore
+        // stale values, or the UI would report a reachable path while actually
+        // offline. But the TOFU trust pins (identity_key / identity_verified /
+        // identity_changed) and learned profile MUST survive a reload — otherwise a
+        // verified contact silently becomes unverified and a changed identity reads as
+        // a fresh first sighting instead of raising the safety-number warning. Keep the
+        // trust/profile fields; drop transient addresses/reachability.
+        peers: restorePeerTrust(parsed.peers),
         dms: parsed.dms ?? {},
         messages: parsed.messages ?? [],
         friends: parsed.friends ?? [],
@@ -98,6 +202,8 @@ function load(): NativeState {
         relay_addrs: [],
         presence: parsed.presence ?? {},
         unread: parsed.unread ?? {},
+        reports: parsed.reports ?? [],
+        outbox: parsed.outbox ?? [],
         // active_scope is view state, not persisted — start with none selected.
         active_scope: null,
       };
@@ -118,7 +224,26 @@ export function resetNativeStore(): void {
 
 function persist(): void {
   try {
-    _storage()?.setItem(STORAGE_KEY, JSON.stringify(_state));
+    const store = _storage();
+    if (!store) return;
+    // Trim persisted messages to the retention cap (keep the most recent). The live
+    // in-memory state keeps everything for this session; only the disk copy is bounded.
+    const toPersist: NativeState = _state.messages.length > MAX_PERSISTED_MESSAGES
+      ? { ..._state, messages: _state.messages.slice(-MAX_PERSISTED_MESSAGES) }
+      : _state;
+    const json = JSON.stringify(toPersist);
+    if (_stateKey) {
+      // Encrypt at rest: crowd_root, invite_secret, and every message body are in
+      // this blob — they must never touch disk in cleartext.
+      const nonce = crypto.getRandomValues(new Uint8Array(12));
+      const ct = gcm(_stateKey, nonce).encrypt(new TextEncoder().encode(json));
+      store.setItem(STORAGE_KEY, JSON.stringify({ v: 2, n: b64encode(nonce), ct: b64encode(ct) }));
+    } else {
+      // No key yet (pre-unlock / tests). No sensitive data exists before an identity
+      // is unlocked; writing plaintext here keeps dev/test round-trips working and is
+      // migrated to v2 as soon as a key is installed.
+      store.setItem(STORAGE_KEY, json);
+    }
   } catch { /* quota exceeded / private browsing — best effort */ }
 }
 
@@ -199,6 +324,22 @@ export function applyJoinedServer(server: XoreinRuntimeServer, messages: XoreinR
   });
 }
 
+/**
+ * Merge a page of older history (from a member/owner `sync.pull`) into the store,
+ * de-duplicating by message id. Returns the number of NEW messages actually added,
+ * so the caller (UI load-older) can tell whether the page advanced anything.
+ */
+export function mergeHistoryMessages(messages: XoreinRuntimeMessage[]): number {
+  let added = 0;
+  updateState(s => {
+    const existingIds = new Set(s.messages.map(m => m.id));
+    const fresh = messages.filter(m => m && m.id && !existingIds.has(m.id));
+    added = fresh.length;
+    return fresh.length ? { messages: [...fresh, ...s.messages] } : {};
+  });
+  return added;
+}
+
 /** Record that the local identity has joined a server (membership). */
 export function recordServerMembership(serverId: string): void {
   updateState(s => (
@@ -253,6 +394,99 @@ export function upsertPeer(peer: XoreinRuntimePeer): void {
       addresses: Array.from(new Set([...(existing?.addresses ?? []), ...(peer.addresses ?? [])])),
     };
     return { peers: { ...s.peers, [peer.peer_id]: merged } };
+  });
+}
+
+/**
+ * TOFU-pin a peer's hybrid identity key (b64 of Ed25519 ‖ ML-DSA-65), learned from
+ * their verified prekey bundle. First sighting pins it silently. A LATER sighting
+ * with a different key sets `identity_changed` and clears `identity_verified` — the
+ * "safety number changed" alarm — so a relay can't quietly swap a contact's identity.
+ */
+export function pinPeerIdentity(peerId: string, identityKey: string): void {
+  if (!peerId || !identityKey) return;
+  updateState(s => {
+    const existing = s.peers[peerId];
+    if (existing?.identity_key === identityKey) return {}; // unchanged — no-op
+    const changed = !!existing?.identity_key && existing.identity_key !== identityKey;
+    const merged: XoreinRuntimePeer = {
+      peer_id: peerId,
+      role: 'peer',
+      ...existing,
+      identity_key: identityKey,
+      ...(changed ? { identity_changed: true, identity_verified: false } : {}),
+    };
+    return { peers: { ...s.peers, [peerId]: merged } };
+  });
+}
+
+const OUTBOX_CAP = 500;
+
+/** Queue an encrypted envelope for delivery once the transport is back (deduped by id). */
+export function enqueueOutbox(entry: XoreinOutboxEntry): void {
+  let evicted: XoreinOutboxEntry[] = [];
+  updateState(s => {
+    if (s.outbox.some(e => e.id === entry.id)) return {};
+    // Bound the queue so a long offline stretch can't grow it without limit. The oldest
+    // entries fall off the front; capture them so their messages can be marked failed
+    // rather than silently dropped (which would leave the UI showing a stuck "queued").
+    const next = [...s.outbox, entry];
+    if (next.length > OUTBOX_CAP) {
+      evicted = next.slice(0, next.length - OUTBOX_CAP);
+      return { outbox: next.slice(-OUTBOX_CAP) };
+    }
+    return { outbox: next };
+  });
+  for (const e of evicted) {
+    if (e.message_id) setMessageDeliveryStatus(e.message_id, 'failed');
+  }
+}
+
+/** Remove an outbox entry once it has been delivered (or given up on). */
+export function removeOutbox(id: string): void {
+  updateState(s => ({ outbox: s.outbox.filter(e => e.id !== id) }));
+}
+
+/** Snapshot the current outbox entries. */
+export function getOutbox(): XoreinOutboxEntry[] {
+  return _state.outbox;
+}
+
+/** Append an abuse report (deduped by id). Newest first. */
+export function addReport(report: XoreinReport): void {
+  updateState(s => {
+    if (s.reports.some(r => r.id === report.id)) return {};
+    return { reports: [report, ...s.reports].slice(0, 500) };
+  });
+}
+
+/** Set the reporter-side delivery state of a report (e.g. 'failed' once retry ages out). */
+export function setReportDelivery(reportId: string, delivery: XoreinReport['delivery']): void {
+  updateState(s => {
+    if (!s.reports.some(r => r.id === reportId)) return {};
+    return { reports: s.reports.map(r => (r.id === reportId ? { ...r, delivery } : r)) };
+  });
+}
+
+/** Mark an owner-side report resolved/dismissed (moderation inbox action). */
+export function setReportResolved(reportId: string, resolved: boolean): void {
+  updateState(s => {
+    if (!s.reports.some(r => r.id === reportId)) return {};
+    return { reports: s.reports.map(r => (r.id === reportId ? { ...r, resolved } : r)) };
+  });
+}
+
+/** Mark (or unmark) a peer's identity as user-verified out of band; clears the change flag. */
+export function setPeerVerified(peerId: string, verified: boolean): void {
+  updateState(s => {
+    const existing = s.peers[peerId];
+    if (!existing) return {};
+    return {
+      peers: {
+        ...s.peers,
+        [peerId]: { ...existing, identity_verified: verified, ...(verified ? { identity_changed: false } : {}) },
+      },
+    };
   });
 }
 
@@ -357,6 +591,30 @@ export function setMessageDeliveryStatus(
   }));
 }
 
+/**
+ * Whether `peerId` holds `permission` on `serverId`. The owner implicitly has every
+ * permission; other members have it if any of their assigned roles grants it (or the
+ * catch-all ADMINISTRATOR). Used to authorize privileged actions — e.g. pinning —
+ * both when broadcasting locally and when APPLYING an inbound op, so a member cannot
+ * forge a privileged action just because the transport authenticated them as a peer.
+ */
+export function memberHasPermission(serverId: string, peerId: string, permission: string): boolean {
+  const server = _state.servers[serverId];
+  if (!server || !peerId) return false;
+  if (server.owner_peer_id === peerId) return true;
+  // A removed member's `member_roles` assignment can linger after removeServerMember drops
+  // them from `members`; require CURRENT membership so a kicked moderator's stale role can't
+  // keep authorizing pin/unpin (or any) privileged operations.
+  if (!(server.members ?? []).includes(peerId)) return false;
+  const roleIds = server.member_roles?.[peerId] ?? [];
+  if (roleIds.length === 0) return false;
+  const roles = server.roles ?? [];
+  return roleIds.some(rid => {
+    const role = roles.find(r => r.id === rid);
+    return !!role && (role.permissions.includes(permission) || role.permissions.includes('ADMINISTRATOR'));
+  });
+}
+
 export function addServerRole(serverId: string, role: import('../../types.js').ServerRole): void {
   updateState(s => {
     const server = s.servers[serverId];
@@ -399,6 +657,13 @@ export function setMemberRoles(serverId: string, peerId: string, roleIds: string
   });
 }
 
+/** True when peerId is a current participant of the given scope (DM participant or server member). */
+export function isScopeMember(scopeId: string, scopeType: string, serverId: string | undefined, peerId: string): boolean {
+  if (!peerId) return false;
+  if (scopeType === 'dm') return (_state.dms[scopeId]?.participants ?? []).includes(peerId);
+  return serverId ? (_state.servers[serverId]?.members ?? []).includes(peerId) : false;
+}
+
 export function addPollVote(messageId: string, optionIndex: number, peerId: string): boolean {
   // Returns true if this is a new vote (not a duplicate).
   let isNew = false;
@@ -406,8 +671,13 @@ export function addPollVote(messageId: string, optionIndex: number, peerId: stri
     const msg = s.messages.find(m => m.id === messageId);
     if (!msg) return {};
     const votes = msg.poll_votes ?? {};
+    // Single-choice: a peer holds at most ONE vote across all options. Reject if the peer
+    // already appears in ANY option's voter list — previously only the selected option was
+    // checked, so after a reload (where the UI no longer remembers the prior selection) the
+    // same identity could stack a vote onto every option.
+    const alreadyVoted = Object.values(votes).some(voters => voters.includes(peerId));
+    if (alreadyVoted) return {};
     const voters = votes[optionIndex] ?? [];
-    if (voters.includes(peerId)) return {};
     isNew = true;
     return {
       messages: s.messages.map(m => m.id === messageId
@@ -570,6 +840,29 @@ export function setVoiceConnectionState(channelId: string, state: XoreinRuntimeV
   }));
 }
 
+/**
+ * Record the HONEST media security mode for a voice session so the UI badge
+ * reflects real protection: `crowd` = SFrame E2EE over DTLS (a real shared key),
+ * `clear` = DTLS-only (no SFrame — e.g. no crowd_root). Never claims SFrame the
+ * media pipeline isn't actually applying.
+ */
+export function setVoiceSecurityMode(channelId: string, mode: XoreinRuntimeVoiceSession['security_mode']): void {
+  updateState(s => ({
+    voice_sessions: s.voice_sessions.map(v =>
+      v.channel_id === channelId ? { ...v, security_mode: mode } : v,
+    ),
+  }));
+}
+
+/** Flag whether TURN is unavailable for a voice session (STUN-only). */
+export function setVoiceTurnUnavailable(channelId: string, unavailable: boolean): void {
+  updateState(s => ({
+    voice_sessions: s.voice_sessions.map(v =>
+      v.channel_id === channelId ? { ...v, turn_unavailable: unavailable } : v,
+    ),
+  }));
+}
+
 export function leaveVoice(channelId: string, peerId: string): void {
   updateState(s => ({
     voice_sessions: s.voice_sessions
@@ -665,6 +958,7 @@ export function toRuntimeSnapshot(): XoreinRuntimeSnapshot {
     relay_addrs: s.relay_addrs,
     presence: s.presence,
     unread: s.unread,
+    reports: s.reports,
     // Reachable peers, including the always-on bootstrap relay (seeded by the
     // engine once the transport connects) so deriveConnectionState can see that
     // the support node is reachable instead of reporting every server no-peer.

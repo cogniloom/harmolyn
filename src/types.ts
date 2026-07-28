@@ -43,6 +43,14 @@ export interface Message {
   delivery_status?: 'pending' | 'sent' | 'offline_queued' | 'failed';
   /** Poll votes from P2P notify.push events — option_index → peer_ids. */
   poll_votes?: Record<number, string[]>;
+  /**
+   * The real per-message security mode (stamped at the encrypt/decrypt site).
+   * Used to drive the security badge and per-message lock indicators from what
+   * actually happened on the wire, never from the scope type.
+   */
+  securityMode?: 'seal' | 'crowd' | 'clear';
+  /** True when this message was end-to-end encrypted on the wire. */
+  encrypted?: boolean;
 }
 
 export interface Channel {
@@ -118,6 +126,11 @@ export interface XoreinRuntimeIdentity {
   profile?: XoreinRuntimeProfile;
   /** True when this is an ephemeral guest identity (no password, not persisted). */
   is_guest?: boolean;
+  /**
+   * Base64 of this identity's HYBRID public key (Ed25519 ‖ ML-DSA-65), used to
+   * compute the safety number a contact verifies against. Public material only.
+   */
+  identity_key?: string;
 }
 
 export interface XoreinRuntimePeer {
@@ -131,6 +144,85 @@ export interface XoreinRuntimePeer {
   display_name?: string;
   /** Opportunistically learned avatar data: URI from presence broadcasts. */
   avatar?: string;
+  /**
+   * Base64 of the peer's HYBRID public identity (Ed25519 ‖ ML-DSA-65), TOFU-pinned
+   * the first time we verify their signed prekey bundle. Used for safety-number
+   * computation and change detection.
+   */
+  identity_key?: string;
+  /** True once the user has confirmed this peer's safety number out of band. */
+  identity_verified?: boolean;
+  /**
+   * True when a later bundle presented a DIFFERENT identity key than the pinned one
+   * — a re-key or a relay swap. Surfaces a "safety number changed" warning and
+   * clears the verified flag until re-confirmed.
+   */
+  identity_changed?: boolean;
+}
+
+/**
+ * A durable outbound-queue entry: an ENCRYPTED envelope that could not be sent
+ * because the relay/transport was down at send time. Persisted (encrypted at rest)
+ * and replayed on reconnect, so a message shown as "queued" is genuinely queued and
+ * not silently discarded. The payload is already E2EE ciphertext (seal/crowd).
+ */
+export interface XoreinOutboxEntry {
+  id: string;
+  /** Peers this envelope still needs to reach. */
+  targets: string[];
+  /** PeerStream protocol id (e.g. the chat family). */
+  protocol: string;
+  /** Operation name (e.g. 'chat.send'). */
+  operation: string;
+  /** The encrypted wire payload to deliver verbatim. */
+  payload: Record<string, unknown>;
+  /** The local message this entry delivers, so its status can be updated on drain. */
+  message_id?: string;
+  created_at: string;
+  attempts: number;
+  /**
+   * For a first-contact DM composed before a Seal session could be established (the
+   * recipient was offline, so no prekey bundle was reachable): the message could not be
+   * encrypted, so there is no wire `payload` to replay. This carries the material to
+   * (re)attempt X3DH + Double-Ratchet encryption on drain, once connectivity returns and
+   * the bundle can be fetched. Held only in the encrypted-at-rest local store; it is never
+   * transmitted as-is — the drain encrypts it first, exactly like a normal send.
+   */
+  pending_seal?: {
+    recipient: string;
+    base: Record<string, unknown>;
+    body: string;
+    media?: XoreinAttachment[];
+  };
+}
+
+/**
+ * An abuse report. Reports about a server are delivered P2P to that server's owner
+ * (the moderator who can act); reports about a DM are kept locally. Stored encrypted
+ * at rest like the rest of the native state.
+ */
+export interface XoreinReport {
+  id: string;
+  reason: string;
+  details?: string;
+  target_kind: 'message' | 'user';
+  target_id: string;           // message id or reported peer id
+  reported_peer_id?: string;   // the author/user being reported
+  server_id?: string;
+  channel_id?: string;
+  content_excerpt?: string;    // short context snippet (owner can already read server content)
+  reporter_peer_id: string;    // local peer (outbound) or authenticated remote (inbound, owner side)
+  created_at: string;
+  /** True on the server owner's copy of a report received from a member. */
+  inbound?: boolean;
+  /**
+   * Delivery state of the reporter's copy: 'pending' until the owner acknowledges/receives it,
+   * 'failed' once the durable retry has aged out without reaching the owner. Undefined = local
+   * DM report (no owner to deliver to) or delivered.
+   */
+  delivery?: 'pending' | 'failed';
+  /** Owner-side moderation state: set once the owner has actioned/dismissed the report. */
+  resolved?: boolean;
 }
 
 export interface XoreinRuntimeChannel {
@@ -156,6 +248,14 @@ export interface XoreinRuntimeManifest {
   capabilities?: string[];
   history_coverage?: string;
   history_retention_messages?: number;
+  /**
+   * How many recent messages the owner serves to a BRAND-NEW joiner. Default 0
+   * (zero pre-join history — forward secrecy on join): a new member sees only what
+   * is sent after they join. A server may opt into a bounded recent window by
+   * setting this > 0. Existing members re-pulling always receive the full
+   * `history_retention_messages` window.
+   */
+  join_history_messages?: number;
 }
 
 export interface ServerRole {
@@ -189,6 +289,32 @@ export interface XoreinRuntimeServer {
    */
   crowd_root?: string;
   /**
+   * Monotonic epoch number for `crowd_root`. Bumped every time the owner rotates
+   * the root (on member join and on kick/leave), and carried alongside the root so
+   * every member installs the same epoch. Messages carry their epoch id, so a
+   * remaining member can still decrypt in-flight old-epoch traffic (kept in a small
+   * legacy window) while a removed member — who never receives the new root — is
+   * locked out of all traffic at the new epoch. Defaults to 0 when absent.
+   */
+  crowd_epoch?: number;
+  /**
+   * Monotonic revision of the whole owner-authoritative server record, bumped on every
+   * owner mutation that broadcasts (broadcastServerUpdate). Because those broadcasts are
+   * fire-and-forget on independent streams, updates can arrive out of order; members
+   * reject any incoming snapshot whose rev is not strictly newer than the one they hold,
+   * so a stale snapshot can't restore roles/permissions/membership the owner just changed.
+   * Defaults to 0 when absent.
+   */
+  server_rev?: number;
+  /**
+   * Owner-held map of member peer id → the ISO timestamp at which that member joined.
+   * The owner enforces this boundary on EVERY history pull (not just the initial join
+   * response): messages older than a member's join time are withheld beyond the
+   * `join_history_messages` allowance, so a member can never later page into pre-join
+   * plaintext history. Owner-private (stripped before the record is sent to members).
+   */
+  member_since?: Record<string, string>;
+  /**
    * Base64 secret used to mint/verify invite tokens (owner-held, never sent to
    * the support node). A joiner must present HMAC(invite_secret, server_id) to be
    * admitted and served history.
@@ -216,6 +342,7 @@ export interface XoreinAttachment {
   key: string;           // base64url AES-256-GCM key — E2EE, never sent to the node
   nonce: string;         // base64url 12-byte nonce
   content_hash?: string; // sha256 hex of the plaintext (integrity)
+  origin?: string;       // node origin (scheme+host) the ciphertext lives on, for cross-node fetch
 }
 
 export interface XoreinRuntimeMessage {
@@ -248,6 +375,17 @@ export interface XoreinRuntimeMessage {
    * Key = option index (as string), value = array of peer_ids that voted for that option.
    */
   poll_votes?: Record<number, string[]>;
+  /**
+   * The security mode under which this specific message actually crossed the wire,
+   * stamped at the encrypt/decrypt site — NOT inferred from the scope type. Inbound
+   * messages are only stored after successful decryption, so they always carry the
+   * real mode; outbound messages carry `clear` only when encryption was impossible
+   * (e.g. no crowd_root seeded) and the message was kept local. Drives the security
+   * badge so the UI never claims encryption the wire did not provide.
+   */
+  security_mode?: 'seal' | 'crowd' | 'clear';
+  /** True when this message was end-to-end encrypted on the wire (see security_mode). */
+  encrypted?: boolean;
 }
 
 export interface XoreinRuntimeVoiceParticipant {
@@ -269,6 +407,10 @@ export interface XoreinRuntimeVoiceSession {
   security_mode?: 'seal' | 'crowd' | 'tree' | 'clear';
   connection_state?: 'connecting' | 'connected' | 'failed' | 'closed';
   self_muted?: boolean;
+  // True when no TURN relay is available (STUN-only): calls may fail to connect on
+  // restrictive/symmetric NATs. The UI surfaces this as a visible warning rather
+  // than letting the call silently never connect.
+  turn_unavailable?: boolean;
 }
 
 // SDP/ICE wire types for voice signaling over /aether/voice/0.1.0.
@@ -352,6 +494,8 @@ export interface XoreinRuntimeSnapshot {
   presence?: Record<string, XoreinPresenceEntry>;
   /** Per-scope unread message counts, keyed by channel id or DM id. */
   unread?: Record<string, number>;
+  /** Abuse reports (owner-received + local outbound copies). */
+  reports?: XoreinReport[];
 }
 
 export interface XoreinSessionSnapshot {
