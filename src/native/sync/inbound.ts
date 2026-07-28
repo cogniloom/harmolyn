@@ -103,25 +103,36 @@ function emitNotify(detail: { kind: string; title: string; body: string; scopeId
  * suppressEveryone/suppressRoles can mute; `mention` is a direct ping that survives
  * "Mentions only"; `channel` is ordinary traffic that "Mentions only" drops.
  */
+/**
+ * True when `body` mentions the COMPLETE `token` after an `@` — i.e. `@token` followed by a
+ * non-word character or end of string. A raw substring test would let `@Ann` match `@Anna`
+ * and notify the wrong person under "Mentions only".
+ */
+function mentionsToken(body: string, token: string): boolean {
+  const t = token.trim();
+  if (!t) return false;
+  const escaped = t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp('@' + escaped + '(?![\\w])', 'i').test(body);
+}
+
 export function classifyChannelNotification(
   server: { roles?: { id: string; name?: string }[]; member_roles?: Record<string, string[]> },
   mePeerId: string,
   myDisplayName: string | undefined,
   body: string,
 ): 'everyone' | 'role' | 'mention' | 'channel' {
-  const text = (body ?? '').toLowerCase();
-  if (/@(everyone|here)\b/i.test(body ?? '')) return 'everyone';
-  const myName = myDisplayName?.trim().toLowerCase();
-  if ((myName && text.includes('@' + myName)) || (mePeerId && text.includes('@' + mePeerId.toLowerCase()))) {
+  const text = body ?? '';
+  if (/@(everyone|here)\b/i.test(text)) return 'everyone';
+  if ((myDisplayName && mentionsToken(text, myDisplayName)) || (mePeerId && mentionsToken(text, mePeerId))) {
     return 'mention';
   }
   // A role ping counts only when it targets a role the local user actually holds.
   const myRoleIds = new Set((server.member_roles ?? {})[mePeerId] ?? []);
   const myRoleNames = (server.roles ?? [])
     .filter((r) => myRoleIds.has(r.id))
-    .map((r) => String(r.name ?? '').trim().toLowerCase())
+    .map((r) => String(r.name ?? '').trim())
     .filter(Boolean);
-  if (myRoleNames.some((name) => text.includes('@' + name))) return 'role';
+  if (myRoleNames.some((name) => mentionsToken(text, name))) return 'role';
   return 'channel';
 }
 

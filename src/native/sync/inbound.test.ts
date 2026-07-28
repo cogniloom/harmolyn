@@ -54,6 +54,14 @@ describe('classifyChannelNotification', () => {
     expect(classifyChannelNotification(server, ME, undefined, `yo @${ME}`)).toBe('mention');
   });
 
+  it('requires a complete-token boundary so @Anna does not ping @Ann', () => {
+    // A prefix collision must NOT count as a mention (would notify under "Mentions only").
+    expect(classifyChannelNotification(server, ME, 'Ann', 'hey @Anna how are you')).toBe('channel');
+    // The exact name (followed by punctuation or end) still counts.
+    expect(classifyChannelNotification(server, ME, 'Ann', 'hey @Ann, ping')).toBe('mention');
+    expect(classifyChannelNotification(server, ME, 'Ann', 'hey @Ann')).toBe('mention');
+  });
+
   it('flags a role ping only for a role I actually hold', () => {
     expect(classifyChannelNotification(server, ME, 'Me', 'attention @Moderator')).toBe('role');
     // I do not hold VIP, so an @VIP ping is ordinary channel traffic for me.

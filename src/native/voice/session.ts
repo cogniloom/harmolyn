@@ -299,6 +299,19 @@ function serverMembersForChannel(channelId: string): string[] {
   return [];
 }
 
+/**
+ * Peers permitted to signal in this voice channel, or null if it is NOT a server channel
+ * (e.g. an ad-hoc/DM call) where no membership roster applies. Distinct from
+ * serverMembersForChannel (which returns [] for a non-server channel) so callers can tell
+ * "no roster → allow" apart from "empty roster → deny".
+ */
+function voiceSignalingRoster(channelId: string): string[] | null {
+  for (const server of Object.values(getState().servers)) {
+    if (server.channels && channelId in server.channels) return server.members ?? [];
+  }
+  return null;
+}
+
 function selfProfile(): { display_name?: string; avatar?: string } {
   const p = getState().identity?.profile ?? {};
   return { display_name: p.display_name, avatar: p.avatar };
@@ -680,6 +693,11 @@ export class VoiceSession {
 
   /** A member announced join/leave. Returns OUR state for this channel. */
   handlePresence(req: VoicePresenceRequest, remotePeerId: string): VoicePresenceResponse {
+    if (!this.maySignal(remotePeerId)) {
+      // A removed member trying to rejoin: force-drop any lingering state and refuse.
+      this.dropPeer(remotePeerId);
+      return { ok: false, in_channel: false, muted: this.muted, video: this.isCameraOn, screen_sharing: this.isScreenSharing };
+    }
     if (req.action === 'leave') {
       this.dropPeer(remotePeerId);
       storeLeaveVoice(this.channelId, remotePeerId);
@@ -708,6 +726,9 @@ export class VoiceSession {
   /** A peer sent us an SDP offer (initial connect or renegotiation). */
   async handleOffer(req: VoiceOfferRequest, remotePeerId: string): Promise<VoiceOfferResponse> {
     if (this.stopped) return { ok: false, error: 'not_in_channel' };
+    // SECURITY: reject an offer from a peer who is not a current member of the channel's
+    // server, so a kicked member can't recreate a connection after the rekey dropped it.
+    if (!this.maySignal(remotePeerId)) { this.dropPeer(remotePeerId); return { ok: false, error: 'not_a_member' }; }
     let entry = this.peers.get(remotePeerId);
     if (!entry) entry = this.createPeerConn(remotePeerId);
     entry.remoteKinds = { ...entry.remoteKinds, ...(req.kinds ?? {}) };
@@ -866,6 +887,18 @@ export class VoiceSession {
     }
   }
 
+  /**
+   * SECURITY: only current members of the channel's server may signal in a server voice
+   * call. Without this, a kicked member (who still knows the channel id + a peer address)
+   * could re-offer and recreate a connection after the rekey tore it down — and on a
+   * browser without insertable streams (DTLS-only media) receive the call's unwrapped
+   * audio/video. Ad-hoc/DM calls (no owning server) have no roster and are not gated.
+   */
+  private maySignal(remotePeerId: string): boolean {
+    const roster = voiceSignalingRoster(this.channelId);
+    return roster === null || roster.includes(remotePeerId);
+  }
+
   /** Per-peer reconnect scheduler, created on demand and preserved across redials. */
   private schedulerFor(peerId: string): ReconnectScheduler {
     let s = this.reconnectSchedulers.get(peerId);
@@ -876,6 +909,8 @@ export class VoiceSession {
   /** Apply a trickled ICE candidate from a peer (buffering pre-remote-description). */
   handleIce(req: VoiceIceRequest, remotePeerId: string): { ok: boolean } {
     if (this.stopped) return { ok: false };
+    // SECURITY: don't buffer/apply candidates from a non-member (see maySignal).
+    if (!this.maySignal(remotePeerId)) return { ok: false };
     const init: RTCIceCandidateInit = {
       candidate: req.candidate,
       sdpMid: req.sdp_mid ?? undefined,
