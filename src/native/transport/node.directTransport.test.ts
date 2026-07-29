@@ -36,7 +36,8 @@ describe('createXoreinNode — directTransport flag', () => {
   beforeEach(() => { captured.config = undefined; localStorage.clear(); });
   afterEach(() => localStorage.clear());
 
-  it('omits WebRTC + DCUtR + /webrtc listen when the flag is off (default)', async () => {
+  it('omits WebRTC + DCUtR + /webrtc listen when the flag is overridden off', async () => {
+    localStorage.setItem(FEATURE_OVERRIDES_STORAGE_KEY, JSON.stringify({ directTransport: false }));
     await createXoreinNode();
     const cfg = captured.config!;
     expect(transportTags(cfg)).not.toContain('webrtc');
@@ -46,8 +47,7 @@ describe('createXoreinNode — directTransport flag', () => {
     expect(transportTags(cfg)).toEqual(expect.arrayContaining(['ws', 'wt', 'circuit']));
   });
 
-  it('adds WebRTC transport, DCUtR service, and /webrtc listen when the flag is on', async () => {
-    localStorage.setItem(FEATURE_OVERRIDES_STORAGE_KEY, JSON.stringify({ directTransport: true }));
+  it('adds WebRTC transport, DCUtR service, and /webrtc listen by default (directTransport ships ON)', async () => {
     await createXoreinNode();
     const cfg = captured.config!;
     expect(transportTags(cfg)).toContain('webrtc');

@@ -32,7 +32,11 @@ describe('selectPeerAddr', () => {
     expect(selectPeerAddr([], PEER, RELAY, false)).toBe(`${RELAY}/p2p-circuit/p2p/${PEER}`);
   });
 
-  it('synthesizes a /webrtc fallback when nothing is advertised (direct on)', () => {
-    expect(selectPeerAddr([], PEER, RELAY, true)).toBe(`${RELAY}/p2p-circuit/webrtc/p2p/${PEER}`);
+  it('synthesizes a PLAIN circuit fallback even with direct on (never guess /webrtc support)', () => {
+    // A peer that supports WebRTC advertises its /webrtc addr; a peer that does
+    // not cannot answer a /webrtc dial AT ALL (no signaling handler), and the
+    // dial fails with no retry. So the unknown-peer fallback must stay plain —
+    // first contact with an older peer (invite join, friend request) depends on it.
+    expect(selectPeerAddr([], PEER, RELAY, true)).toBe(`${RELAY}/p2p-circuit/p2p/${PEER}`);
   });
 });

@@ -8,7 +8,18 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type { Mock } from 'vitest';
 
-vi.mock('./snapshot', () => ({ publishNativeSnapshot: vi.fn() }));
+vi.mock('./snapshot', () => {
+  // Faithful mock of the coalescing scheduler: schedule defers one macrotask and
+  // collapses same-tick requests into one call of the mocked publish, exactly
+  // like the real snapshot.ts pair — the ordering assertions below depend on it.
+  const publishNativeSnapshot = vi.fn();
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const schedulePublishNativeSnapshot = vi.fn(() => {
+    if (timer !== null) return;
+    timer = setTimeout(() => { timer = null; publishNativeSnapshot(); }, 0);
+  });
+  return { publishNativeSnapshot, schedulePublishNativeSnapshot };
+});
 
 import { publishNativeSnapshot } from './snapshot';
 import {

@@ -3,13 +3,13 @@
 import type { Libp2p } from 'libp2p';
 import type { XoreinRuntimeServer, XoreinRuntimeMessage } from '../../types.js';
 import {
-  frameMessage, readFramedMessage,
-  decodePeerStreamRequest, encodePeerStreamResponse,
+  frameMessage, encodePeerStreamResponse, serveFamilyStream,
+  type InboundFamilyStream, type PeerStreamRequest,
 } from '../families/peerstream.js';
 import { PROTOCOLS } from '../families/families.js';
 import { addMessage, editMessage as storeEditMessage, deleteMessage as storeDeleteMessage, pinMessage as storePinMessage, updatePresenceEntry, addReaction, removeReaction, getState, updateServer, upsertPeer, addFriendRequest, acceptFriendByPeer, ensureDm, bumpUnread, getActiveScope, removeServerMembership, removeServerMember, addPollVote, memberHasPermission, isScopeMember, addReport } from '../state/store.js';
 import { nativeAnnouncePresence, broadcastServerUpdate, rotateCrowdEpoch } from '../state/mutations.js';
-import { publishNativeSnapshot } from '../state/snapshot.js';
+import { publishNativeSnapshot, schedulePublishNativeSnapshot } from '../state/snapshot.js';
 import { decryptInboundEnvelope, getScopeCrypto, applyCrowdRoot, type DecryptedMessage } from './secureEnvelope.js';
 import { verifyInviteToken } from './invite.js';
 import { rekeyVoiceForServer } from '../voice/registry.js';
@@ -250,6 +250,21 @@ function handleChatSend(payload: Record<string, unknown>, remotePeerId: string):
     created_at: new Date().toISOString(),
   });
 
+  // The message itself proves the sender stopped typing — clear the indicator
+  // NOW instead of waiting for their (deferred) presence.update, so the typing
+  // pill swaps to the message in the same render.
+  //
+  // KNOWN RACE (accepted): chat and presence ride separate streams, so a
+  // typing-start the sender issued AFTER this message can arrive BEFORE it and
+  // be wrongly cleared here. The wire envelope carries no sender-clock message
+  // timestamp to compare against, and mixing sender presence clocks with the
+  // receiver's would be meaningless under skew. The window is one cross-stream
+  // reorder (~ms) and self-heals on the sender's next typing rebroadcast.
+  const senderPresence = state.presence?.[senderId];
+  if (senderPresence?.typing_in_scope === scopeId) {
+    updatePresenceEntry(senderId, { ...senderPresence, typing_in_scope: undefined, updated_at: new Date().toISOString() });
+  }
+
   // Notifications: bump the unread badge for any scope the user isn't currently
   // viewing, and pop a toast for DMs (a 1:1 message you'd otherwise miss). Channel
   // messages get the quieter unread pip rather than a toast to avoid noise.
@@ -268,7 +283,7 @@ function handleChatSend(payload: Record<string, unknown>, remotePeerId: string):
       : 'channel';
     emitNotify({ kind, title: `#${channelName}`, body: `${peerDisplayName(senderId)}: ${body || 'Sent an attachment'}`, scopeId });
   }
-  publishNativeSnapshot();
+  schedulePublishNativeSnapshot();
 }
 
 /**
@@ -310,7 +325,7 @@ function handleChatEdit(payload: Record<string, unknown>, remotePeerId: string):
   if (!decoded?.body) return;
 
   storeEditMessage(messageId, decoded.body);
-  publishNativeSnapshot();
+  schedulePublishNativeSnapshot();
 }
 
 function handleChatDelete(payload: Record<string, unknown>, remotePeerId: string): void {
@@ -325,7 +340,7 @@ function handleChatDelete(payload: Record<string, unknown>, remotePeerId: string
   if (msg.sender_peer_id !== remotePeerId) return;
 
   storeDeleteMessage(messageId);
-  publishNativeSnapshot();
+  schedulePublishNativeSnapshot();
 }
 
 /** Route an inbound chat family message by operation type. */
@@ -413,7 +428,7 @@ function handlePresenceUpdate(payload: Record<string, unknown>, remotePeerId: st
   // Presence from a peer we friend-requested (and share no server with) implies
   // they accepted — recover from a lost friends.accept so the requester converges.
   reconcileFriendAcceptFromPresence(peerId);
-  publishNativeSnapshot();
+  schedulePublishNativeSnapshot();
 }
 
 // ── Reaction inbound (via notify.push) ────────────────────────────────────
@@ -437,7 +452,7 @@ function handleNotifyPush(payload: Record<string, unknown>, remotePeerId: string
     } else {
       removeReaction(messageId, emoji, fromPeerId);
     }
-    publishNativeSnapshot();
+    schedulePublishNativeSnapshot();
     return;
   }
 
@@ -453,7 +468,7 @@ function handleNotifyPush(payload: Record<string, unknown>, remotePeerId: string
     if (!serverId || !memberHasPermission(serverId, fromPeerId, 'MANAGE_MESSAGES')) return;
     const pinned = payload.pinned !== false;
     storePinMessage(messageId, pinned);
-    publishNativeSnapshot();
+    schedulePublishNativeSnapshot();
     return;
   }
 
@@ -469,7 +484,7 @@ function handleNotifyPush(payload: Record<string, unknown>, remotePeerId: string
     if (!msg) return;
     if (!isScopeMember(msg.scope_id, msg.scope_type, msg.server_id, fromPeerId)) return;
     addPollVote(messageId, optionIndex, fromPeerId);
-    publishNativeSnapshot();
+    schedulePublishNativeSnapshot();
     return;
   }
 
@@ -500,7 +515,7 @@ function handleNotifyPush(payload: Record<string, unknown>, remotePeerId: string
       inbound: true,
     });
     emitNotify({ kind: 'server', title: 'New report', body: `A member reported content in “${server.name}”` });
-    publishNativeSnapshot();
+    schedulePublishNativeSnapshot();
     return;
   }
 }
@@ -580,7 +595,7 @@ export function handleSyncRequest(operation: string, payload: Record<string, unk
         // so a rotation must re-key remaining members and drop removed ones' connections.
         rekeyVoiceForServer(serverId);
       }
-      publishNativeSnapshot();
+      schedulePublishNativeSnapshot();
     }
     return { ok: true };
   }
@@ -593,7 +608,7 @@ export function handleSyncRequest(operation: string, payload: Record<string, unk
     if (isOwner && remotePeerId && server.members.includes(remotePeerId)) {
       removeServerMember(serverId, remotePeerId);
       rotateCrowdEpoch(serverId);
-      publishNativeSnapshot();
+      schedulePublishNativeSnapshot();
       broadcastServerUpdate(serverId);
     }
     return { ok: true };
@@ -611,7 +626,7 @@ export function handleSyncRequest(operation: string, payload: Record<string, unk
           ? `“${server.name}” was deleted by its owner`
           : `You were removed from “${server.name}”`,
       });
-      publishNativeSnapshot();
+      schedulePublishNativeSnapshot();
     }
     return { ok: true };
   }
@@ -660,7 +675,7 @@ export function handleSyncRequest(operation: string, payload: Record<string, unk
     });
     rotateCrowdEpoch(serverId);
     broadcastServerUpdate(serverId);
-    publishNativeSnapshot();
+    schedulePublishNativeSnapshot();
   }
 
   const current = getState().servers[serverId] ?? server;
@@ -825,7 +840,7 @@ function handleFriendOp(payload: Record<string, unknown>, remotePeerId: string, 
       created_at: new Date().toISOString(),
     });
     emitNotify({ kind: 'friend', title: 'Friend request', body: `${reqName} wants to be friends` });
-    publishNativeSnapshot();
+    schedulePublishNativeSnapshot();
     return;
   }
 
@@ -838,7 +853,7 @@ function handleFriendOp(payload: Record<string, unknown>, remotePeerId: string, 
     }
     acceptFriendByPeer(remotePeerId);
     emitNotify({ kind: 'friend', title: 'Friend request accepted', body: `${peerDisplayName(remotePeerId)} accepted your friend request` });
-    publishNativeSnapshot();
+    schedulePublishNativeSnapshot();
     // Announce online to the just-confirmed friend so each side sees the other
     // online right away (presenceTargets now includes them).
     nativeAnnouncePresence();
@@ -852,31 +867,29 @@ function handleFriendOp(payload: Record<string, unknown>, remotePeerId: string, 
  * return value (unlike makeHandler, which always replies {ok:true}). Used by the
  * sync family so joiners receive the server snapshot.
  */
+function parseRequestPayload(req: PeerStreamRequest): Record<string, unknown> {
+  if (!req.payload) return {};
+  try { return JSON.parse(dec.decode(req.payload)) as Record<string, unknown>; } catch { return {}; /* non-JSON */ }
+}
+
 function makeRequestHandler(
   peerSync: PeerSync,
   handle: (operation: string, payload: Record<string, unknown>, remotePeerId: string) => Record<string, unknown>,
 ) {
-  return async (stream: AsyncIterable<Uint8Array | { subarray(): Uint8Array }>, connection: { remotePeer: { toString(): string }; remoteAddr: { toString(): string } }) => {
+  return async (stream: InboundFamilyStream, connection: { remotePeer: { toString(): string }; remoteAddr: { toString(): string } }) => {
     try {
       const remotePeerId = connection.remotePeer.toString();
       const remoteAddr = connection.remoteAddr.toString();
       peerSync.registerPeer(remotePeerId, remoteAddr.includes('p2p-circuit') ? remoteAddr : undefined);
 
-      const msg = await readFramedMessage(stream);
-      if (!msg) return;
-      const req = decodePeerStreamRequest(msg);
-      let payload: Record<string, unknown> = {};
-      if (req.payload) {
-        try { payload = JSON.parse(dec.decode(req.payload)) as Record<string, unknown>; } catch { /* non-JSON */ }
-      }
-
-      let result: Record<string, unknown>;
-      try { result = handle(req.operation, payload, remotePeerId); }
-      catch { result = { ok: false, error: 'handler_error' }; }
-
-      const resp = encodePeerStreamResponse({ payload: enc.encode(JSON.stringify(result)), requestId: req.requestId });
-      (stream as unknown as { send(d: Uint8Array): boolean }).send(frameMessage(resp));
-      await (stream as unknown as { close(): Promise<void> }).close();
+      // Streams are persistent: serve every framed request the peer sends
+      // (legacy one-shot peers half-close after one; the loop then drains).
+      await serveFamilyStream(stream, (req) => {
+        let result: Record<string, unknown>;
+        try { result = handle(req.operation, parseRequestPayload(req), remotePeerId); }
+        catch { result = { ok: false, error: 'handler_error' }; }
+        return frameMessage(encodePeerStreamResponse({ payload: enc.encode(JSON.stringify(result)), requestId: req.requestId }));
+      });
     } catch { /* non-fatal */ }
   };
 }
@@ -887,27 +900,18 @@ function makeHandler(
   peerSync: PeerSync,
   handle: (payload: Record<string, unknown>, remotePeerId: string, operation: string) => void,
 ) {
-  return async (stream: AsyncIterable<Uint8Array | { subarray(): Uint8Array }>, connection: { remotePeer: { toString(): string }; remoteAddr: { toString(): string } }) => {
+  return async (stream: InboundFamilyStream, connection: { remotePeer: { toString(): string }; remoteAddr: { toString(): string } }) => {
     try {
       const remotePeerId = connection.remotePeer.toString();
       const remoteAddr = connection.remoteAddr.toString();
       // Register the peer's addr so outbound can reach them.
       peerSync.registerPeer(remotePeerId, remoteAddr.includes('p2p-circuit') ? remoteAddr : undefined);
 
-      const msg = await readFramedMessage(stream);
-      if (!msg) return;
-
-      const req = decodePeerStreamRequest(msg);
-      let payload: Record<string, unknown> = {};
-      if (req.payload) {
-        try { payload = JSON.parse(dec.decode(req.payload)) as Record<string, unknown>; } catch { /* non-JSON payload */ }
-      }
-
-      handle(payload, remotePeerId, req.operation);
-
-      // Send OK response.
-      (stream as unknown as { send(d: Uint8Array): boolean }).send(okResponse(req.requestId));
-      await (stream as unknown as { close(): Promise<void> }).close();
+      // Streams are persistent: serve every framed request the peer sends.
+      await serveFamilyStream(stream, (req) => {
+        handle(parseRequestPayload(req), remotePeerId, req.operation);
+        return okResponse(req.requestId);
+      });
     } catch { /* non-fatal: stream errors from unknown peers */ }
   };
 }

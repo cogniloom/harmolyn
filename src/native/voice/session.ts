@@ -388,6 +388,10 @@ export class VoiceSession {
   private remoteScreens = new Map<string, MediaStream>();    // screen share
   private remoteKeys = new Map<string, PeerKey>();
   private activity: VoiceActivityMonitor;
+  // Roster subscribers (the UI sinks). Notified via notifyRoster() whenever the
+  // remote stream/screen maps, local capture streams, or participants change —
+  // the event-driven replacement for the sinks' old 500ms polling.
+  private rosterListeners = new Set<() => void>();
 
   private muted = false;
   private stopped = false;
@@ -566,6 +570,7 @@ export class VoiceSession {
 
     storeLeaveVoice(this.channelId, this.localPeerId);
     publishNativeSnapshot();
+    this.notifyRoster();
   }
 
   // ── Local controls ─────────────────────────────────────────────────────────
@@ -645,6 +650,7 @@ export class VoiceSession {
     publishNativeSnapshot();
     this.callbacks.onLocalState?.();
     this.broadcastPresenceUpdate();
+    this.notifyRoster();
   }
 
   /** Start sharing a screen/game. Opens the OS picker and renegotiates each peer. */
@@ -678,6 +684,7 @@ export class VoiceSession {
     publishNativeSnapshot();
     this.callbacks.onLocalState?.();
     this.broadcastPresenceUpdate();
+    this.notifyRoster();
   }
 
   async stopScreenShare(): Promise<void> {
@@ -692,6 +699,7 @@ export class VoiceSession {
     publishNativeSnapshot();
     this.callbacks.onLocalState?.();
     this.broadcastPresenceUpdate();
+    this.notifyRoster();
   }
 
   get isScreenSharing(): boolean { return this.screenStream != null; }
@@ -1143,10 +1151,17 @@ export class VoiceSession {
         setVoiceParticipant(this.channelId, remotePeerId, { screen_sharing: false });
         this.callbacks.onScreenStream?.(remotePeerId, null);
         publishNativeSnapshot();
+        this.notifyRoster();
       });
     } else {
-      const stream = e.streams[0] ?? this.remoteStreams.get(remotePeerId) ?? new MediaStream();
+      const existing = this.remoteStreams.get(remotePeerId);
+      const stream = e.streams[0] ?? existing ?? new MediaStream();
       if (!stream.getTracks().includes(e.track)) stream.addTrack(e.track);
+      if (stream !== existing) {
+        // Renegotiated track REMOVALS (e.g. remote camera off) mutate this stream
+        // in place — surface them to roster subscribers as they happen.
+        stream.addEventListener('removetrack', () => this.notifyRoster());
+      }
       this.remoteStreams.set(remotePeerId, stream);
       if (kind === 'camera') setVoiceParticipant(this.channelId, remotePeerId, { video: true });
       if (e.track.kind === 'audio') this.activity.addStream(remotePeerId, stream);
@@ -1154,6 +1169,7 @@ export class VoiceSession {
     }
     storeJoinVoice(this.channelId, remotePeerId);
     publishNativeSnapshot();
+    this.notifyRoster();
   }
 
   private dropPeer(remotePeerId: string, opts: { keepScheduler?: boolean } = {}): void {
@@ -1175,6 +1191,7 @@ export class VoiceSession {
     this.remoteScreens.delete(remotePeerId);
     this.remoteKeys.delete(remotePeerId);
     this.callbacks.onParticipantLeft?.(remotePeerId);
+    this.notifyRoster();
   }
 
   private localKindsFor(entry: PeerConn): Record<string, TrackKind> {
@@ -1236,8 +1253,28 @@ export class VoiceSession {
     });
   }
 
-  // ── UI accessors (polled by VoiceAudioSinks / VoiceVideoSinks) ──────────────
+  // ── UI accessors + change subscription (VoiceAudioSinks / VoiceVideoSinks) ──
 
   get remoteStreamsMap(): ReadonlyMap<string, MediaStream> { return this.remoteStreams; }
   get remoteScreensMap(): ReadonlyMap<string, MediaStream> { return this.remoteScreens; }
+
+  /**
+   * Subscribe to roster/stream changes: remote stream attached (onRemoteTrack),
+   * stream removed / peer dropped (leave, connection closed, rekey/redial),
+   * local camera/screen toggles, and session stop. Returns an unsubscribe
+   * function. This is the event-driven path for the UI sinks — media attaches
+   * within one render of the track arriving instead of waiting for a poll tick.
+   */
+  onRosterChanged(cb: () => void): () => void {
+    this.rosterListeners.add(cb);
+    return () => { this.rosterListeners.delete(cb); };
+  }
+
+  /** Fire roster listeners. Called from WebRTC/media event handlers, so it must
+   *  never throw — a broken UI listener must not take down the media path. */
+  private notifyRoster(): void {
+    for (const cb of Array.from(this.rosterListeners)) {
+      try { cb(); } catch { /* listener error — isolated from the session */ }
+    }
+  }
 }

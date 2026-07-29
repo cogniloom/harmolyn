@@ -113,6 +113,13 @@ describe('PeerStreamResponse decoding', () => {
 // + negotiateFully:false); (c) fall back to ONE forced fresh dial when the reused
 // connection is broken; and (d) keep the one-request/one-response length-prefixed
 // framing byte-exact, since the responder reads to stream end.
+//
+// These tests pin the LEGACY single-shot path (persistentPeerStreams off) — it is
+// both the flag-off behavior and the in-band fallback when a pooled stream dies.
+// The persistent-mux path is covered in streammux.test.ts.
+
+import { FEATURE_OVERRIDES_STORAGE_KEY } from '../../config/featureFlags';
+import { beforeEach, afterEach } from 'vitest';
 
 const PEER = '12D3KooWNNQp1tmRbcLMrqS866jRJbzoPF6sNEZRoPEVdVwLqTv6';
 const OTHER_PEER = '12D3KooWDsujzQH69Gq2LQb1gHMUCbDaJVACYmoVymK9dej5zh4T';
@@ -139,6 +146,11 @@ function fakeConn(peerId: string, newStream: ReturnType<typeof vi.fn>, status = 
 }
 
 describe('callFamily', () => {
+  beforeEach(() => {
+    localStorage.setItem(FEATURE_OVERRIDES_STORAGE_KEY, JSON.stringify({ persistentPeerStreams: false }));
+  });
+  afterEach(() => localStorage.clear());
+
   it('with no existing connection: dials with runOnLimitedConnection + optimistic negotiation and round-trips one framed request/response', async () => {
     const stream = okStream();
     const dialProtocol = vi.fn().mockResolvedValue(stream);

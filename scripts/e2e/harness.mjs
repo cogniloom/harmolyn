@@ -43,6 +43,13 @@ export class Scenario {
         '--use-fake-ui-for-media-stream',
         '--use-fake-device-for-media-stream',
         '--autoplay-policy=no-user-gesture-required',
+        // Multiple client pages share one headless browser; all but one count
+        // as "background" and Chromium throttles their timers/scheduling,
+        // adding tens of ms of fake latency the real app (visible tab per
+        // user) never sees. Disable so measurements reflect foreground reality.
+        '--disable-background-timer-throttling',
+        '--disable-renderer-backgrounding',
+        '--disable-backgrounding-occluded-windows',
       ],
     });
     return this;

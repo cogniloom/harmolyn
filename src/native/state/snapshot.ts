@@ -91,8 +91,34 @@ function sweepLegacyLocalStorageMirrors(): void {
   }
 }
 
+/**
+ * Coalescing publish: schedule publishNativeSnapshot on ONE macrotask, merging
+ * any number of same-tick (or same-burst) requests into a single publish.
+ *
+ * LATENCY: publishNativeSnapshot is heavy — a full snapshot build, a
+ * JSON.stringify mirror, localStorage writes, and synchronous focus/visibility
+ * dispatches that trigger a React render. On the SEND side, deferring it lets
+ * the outbound envelope reach the wire first (see nativeSendChannelMessage).
+ * On the RECEIVE side, a message burst (chat.send + the sender's presence
+ * update, or N pipelined messages) previously paid one full publish + render
+ * PER event; coalesced, the burst costs one.
+ */
+let deferredPublishTimer: ReturnType<typeof setTimeout> | null = null;
+export function schedulePublishNativeSnapshot(): void {
+  if (deferredPublishTimer !== null) return;
+  deferredPublishTimer = setTimeout(() => {
+    deferredPublishTimer = null;
+    publishNativeSnapshot();
+  }, 0);
+}
+
 export function publishNativeSnapshot(): void {
   if (typeof window === 'undefined') return;
+  if (deferredPublishTimer !== null) {
+    // An immediate publish supersedes a scheduled one — don't double-publish.
+    clearTimeout(deferredPublishTimer);
+    deferredPublishTimer = null;
+  }
 
   const snapshot = toRuntimeSnapshot();
 
@@ -125,4 +151,9 @@ export function publishNativeSnapshot(): void {
   // Signal the React polling loop (same events as xoreinControl.ts publishSnapshot).
   window.dispatchEvent(new Event('focus'));
   document.dispatchEvent(new Event('visibilitychange'));
+  try {
+    if (localStorage.getItem('harmolyn:debug:latency') === '1') {
+      console.debug(`[lat] snapshot published at=${Date.now()}`);
+    }
+  } catch { /* debug tap only */ }
 }

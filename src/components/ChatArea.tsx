@@ -23,6 +23,8 @@ import { InboxPanel } from '@/components/InboxPanel';
 import { MentionAutocomplete } from '@/components/MentionAutocomplete';
 import { useToast } from '@/lib/toastBus';
 import { useFeature } from '@/hooks/useFeature';
+import { useNodeHealth } from '@/hooks/useNodeHealth';
+import { NODE_OFFLINE_MESSAGE } from '@/lib/nodeHealth';
 import { useSendChannelMessage, useSendDmMessage, useEditMessage, useDeleteMessage, useAddReaction, useRemoveReaction, usePinMessage, useUnpinMessage, useCastPollVote, useLoadOlderHistory, useSetPeerVerified, useSubmitReport } from '@/hooks/runtime/mutations';
 import { KeyVerification } from '@/components/KeyVerification';
 import { ReportModal, type ReportSubmission } from '@/components/ReportModal';
@@ -578,6 +580,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
 
   const { showMenu } = useContextMenu();
   const toast = useToast();
+  const { nodeOffline } = useNodeHealth();
   const chatSupport = readBrowserChatActionSupport();
 
   useEscapeKey(() => setShowSecuritySummary(false), showSecuritySummary);
@@ -982,6 +985,11 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
     }
     if (!chatSupport.canAttemptAttachments) {
       showFeedback('error', 'Attachments are disabled while the local xorein runtime is offline.', 'system');
+      return;
+    }
+    if (nodeOffline) {
+      // Attachments are ciphertext blobs stored on the support node — no node, no upload.
+      showFeedback('error', NODE_OFFLINE_MESSAGE, 'system');
       return;
     }
     if (file.size > 8 * 1024 * 1024) {
@@ -2081,7 +2089,14 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                 {hasFileUploads && (
                   <>
                     <input type="file" ref={fileInputRef} className="hidden" onChange={handleFileUpload} />
-                    <button onClick={() => fileInputRef.current?.click()} className="p-3 text-white/30 hover:text-primary transition-colors" aria-label="Add attachment"><PlusCircle size={20} /></button>
+                    <button
+                      onClick={() => fileInputRef.current?.click()}
+                      disabled={nodeOffline}
+                      aria-disabled={nodeOffline}
+                      title={nodeOffline ? NODE_OFFLINE_MESSAGE : undefined}
+                      className="p-3 text-white/30 hover:text-primary transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:text-white/30"
+                      aria-label="Add attachment"
+                    ><PlusCircle size={20} /></button>
                   </>
                 )}
                 {hasPolls && (

@@ -60,6 +60,8 @@ import { normalizeLayoutUsers, normalizeRuntimePeerId, normalizeRuntimeVoiceSess
 import { useRuntimeBootstrapState } from '@/lib/xoreinRuntimeContext';
 import { readNotificationPreferences } from './NotificationSettings';
 import { useOnlineStatus } from '@/hooks/useOnlineStatus';
+import { useNodeHealth } from '@/hooks/useNodeHealth';
+import { NODE_OFFLINE_BANNER_TITLE, NODE_OFFLINE_BANNER_DETAIL } from '@/lib/nodeHealth';
 
 const MESSAGE_LAYOUT_STORAGE_KEY = 'harmolyn:settings:message-layout';
 
@@ -134,6 +136,7 @@ export const Layout: React.FC = () => {
 
   const desktopNotifications = useFeature('desktopNotifications');
   const isOnline = useOnlineStatus();
+  const { nodeOffline } = useNodeHealth();
 
   // Request desktop Notification permission on the FIRST user gesture, never on
   // cold load. A permission prompt before the user has interacted is a dark pattern
@@ -898,12 +901,28 @@ export const Layout: React.FC = () => {
 
   return (
    <StreamerModeProvider activeServerId={isHome || isExplore ? null : state.activeServerId}>
-    <div ref={mainRef} className="flex h-screen w-full bg-bg-0 overflow-hidden font-sans relative" style={themeStyle}>
+    <div ref={mainRef} className="flex flex-col h-screen w-full bg-bg-0 overflow-hidden font-sans relative" style={themeStyle}>
       {/* Streamer mode: slim top-bar notification (no full-screen blocker). */}
       <StreamerTopBar />
-      {!isOnline && (
-        <div role="status" className="fixed top-0 inset-x-0 z-[300] bg-accent-warning/90 text-black text-center text-[12px] font-semibold py-1.5 px-3">
-          You’re offline. Messages you send will be delivered when your connection returns.
+      {/* Connectivity banners are STATIC flow (not fixed overlays): they push
+          the app down instead of covering the top chrome — a fixed banner sat
+          on top of the server-menu/header row and swallowed its clicks. Kept
+          BELOW the full-screen overlays' z-[100] (FullScreenOverlay anchors to
+          this h-screen root at y=0): Settings/ServerSettings legitimately
+          cover the banners; a high-z banner strip covered their close button. */}
+      {(!isOnline || nodeOffline) && (
+        <div className="relative z-10 w-full shrink-0 flex flex-col">
+          {!isOnline && (
+            <div role="status" className="bg-accent-warning/90 text-black text-center text-[12px] font-semibold py-1.5 px-3">
+              You’re offline. Messages you send will be delivered when your connection returns.
+            </div>
+          )}
+          {nodeOffline && (
+            <div role="status" data-testid="node-offline-banner" className="bg-accent-warning/80 text-black text-center text-[12px] py-1.5 px-3">
+              <span className="font-semibold">{NODE_OFFLINE_BANNER_TITLE}</span>
+              <span> — {NODE_OFFLINE_BANNER_DETAIL}</span>
+            </div>
+          )}
         </div>
       )}
       {bootstrapState.status !== 'idle' && bootstrapState.status !== 'ready' && (
@@ -1044,6 +1063,8 @@ export const Layout: React.FC = () => {
         </div>
       )}
 
+      {/* Main app row — everything below the (static) banners. */}
+      <div className="flex flex-1 min-h-0 w-full overflow-hidden relative">
       {!isMobile && !isTablet && (
         <div className="relative z-50">
           <ServerRail
@@ -1262,6 +1283,7 @@ export const Layout: React.FC = () => {
             </motion.div>
           )}
         </div>
+      </div>
       </div>
     </div>
    </StreamerModeProvider>

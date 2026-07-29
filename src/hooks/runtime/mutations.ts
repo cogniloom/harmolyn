@@ -1,6 +1,7 @@
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { useRuntimeMutations } from './useRuntimeMutations';
 import { useRuntimeSnapshot } from '@/lib/xoreinRuntimeContext';
+import { useNodeHealth } from '@/hooks/useNodeHealth';
 import {
   listAuditLog, listAutoModRules, createAutoModRule, updateAutoModRule, deleteAutoModRule,
   listBots, createBot, deleteBot,
@@ -281,21 +282,25 @@ export function useRemoveRelay() {
 // ─── Audit Log ─────────────────────────────────────────────
 export function useAuditLog(serverId: string, options?: { action?: string; limit?: number }) {
   const snapshot = useRuntimeSnapshot();
+  // Pause while the support node is offline so the poll does not spam a dead
+  // endpoint; flipping back online re-enables (and immediately refetches).
+  const { nodeOffline } = useNodeHealth();
   return useQuery({
     queryKey: ['audit-log', serverId, options?.action, options?.limit],
     queryFn: () => listAuditLog(snapshot, serverId, options),
-    enabled: !!serverId,
-    refetchInterval: 10_000,
+    enabled: !!serverId && !nodeOffline,
+    refetchInterval: nodeOffline ? false : 10_000,
   });
 }
 
 // ─── AutoMod ───────────────────────────────────────────────
 export function useAutoModRules(serverId: string) {
   const snapshot = useRuntimeSnapshot();
+  const { nodeOffline } = useNodeHealth();
   return useQuery({
     queryKey: ['automod-rules', serverId],
     queryFn: () => listAutoModRules(snapshot, serverId),
-    enabled: !!serverId,
+    enabled: !!serverId && !nodeOffline,
   });
 }
 
@@ -325,10 +330,11 @@ export function useDeleteAutoModRule(serverId: string) {
 // ─── Bots ───────────────────────────────────────────────────
 export function useBots(serverId: string) {
   const snapshot = useRuntimeSnapshot();
+  const { nodeOffline } = useNodeHealth();
   return useQuery({
     queryKey: ['bots', serverId],
     queryFn: () => listBots(snapshot, serverId),
-    enabled: !!serverId,
+    enabled: !!serverId && !nodeOffline,
   });
 }
 

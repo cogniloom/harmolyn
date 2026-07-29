@@ -32,8 +32,16 @@ function isWebrtcCircuit(addr: string): boolean {
  * Choose the best dial address for a peer from the addresses it advertised.
  * Pure so the selection policy is unit-testable. With `directOn`, a
  * WebRTC-upgradeable circuit address wins (DCUtR can hole-punch it to a direct
- * link); otherwise any circuit address; otherwise a synthesized fallback against
- * the default relay (the /webrtc form under direct transport).
+ * link); otherwise any circuit address; otherwise a synthesized PLAIN circuit
+ * fallback against the default relay.
+ *
+ * COMPAT: the synthesized fallback is deliberately NEVER the /webrtc form. A
+ * peer that supports the WebRTC transport advertises its /webrtc circuit addr
+ * (presence/join payloads), so the advertised branch covers it; a peer running
+ * an older build has no /webrtc listener at all, and dialing the synthesized
+ * /webrtc form at it fails outright with no retry — first contact (invite
+ * join to the owner, friend request by peer id) would silently degrade to the
+ * mailbox/local-stub path.
  */
 export function selectPeerAddr(
   advertised: string[],
@@ -47,7 +55,7 @@ export function selectPeerAddr(
   }
   const anyCircuit = advertised.find(a => a.includes('p2p-circuit'));
   if (anyCircuit) return anyCircuit;
-  return directOn ? webrtcCircuitAddr(peerId, relayMultiaddr) : circuitAddr(peerId, relayMultiaddr);
+  return circuitAddr(peerId, relayMultiaddr);
 }
 
 function jsonBytes(obj: unknown): Uint8Array {
@@ -74,7 +82,19 @@ export class PeerSync {
   /** This node's own reachable circuit addresses (which relay(s) we're on). */
   localCircuitAddrs(): string[] {
     if (!this.node) return [];
-    return this.node.getMultiaddrs().map(m => m.toString()).filter(s => s.includes('p2p-circuit'));
+    const circuits = this.node.getMultiaddrs().map(m => m.toString()).filter(s => s.includes('p2p-circuit'));
+    if (!resolveFeatureFlag('directTransport')) return circuits;
+    // Advertise the WebRTC-upgradeable variant of each circuit addr ALONGSIDE
+    // the plain form. The /webrtc listener is live whenever directTransport is
+    // on, but getMultiaddrs() only reflects the manually-added relay
+    // reservation's plain circuit addr — so without this, no peer ever learns
+    // we support WebRTC, no direct link is ever dialed, and nothing survives
+    // relay loss. Peers on old builds simply ignore the extra addr (their
+    // selectPeerAddr picks the plain circuit form).
+    const webrtc = circuits
+      .filter(s => !s.includes('/webrtc'))
+      .map(s => s.replace('/p2p-circuit/', '/p2p-circuit/webrtc/'));
+    return [...circuits, ...webrtc.filter(w => !circuits.includes(w))];
   }
 
   /**
@@ -104,14 +124,26 @@ export class PeerSync {
   }
 
   private addrOf(peerId: string): string {
-    // 1) an address the peer told us directly (inbound dial),
-    // 2) a circuit address the peer advertised (presence/join) — encodes THEIR
-    //    relay, so cross-relay delivery works,
-    // 3) fall back to the default relay.
+    // 1) an ADVERTISED /webrtc circuit address (presence/join payloads) when
+    //    direct transport is on — the peer has PROVEN WebRTC support, and this
+    //    form is what lets the transport upgrade to a direct link that
+    //    survives relay loss. It must win over the observed override below,
+    //    which pins the plain circuit form forever after the first inbound
+    //    dial and would otherwise keep every future dial relayed.
+    // 2) an address the peer told us directly (inbound dial),
+    // 3) a circuit address the peer advertised — encodes THEIR relay, so
+    //    cross-relay delivery works,
+    // 4) fall back to the default relay (PLAIN circuit — never guess /webrtc
+    //    support for an unknown peer; see selectPeerAddr).
+    const directOn = resolveFeatureFlag('directTransport');
+    const advertised = getState().peers?.[peerId]?.addresses ?? [];
+    if (directOn) {
+      const wrtc = advertised.find(isWebrtcCircuit);
+      if (wrtc) return wrtc;
+    }
     const direct = this.peerAddrs.get(peerId);
     if (direct) return direct;
-    const advertised = getState().peers?.[peerId]?.addresses ?? [];
-    return selectPeerAddr(advertised, peerId, this.relayMultiaddr, resolveFeatureFlag('directTransport'));
+    return selectPeerAddr(advertised, peerId, this.relayMultiaddr, directOn);
   }
 
   private get localPeerId(): string {

@@ -69,40 +69,43 @@ export class XoreinTransportManager {
     this.connecting = true;
     this.setState('connecting');
     try {
-      if (this.node) {
-        await Promise.resolve(this.node.stop()).catch(() => {});
-        this.node = null;
+      // RESILIENCE: the libp2p node is created ONCE and kept alive across relay
+      // loss. Rebuilding it per reconnect (the previous behavior) tore down every
+      // connection — including direct browser↔browser WebRTC links that do not
+      // depend on the relay at all — plus all inbound handlers and pooled
+      // streams. With the node stable, losing the relay only pauses the
+      // bootstrap path: peers that already know each other keep communicating.
+      if (!this.node) {
+        const node = await createXoreinNode({
+          relayMultiaddr: this.opts.relayMultiaddr,
+          identity: this.opts.identity,
+        });
+
+        // Monitor for ACTIVE-relay disconnect so we can trigger a reconnect (which
+        // will fail over to the next relay in the list if the current one is gone).
+        node.addEventListener('connection:close', (evt: CustomEvent) => {
+          const relayId = this.activeRelay?.split('/').at(-1);
+          if (relayId && evt.detail?.remotePeer?.toString().includes(relayId)) {
+            this.setState('disconnected');
+            if (this.running) this.scheduleReconnect();
+          }
+        });
+
+        this.node = node;
       }
-
-      const node = await createXoreinNode({
-        relayMultiaddr: this.opts.relayMultiaddr,
-        identity: this.opts.identity,
-      });
-
-      // Monitor for ACTIVE-relay disconnect so we can trigger a reconnect (which
-      // will fail over to the next relay in the list if the current one is gone).
-      node.addEventListener('connection:close', (evt: CustomEvent) => {
-        const relayId = this.activeRelay?.split('/').at(-1);
-        if (relayId && evt.detail?.remotePeer?.toString().includes(relayId)) {
-          this.setState('disconnected');
-          if (this.running) this.scheduleReconnect();
-        }
-      });
 
       // Try each configured relay in order and reserve a circuit on the first that
       // answers (multi-relay failover). reserveCircuitRelay handles the generous
       // 30s dial + reservation timeouts per relay.
-      const reserved = await reserveAnyRelay(node, resolveRelayList(this.opts.relayMultiaddr));
+      const reserved = await reserveAnyRelay(this.node, resolveRelayList(this.opts.relayMultiaddr));
       if (!reserved) {
-        // No relay answered: stop the node and let the backoff schedule a retry.
-        await Promise.resolve(node.stop()).catch(() => {});
+        // No relay answered. Keep the node RUNNING — existing direct connections
+        // and inbound handlers stay live — and let the backoff retry reservation.
         this.activeRelay = null;
         this.setState('disconnected');
-        this.connecting = false;
         return;
       }
 
-      this.node = node;
       this.activeRelay = reserved;
       this.setState('connected');
       this.backoff.reset();

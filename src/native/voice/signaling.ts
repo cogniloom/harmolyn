@@ -18,6 +18,7 @@
 // design, where SFrame was mandatory because the SFU forwarded frames).
 
 import { supportNodeApiBase, supportNodeOrigin } from '../nodeOrigin.js';
+import { reportNodeRequestFailure, reportNodeRequestSuccess } from '../../lib/nodeHealth.js';
 
 export const VOICE_OPS = {
   presence: 'voice.presence',
@@ -108,7 +109,14 @@ function optionalPublicStun(): RTCIceServer[] {
  */
 export async function fetchTurnCredentials(): Promise<RTCIceServer[]> {
   try {
-    const resp = await fetch(`${supportNodeApiBase()}/voice/turn-credentials`, { method: 'GET' });
+    let resp: Response;
+    try {
+      resp = await fetch(`${supportNodeApiBase()}/voice/turn-credentials`, { method: 'GET' });
+    } catch (error) {
+      reportNodeRequestFailure(error);
+      throw error;
+    }
+    reportNodeRequestSuccess();
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const data = await resp.json() as { urls: string[]; username: string; credential: string };
     return [

@@ -4,6 +4,7 @@ import { DeeplinkValidationError, parseJoinDeepLink, parseInviteMetadata, buildJ
 import { parseAbsoluteUrl } from '@/protocol/url';
 import { safeStorageGet, safeStorageRemove, safeStorageSet } from '@/lib/browserStorage';
 import { normalizeRuntimeEndpoint, normalizeRuntimeSettings as normalizeAuthRuntimeSettings } from '@/lib/authPreview';
+import { reportNodeRequestFailure, reportNodeRequestSuccess } from '@/lib/nodeHealth';
 import type {
   XoreinRuntimeChannel,
   XoreinRuntimeDM,
@@ -431,10 +432,20 @@ export async function connectToDefaultRuntime(): Promise<XoreinRuntimeSnapshot |
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), DEFAULT_CONNECT_TIMEOUT_MS);
   try {
-    const response = await fetch(new URL('/v1/state', endpointUrl), {
-      signal: controller.signal,
-      headers: {},
-    });
+    let response: Response;
+    try {
+      response = await fetch(new URL('/v1/state', endpointUrl), {
+        signal: controller.signal,
+        headers: {},
+      });
+    } catch (err) {
+      // Launch-time reachability is the FIRST node contact a fresh client makes:
+      // feed it into node health so a client started while the node is down
+      // shows the offline banner immediately instead of on first feature use.
+      reportNodeRequestFailure(err);
+      throw err;
+    }
+    reportNodeRequestSuccess();
     if (!response.ok) {
       clearNativeRuntimeGlobals();
       clearPublishedRuntimeStateForEndpoint(endpoint);
@@ -2623,6 +2634,8 @@ async function requestControlApi<T>(
       },
       body: body ? JSON.stringify(body) : undefined,
     });
+    // Any response — even an error status — means the support node is reachable.
+    reportNodeRequestSuccess();
 
     if (!response.ok) {
       let parsed: ControlApiErrorShape | null = null;
@@ -2666,6 +2679,8 @@ async function requestControlApi<T>(
     if (error instanceof XoreinControlError) {
       throw error;
     }
+    // Raw fetch rejection (network error / abort / timeout): the node never answered.
+    reportNodeRequestFailure(error);
     throw new XoreinControlError(
       'transport_unavailable',
       controller.signal.aborted

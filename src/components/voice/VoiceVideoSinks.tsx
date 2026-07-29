@@ -2,8 +2,10 @@
 //
 // Renders remote SCREEN shares as large tiles (click to fullscreen), remote
 // CAMERA feeds as smaller thumbnails, and a self-preview of your own screen share.
-// Polls the live VoiceSession (which is mutable and outside the React snapshot)
-// for its remote camera/screen stream maps.
+// EVENT-DRIVEN: subscribes to the live VoiceSession (which is mutable and outside
+// the React snapshot) via onRosterChanged, so a new share/camera tile mounts
+// within one render of the track arriving; a low-frequency fallback re-sync
+// guards against a missed event.
 import React, { useEffect, useRef, useState } from 'react';
 import { Maximize2, MonitorUp, Video as VideoIcon } from 'lucide-react';
 import { getVoiceSession } from '@/native/voice/registry';
@@ -56,28 +58,57 @@ export function VoiceVideoSinks({ channelId }: { channelId?: string | null }) {
 
   useEffect(() => {
     if (!channelId || !resolveFeatureFlag('voiceVideo')) { setTiles([]); return; }
+
+    // Snapshot the live session's stream maps into React state. Skips the state
+    // update when nothing changed so fallback ticks don't cause re-renders.
     const collect = () => {
       const session = getVoiceSession(channelId);
-      if (!session) { setTiles([]); return; }
       const next: Tile[] = [];
-      // Local screen-share self-preview.
-      const localScreen = session.localScreenStream;
-      if (localScreen && localScreen.getVideoTracks().length) {
-        next.push({ key: 'self:screen', peerId: 'self', stream: localScreen, kind: 'screen', self: true });
+      if (session) {
+        // Local screen-share self-preview.
+        const localScreen = session.localScreenStream;
+        if (localScreen && localScreen.getVideoTracks().length) {
+          next.push({ key: 'self:screen', peerId: 'self', stream: localScreen, kind: 'screen', self: true });
+        }
+        // Remote screen shares (large).
+        for (const [peerId, stream] of session.remoteScreensMap) {
+          if (stream.getVideoTracks().length) next.push({ key: `${peerId}:screen`, peerId, stream, kind: 'screen' });
+        }
+        // Remote cameras (thumbnails) — primary streams that carry a video track.
+        for (const [peerId, stream] of session.remoteStreamsMap) {
+          if (stream.getVideoTracks().length) next.push({ key: `${peerId}:cam`, peerId, stream, kind: 'camera' });
+        }
       }
-      // Remote screen shares (large).
-      for (const [peerId, stream] of session.remoteScreensMap) {
-        if (stream.getVideoTracks().length) next.push({ key: `${peerId}:screen`, peerId, stream, kind: 'screen' });
-      }
-      // Remote cameras (thumbnails) — primary streams that carry a video track.
-      for (const [peerId, stream] of session.remoteStreamsMap) {
-        if (stream.getVideoTracks().length) next.push({ key: `${peerId}:cam`, peerId, stream, kind: 'camera' });
-      }
-      setTiles(next);
+      setTiles(prev =>
+        prev.length === next.length && prev.every((t, i) => t.key === next[i].key && t.stream === next[i].stream)
+          ? prev
+          : next);
     };
+
+    // Event-driven attach: the session notifies on every stream/roster change.
+    // subscribe() also handles the session being created/replaced after mount.
+    let unsubscribe: (() => void) | null = null;
+    let subscribed: ReturnType<typeof getVoiceSession> = null;
+    const subscribe = () => {
+      const session = getVoiceSession(channelId);
+      if (session === subscribed) return;
+      unsubscribe?.();
+      subscribed = session;
+      unsubscribe = session ? session.onRosterChanged(collect) : null;
+    };
+
+    subscribe();
     collect();
-    const id = setInterval(collect, 600);
-    return () => clearInterval(id);
+
+    // FALLBACK ONLY: a low-frequency re-sync as a safety net against a missed
+    // event (or a session that appeared after mount). The onRosterChanged
+    // subscription above is the primary update path.
+    const fallback = setInterval(() => { subscribe(); collect(); }, 2000);
+
+    return () => {
+      clearInterval(fallback);
+      unsubscribe?.();
+    };
   }, [channelId]);
 
   if (tiles.length === 0) return null;

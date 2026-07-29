@@ -32,7 +32,7 @@ import { ChannelCrypto } from '../crowd/channel.js';
 import { registerScopeCrypto, resetScopeCrypto, applyCrowdRoot } from '../sync/secureEnvelope.js';
 import { registerOfflineIdentity, resetOfflineIdentity, drainOfflineChat } from '../delivery/offline.js';
 import { PROTOCOLS, RECOVERY_OPS } from '../families/families.js';
-import { readFramedMessage, frameMessage, decodePeerStreamRequest, encodePeerStreamResponse } from '../families/peerstream.js';
+import { frameMessage, encodePeerStreamResponse, serveFamilyStream, isDirectAddr, type InboundFamilyStream, type PeerStreamRequest } from '../families/peerstream.js';
 import { VOICE_OPS, type VoicePresenceRequest, type VoiceOfferRequest, type VoiceIceRequest } from '../voice/signaling.js';
 import {
   handleRecoveryStore, handleRecoveryRequest, handleRecoveryDeliver,
@@ -447,6 +447,36 @@ export class XoreinNativeEngine {
     if (!node || this._wiredNode === node || !this._identity) return;
     this._wiredNode = node;
     this.peerSync.setNode(node);
+    // Read-only transport diagnostics for E2E/debugging: which peers we're
+    // connected to and whether each connection is a relayed circuit or a
+    // direct (e.g. WebRTC) link. Same-origin scripts could already reach the
+    // store; this exposes no capability material.
+    if (typeof window !== 'undefined') {
+      (window as unknown as Record<string, unknown>).__HARMOLYN_P2P_DEBUG__ = {
+        connections: () => node.getConnections().map(c => ({
+          peer: c.remotePeer.toString(),
+          addr: c.remoteAddr?.toString() ?? '',
+          status: c.status,
+          direct: isDirectAddr(c.remoteAddr?.toString()),
+        })),
+        // Our own listen/announce addrs — what peers learn via presence.
+        addrs: () => node.getMultiaddrs().map(m => m.toString()),
+        // Learned peer addr book (advertised addresses in the store).
+        peerAddrs: () => {
+          const peers = getState().peers ?? {};
+          return Object.fromEntries(Object.entries(peers).map(([id, p]) => [id.slice(-8), p.addresses ?? []]));
+        },
+        // Raw transport RTT via the libp2p ping service — isolates the wire
+        // from the peerstream/store/render pipeline when chasing latency.
+        ping: async (peerStr: string) => {
+          const conn = node.getConnections().find(c => c.status === 'open' && c.remotePeer.toString() === peerStr);
+          if (!conn) return -1;
+          const svc = (node as unknown as { services?: { ping?: { ping(p: unknown): Promise<number> } } }).services?.ping;
+          if (!svc) return -2;
+          return await svc.ping(conn.remotePeer);
+        },
+      };
+    }
     try {
       await registerInboundHandlers(node, this._identity.peerId, this.peerSync);
       // Inbound VOICE MESH handler. Peers dial us directly over /aether/voice/0.1.0
@@ -456,42 +486,37 @@ export class XoreinNativeEngine {
       await node.handle(
         PROTOCOLS.voice,
         (async (
-          stream: AsyncIterable<Uint8Array | { subarray(): Uint8Array }> & { send(d: Uint8Array): boolean; close(): Promise<void> },
+          stream: InboundFamilyStream,
           connection: { remotePeer: { toString(): string }; remoteAddr?: { toString(): string } },
         ) => {
-          const reply = (obj: unknown, requestId?: string) => {
-            try {
-              const payload = new TextEncoder().encode(JSON.stringify(obj));
-              stream.send(frameMessage(encodePeerStreamResponse({ payload, requestId })));
-            } catch { /* peer hung up */ }
-          };
           try {
             const remotePeerId = connection.remotePeer.toString();
             const remoteAddr = connection.remoteAddr?.toString();
             if (remoteAddr?.includes('p2p-circuit')) this.peerSync.registerPeer(remotePeerId, remoteAddr);
-            const msg = await readFramedMessage(stream);
-            if (!msg) { reply({ ok: false, error: 'bad_frame' }); await stream.close().catch(() => undefined); return; }
-            const req = decodePeerStreamRequest(msg);
-            const payload = req.payload ? (JSON.parse(new TextDecoder().decode(req.payload)) as Record<string, unknown>) : {};
-            const channelId = String(payload.session_id ?? '');
-            const session = channelId ? getVoiceSession(channelId) : null;
+            // Streams are persistent: a peer pipelines presence/offer/ice ops on
+            // ONE stream, each answered by requestId (out-of-order safe).
+            await serveFamilyStream(stream, async (req: PeerStreamRequest) => {
+              const framedReply = (obj: unknown) =>
+                frameMessage(encodePeerStreamResponse({ payload: new TextEncoder().encode(JSON.stringify(obj)), requestId: req.requestId }));
+              let payload: Record<string, unknown> = {};
+              try {
+                payload = req.payload ? (JSON.parse(new TextDecoder().decode(req.payload)) as Record<string, unknown>) : {};
+              } catch { return framedReply({ ok: false, error: 'bad_frame' }); }
+              const channelId = String(payload.session_id ?? '');
+              const session = channelId ? getVoiceSession(channelId) : null;
 
-            if (req.operation === VOICE_OPS.presence) {
-              if (session) reply(session.handlePresence(payload as unknown as VoicePresenceRequest, remotePeerId), req.requestId);
-              else reply({ ok: true, in_channel: false }, req.requestId);
-            } else if (req.operation === VOICE_OPS.offer) {
-              if (session) reply(await session.handleOffer(payload as unknown as VoiceOfferRequest, remotePeerId), req.requestId);
-              else reply({ ok: false, error: 'not_in_channel' }, req.requestId);
-            } else if (req.operation === VOICE_OPS.ice) {
-              if (session) reply(session.handleIce(payload as unknown as VoiceIceRequest, remotePeerId), req.requestId);
-              else reply({ ok: false }, req.requestId);
-            } else if (req.operation === VOICE_OPS.leave) {
-              session?.handlePresence({ session_id: channelId, action: 'leave' }, remotePeerId);
-              reply({ ok: true }, req.requestId);
-            } else {
-              reply({ ok: false, error: 'unknown_op' }, req.requestId);
-            }
-            await stream.close().catch(() => undefined);
+              if (req.operation === VOICE_OPS.presence) {
+                return framedReply(session ? session.handlePresence(payload as unknown as VoicePresenceRequest, remotePeerId) : { ok: true, in_channel: false });
+              } else if (req.operation === VOICE_OPS.offer) {
+                return framedReply(session ? await session.handleOffer(payload as unknown as VoiceOfferRequest, remotePeerId) : { ok: false, error: 'not_in_channel' });
+              } else if (req.operation === VOICE_OPS.ice) {
+                return framedReply(session ? session.handleIce(payload as unknown as VoiceIceRequest, remotePeerId) : { ok: false });
+              } else if (req.operation === VOICE_OPS.leave) {
+                session?.handlePresence({ session_id: channelId, action: 'leave' }, remotePeerId);
+                return framedReply({ ok: true });
+              }
+              return framedReply({ ok: false, error: 'unknown_op' });
+            });
           } catch { /* non-fatal: malformed frame / unknown peer */ }
         }) as Parameters<typeof node.handle>[1],
         { runOnLimitedConnection: true },
@@ -503,24 +528,24 @@ export class XoreinNativeEngine {
       await node.handle(
         PROTOCOLS.recovery,
         (async (
-          stream: AsyncIterable<Uint8Array | { subarray(): Uint8Array }> & { send(d: Uint8Array): boolean; close(): Promise<void> },
+          stream: InboundFamilyStream,
           connection: { remotePeer: { toString(): string } },
         ) => {
-          const reply = (obj: unknown, requestId?: string) => {
-            try { stream.send(frameMessage(encodePeerStreamResponse({ payload: new TextEncoder().encode(JSON.stringify(obj)), requestId }))); }
-            catch { /* peer hung up */ }
-          };
           try {
             const remotePeerId = connection.remotePeer.toString();
-            const msg = await readFramedMessage(stream);
-            if (!msg) { reply({ ok: false, error: 'bad_frame' }); await stream.close().catch(() => undefined); return; }
-            const req = decodePeerStreamRequest(msg);
-            const payload = req.payload ? (JSON.parse(new TextDecoder().decode(req.payload)) as Record<string, unknown>) : {};
-            if (req.operation === RECOVERY_OPS.store) reply(await handleRecoveryStore(payload, remotePeerId), req.requestId);
-            else if (req.operation === RECOVERY_OPS.request) reply(await handleRecoveryRequest(payload, remotePeerId), req.requestId);
-            else if (req.operation === RECOVERY_OPS.deliver) reply(handleRecoveryDeliver(payload, remotePeerId), req.requestId);
-            else reply({ ok: false, error: 'unknown_op' }, req.requestId);
-            await stream.close().catch(() => undefined);
+            // Streams are persistent: serve every framed request the peer sends.
+            await serveFamilyStream(stream, async (req: PeerStreamRequest) => {
+              const framedReply = (obj: unknown) =>
+                frameMessage(encodePeerStreamResponse({ payload: new TextEncoder().encode(JSON.stringify(obj)), requestId: req.requestId }));
+              let payload: Record<string, unknown> = {};
+              try {
+                payload = req.payload ? (JSON.parse(new TextDecoder().decode(req.payload)) as Record<string, unknown>) : {};
+              } catch { return framedReply({ ok: false, error: 'bad_frame' }); }
+              if (req.operation === RECOVERY_OPS.store) return framedReply(await handleRecoveryStore(payload, remotePeerId));
+              if (req.operation === RECOVERY_OPS.request) return framedReply(await handleRecoveryRequest(payload, remotePeerId));
+              if (req.operation === RECOVERY_OPS.deliver) return framedReply(handleRecoveryDeliver(payload, remotePeerId));
+              return framedReply({ ok: false, error: 'unknown_op' });
+            });
           } catch { /* non-fatal */ }
         }) as Parameters<typeof node.handle>[1],
         { runOnLimitedConnection: true },

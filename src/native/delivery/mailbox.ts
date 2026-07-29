@@ -3,6 +3,7 @@
 import { hmac } from '@noble/hashes/hmac.js';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { supportNodeApiBase } from '../nodeOrigin.js';
+import { reportNodeRequestFailure, reportNodeRequestSuccess } from '../../lib/nodeHealth.js';
 
 // ── Constants (must match Go oracle) ──────────────────────────────────────
 
@@ -82,11 +83,18 @@ export function unwrapRelayBody(framed: Uint8Array): Uint8Array {
 export async function mailboxStore(token: string, ciphertext: Uint8Array): Promise<void> {
   const framed = wrapRelayBody(ciphertext);
   const body_b64 = base64urlNoPad(framed);
-  const res = await fetch(`${supportNodeApiBase()}/mailbox/store`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ token, body: body_b64 }),
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${supportNodeApiBase()}/mailbox/store`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token, body: body_b64 }),
+    });
+  } catch (error) {
+    reportNodeRequestFailure(error);
+    throw error;
+  }
+  reportNodeRequestSuccess();
   if (!res.ok && res.status !== 204) throw new Error(`mailbox store: ${res.status}`);
 }
 
@@ -96,11 +104,18 @@ export async function mailboxStore(token: string, ciphertext: Uint8Array): Promi
  */
 export async function mailboxDrain(tokens: string[]): Promise<Uint8Array[]> {
   if (tokens.length === 0) return [];
-  const res = await fetch(`${supportNodeApiBase()}/mailbox/drain`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ tokens }),
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${supportNodeApiBase()}/mailbox/drain`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tokens }),
+    });
+  } catch (error) {
+    reportNodeRequestFailure(error);
+    throw error;
+  }
+  reportNodeRequestSuccess();
   if (!res.ok) throw new Error(`mailbox drain: ${res.status}`);
   const data = await res.json() as { bodies: string[] };
   return (data.bodies ?? []).map(b => unwrapRelayBody(base64urlDecode(b)));

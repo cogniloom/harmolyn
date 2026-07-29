@@ -1,5 +1,33 @@
 # xorein Protocol Gaps
 
+> **2026-07-29 — Infrastructure-independence + latency floor.**
+>
+> - **Persistent multiplexed PeerStreams** (`persistentPeerStreams: true`): one long-lived
+>   stream per (peer, protocol), responses correlated by `request_id` — the per-message
+>   stream setup (~50ms through a relay circuit, the dominant message cost) is now paid once
+>   per conversation. Wire format unchanged; one-shot peers interoperate (they close after
+>   one response; the pool re-opens on demand). Client: `src/native/families/streammux.ts` +
+>   `frames.ts` (`serveFamilyStream` inbound loop). The Go node loops too
+>   (`pkg/v0_1/transport/deadlines.go` serve loop, per-iteration deadlines, replay rejection
+>   no longer closes the stream).
+> - **`directTransport` flipped ON.** Browser↔browser WebRTC + DCUtR upgrades relayed
+>   circuits to direct links; `openFamilyStream` prefers direct connections and pooled
+>   channels are retired onto them when one appears. The transport manager keeps the libp2p
+>   node ALIVE across relay loss (it used to rebuild the node, killing every connection), so
+>   two peers that know each other keep messaging with the relay AND support node dead
+>   (E2E scenario-11). Tradeoff accepted: rendezvous register/discover reveals
+>   (opaque HMAC namespace, peer_id, circuit addrs) to the support node on connect — server
+>   identity stays hidden, but co-membership of a namespace is linkable by the node.
+> - **Support-node offline UX** (`src/lib/nodeHealth.ts`): passive failure/success
+>   classification of real node requests (NO polling while healthy — preserves the
+>   zero-node-requests-during-chat property of scenario-06), active recovery probing only
+>   while offline. Global "Node offline" banner + canonical per-feature notice
+>   ("No node currently available. …") on uploads, identity backup, removeFriend,
+>   audit/automod/bots. P2P messaging, DMs, reactions, joins, and voice continue node-less
+>   (E2E scenario-10).
+> - **Voice**: remote-media sinks are event-driven (`VoiceSession.onRosterChanged`) instead
+>   of 500ms polling; signaling (offer/ICE trickle) rides the persistent streams.
+
 > **2026-07-27 — GA-readiness hardening (Tier 0/1/2).** A large security-correctness +
 > consumer-readiness pass landed. Highlights, by area:
 >

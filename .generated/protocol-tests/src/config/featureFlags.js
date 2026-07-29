@@ -161,13 +161,25 @@ export const FEATURES = {
     // anyway. Until history carries owner signatures, only the owner serves authoritative
     // history; with this flag off, paging/join fall back to owner-only + a local stub.
     memberServedHistory: false,
-    // directTransport: opt-in direct browser↔browser WebRTC transport + DCUtR
+    // directTransport: direct browser↔browser WebRTC transport + DCUtR
     // hole-punching, upgrading relayed circuits to direct connections when the NAT
-    // allows. Ships DARK: it needs a 2nd relay + gateway rendezvous to be useful, and
-    // hole-punch success is a live smoketest (2 relays + real browsers). Turning it on
-    // only ADDS the /webrtc transport + dcutr service + rendezvous discovery; the
-    // relayed path is unaffected, so it degrades cleanly.
-    directTransport: false,
+    // allows. ON by default: it only ADDS the /webrtc transport + dcutr service +
+    // rendezvous discovery — the relayed path is unaffected, so it degrades
+    // cleanly when hole-punching fails. Two payoffs: (1) LATENCY — messages and
+    // voice signaling stop traversing the relay entirely once the direct link is
+    // up; (2) RESILIENCE — direct connections survive relay loss (the transport
+    // manager keeps the libp2p node alive across relay drops), so peers that
+    // already know each other keep communicating with no infrastructure online.
+    directTransport: true,
+    // persistentPeerStreams: one long-lived multiplexed PeerStream per (peer,
+    // protocol) with request_id-correlated responses, instead of a fresh stream
+    // per request. Opening a stream through a relay circuit was the dominant cost
+    // of a message (~50ms median, measured); with the pool it is paid once per
+    // conversation, not once per message. Backward-compatible on the wire: every
+    // deployed responder acts on complete length-prefixed frames (not stream
+    // close), and one-shot peers simply close after the first response, which the
+    // pool treats as a graceful drop. See src/native/families/streammux.ts.
+    persistentPeerStreams: true,
 };
 export const FEATURE_OVERRIDES_STORAGE_KEY = 'harmolyn:feature-overrides';
 export function readFeatureOverrides() {

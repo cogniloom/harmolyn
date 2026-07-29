@@ -185,15 +185,20 @@ describe('typing producer (nativeNotifyTyping / nativeStopTyping)', () => {
     expect(getState().presence[ME]?.typing_in_scope).toBeUndefined();
   });
 
-  it('explicit stop (message sent) broadcasts cleared typing once and is idempotent', () => {
+  it('explicit stop (message sent) broadcasts cleared typing once and is idempotent', async () => {
     nativeNotifyTyping('dm-1');
     nativeStopTyping();
 
-    expect(sync.broadcastTyping).toHaveBeenCalledTimes(2);
+    // Local state clears immediately, but the stop BROADCAST is deferred one
+    // macrotask so a same-tick message send reaches the wire ahead of it.
     expect(getState().presence[ME]?.typing_in_scope).toBeUndefined();
+    expect(sync.broadcastTyping).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(sync.broadcastTyping).toHaveBeenCalledTimes(2);
 
     // No pending typing → stop is a no-op (no spurious presence broadcast).
     nativeStopTyping();
+    await vi.advanceTimersByTimeAsync(1);
     expect(sync.broadcastTyping).toHaveBeenCalledTimes(2);
   });
 

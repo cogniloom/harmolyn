@@ -4,6 +4,7 @@
 import { sha256 } from '@noble/hashes/sha2.js';
 import { gcm as aesGcm } from '@noble/ciphers/aes.js';
 import { supportNodeOrigin } from '../nodeOrigin.js';
+import { reportNodeRequestFailure, reportNodeRequestSuccess } from '../../lib/nodeHealth.js';
 import type { XoreinAttachment } from '../../types.js';
 
 const BLOB_KEY_INFO = 'xorein/blob/v1/encryption-key';
@@ -104,11 +105,18 @@ export async function uploadBlob(
   // ZERO-TRUST: the node stores an opaque blob — it must not learn the real
   // filename (metadata). Recipients get the true name inside the E2EE message
   // (XoreinAttachment.name); the node only ever sees "blob".
-  const res = await fetch(`${apiBase(origin)}/uploads`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ filename: 'blob', content_type: 'application/octet-stream', data: ctData }),
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${apiBase(origin)}/uploads`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ filename: 'blob', content_type: 'application/octet-stream', data: ctData }),
+    });
+  } catch (error) {
+    reportNodeRequestFailure(error);
+    throw error;
+  }
+  reportNodeRequestSuccess();
   if (!res.ok) throw new Error(`blob upload: ${res.status}`);
   const json = await res.json() as { id: string };
 
@@ -123,7 +131,17 @@ export async function downloadBlob(ref: BlobRef): Promise<Uint8Array> {
   // Fetch from the node the blob was uploaded to (carried on the ref), falling back to the
   // locally-configured node for older refs without an origin.
   const base = apiBase(ref.origin || configuredNodeOrigin());
-  const res = await fetch(`${base}/uploads/${encodeURIComponent(ref.id)}`);
+  const isConfiguredNode = !ref.origin || ref.origin === configuredNodeOrigin();
+  let res: Response;
+  try {
+    res = await fetch(`${base}/uploads/${encodeURIComponent(ref.id)}`);
+  } catch (error) {
+    // Only downloads from OUR configured node say anything about its health;
+    // a ref pinned to some other peer's node must not flip our state.
+    if (isConfiguredNode) reportNodeRequestFailure(error);
+    throw error;
+  }
+  if (isConfiguredNode) reportNodeRequestSuccess();
   if (!res.ok) throw new Error(`blob download: ${res.status}`);
   const json = await res.json() as { data: string };
 

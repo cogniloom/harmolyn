@@ -1184,10 +1184,13 @@ const MFASection: React.FC<{ showFeedback: (tone: FeedbackTone, message: string)
               >
                 {backupBusy ? 'Loading…' : identityBackup ? 'Refresh Backup' : 'Show Backup JSON'}
               </button>
+              {/* NOTE: deliberately NOT gated on node health — the backup is
+                  read from local IndexedDB and downloaded in-browser, and an
+                  infrastructure outage is exactly when a user most wants it. */}
               <button
                 type="button"
                 onClick={() => void downloadBackup()}
-                className="h-11 px-4 rounded-full border border-white/10 text-white/50 font-bold text-xs hover:border-primary/30 hover:text-primary transition-all flex items-center justify-center gap-2"
+                className="h-11 px-4 rounded-full border border-white/10 text-white/50 font-bold text-xs hover:border-primary/30 hover:text-primary transition-all disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2"
               >
                 <Download size={14} />
                 Download

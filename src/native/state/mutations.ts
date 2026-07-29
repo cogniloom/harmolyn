@@ -27,7 +27,7 @@ import {
   enqueueOutbox, removeOutbox, getOutbox,
 } from './store.js';
 import type { XoreinReport } from '../../types.js';
-import { publishNativeSnapshot } from './snapshot.js';
+import { publishNativeSnapshot, schedulePublishNativeSnapshot } from './snapshot.js';
 import { markStateDirty } from './stateSync.js';
 import type { NativeState } from './store.js';
 import { getState } from './store.js';
@@ -98,15 +98,8 @@ function uid(): string {
 //
 // Durability is unaffected: the store write (addMessage/enqueueOutbox → persist)
 // stays synchronous; only the UI snapshot mirror is deferred. Multiple sends in
-// one tick coalesce into a single publish.
-let deferredPublishTimer: ReturnType<typeof setTimeout> | null = null;
-function schedulePublishNativeSnapshot(): void {
-  if (deferredPublishTimer !== null) return;
-  deferredPublishTimer = setTimeout(() => {
-    deferredPublishTimer = null;
-    publishNativeSnapshot();
-  }, 0);
-}
+// one tick coalesce into a single publish. (Implementation lives in snapshot.ts
+// so inbound handlers share the same coalescing.)
 
 // ── Message mutations ──────────────────────────────────────────────────────
 
@@ -1209,8 +1202,27 @@ export function nativeStopTyping(): void {
   if (_typingScope == null) return;
   _typingScope = null;
   _typingLastSentAt = 0;
-  if (!localPeerId()) return;
-  broadcastTypingState(undefined);
+  const me = localPeerId();
+  if (!me) return;
+  // The LOCAL indicator clears immediately (riding the coalesced publish)…
+  const own = getState().presence?.[me];
+  updatePresenceEntry(me, {
+    status: own?.status ?? 'online',
+    status_text: own?.status_text,
+    typing_in_scope: undefined,
+    updated_at: nowISO(),
+  });
+  schedulePublishNativeSnapshot();
+  // …but the WIRE broadcast is deferred one macrotask. The common trigger is a
+  // message send, where this used to put a presence.update on the wire AHEAD of
+  // the chat envelope — receivers paid the presence handling before the message
+  // could even arrive. Receivers also clear typing implicitly when the message
+  // lands (inbound handleChatSend), so the deferral only matters for the
+  // composer-cleared-without-send case, where a tick is imperceptible.
+  setTimeout(() => {
+    if (_typingScope != null) return; // user resumed typing meanwhile
+    broadcastTypingState(undefined);
+  }, 0);
 }
 
 /**

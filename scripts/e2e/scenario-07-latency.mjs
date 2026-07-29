@@ -87,10 +87,14 @@ try {
     console.log(`  A->B  n=${a.n} min=${a.min}ms p50=${a.p50}ms p95=${a.p95}ms max=${a.max}ms mean=${a.mean}ms`);
     console.log(`  B->A  n=${b.n} min=${b.min}ms p50=${b.p50}ms p95=${b.p95}ms max=${b.max}ms mean=${b.mean}ms`);
     const worstP50 = Math.max(a.p50, b.p50);
-    // Both peers are on loopback through a local relay circuit; a Discord-class
-    // bar for same-region delivery is well under 250ms end to end.
-    if (worstP50 > 250) {
-      throw new Error(`median cross-client delivery ${worstP50}ms exceeds the 250ms bar`);
+    // Measured after the persistent-mux + direct-WebRTC + publish-coalescing
+    // round: worst-direction p50 ≈ 42-74ms on loopback (wire leg 2-3ms; the
+    // remainder is receiver-side React render — the next lever is memoizing
+    // the ChatArea message rows). Gate at 2× the measured worst so a
+    // regression to per-message stream setup (~+50ms) or presence-storm
+    // contention (~+40ms) trips it, while CI jitter does not.
+    if (worstP50 > 150) {
+      throw new Error(`median cross-client delivery ${worstP50}ms exceeds the 150ms bar`);
     }
   });
 } finally {

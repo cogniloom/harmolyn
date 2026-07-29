@@ -2,6 +2,10 @@
 // in the active voice session. Attaching srcObject on the join gesture (which is
 // a user-initiated action) satisfies the browser autoplay policy.
 //
+// EVENT-DRIVEN: subscribes to VoiceSession.onRosterChanged so a newly attached
+// remote stream reaches its DOM sink within one render of the track arriving
+// (the old 500ms poll added up to half a second of dead air on join/renegotiate).
+//
 // Mount once in Layout.tsx near the existing `connectedVoiceSession` computation.
 import React, { useEffect, useRef, useState } from 'react';
 import { getVoiceSession } from '@/native/voice/registry';
@@ -33,36 +37,51 @@ interface Props {
 
 export function VoiceAudioSinks({ channelId, deafened = false }: Props) {
   const [sinks, setSinks] = useState<SinkEntry[]>([]);
-  // Track the last channelId to reset when leaving.
-  const prevChannelIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (!channelId) {
       setSinks([]);
-      prevChannelIdRef.current = null;
       return;
     }
 
-    if (channelId !== prevChannelIdRef.current) {
-      setSinks([]);
-      prevChannelIdRef.current = channelId;
-    }
-
-    const session = getVoiceSession(channelId);
-    if (!session) return;
-
-    // Register callbacks so we update when remote streams arrive or leave.
-    // VoiceSession is mutable; re-read remoteStreamsMap on callback.
+    // Snapshot the live session's remoteStreamsMap into React state.
+    // VoiceSession is mutable; re-read the map on every notify. Skips the state
+    // update when nothing changed so fallback ticks don't cause re-renders.
     const sync = () => {
       const s = getVoiceSession(channelId);
-      if (!s) { setSinks([]); return; }
-      setSinks(Array.from(s.remoteStreamsMap.entries()).map(([pid, stream]) => ({ peerId: pid, stream })));
+      const next: SinkEntry[] = s
+        ? Array.from(s.remoteStreamsMap.entries()).map(([pid, stream]) => ({ peerId: pid, stream }))
+        : [];
+      setSinks(prev =>
+        prev.length === next.length && prev.every((p, i) => p.peerId === next[i].peerId && p.stream === next[i].stream)
+          ? prev
+          : next);
     };
 
-    // Poll at 500ms until the session stabilises (streams may arrive after mount).
-    const interval = setInterval(sync, 500);
+    // Event-driven attach: the session notifies on every remote-stream change.
+    // subscribe() also handles the session being created/replaced after mount.
+    let unsubscribe: (() => void) | null = null;
+    let subscribed: ReturnType<typeof getVoiceSession> = null;
+    const subscribe = () => {
+      const s = getVoiceSession(channelId);
+      if (s === subscribed) return;
+      unsubscribe?.();
+      subscribed = s;
+      unsubscribe = s ? s.onRosterChanged(sync) : null;
+    };
+
+    subscribe();
     sync();
-    return () => clearInterval(interval);
+
+    // FALLBACK ONLY: a low-frequency re-sync as a safety net against a missed
+    // event (or a session that appeared after mount). The onRosterChanged
+    // subscription above is the primary update path.
+    const fallback = setInterval(() => { subscribe(); sync(); }, 2000);
+
+    return () => {
+      clearInterval(fallback);
+      unsubscribe?.();
+    };
   }, [channelId]);
 
   return (
@@ -79,13 +98,14 @@ export function VoiceAudioSinks({ channelId, deafened = false }: Props) {
 function AudioSink({ peerId, stream, muted }: { peerId: string; stream: MediaStream; muted: boolean }) {
   const ref = useRef<HTMLAudioElement>(null);
 
+  // Deafen state lives in its own effect (covering mount + toggles) so a mute
+  // flip never re-runs the attach effect below and restarts playback.
   useEffect(() => { if (ref.current) ref.current.muted = muted; }, [muted]);
 
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
     el.srcObject = stream;
-    el.muted = muted;
     // Route to the chosen output device + apply the output volume (both were
     // previously stored but never honoured).
     const { deviceId, volume } = readSpeakerPrefs();

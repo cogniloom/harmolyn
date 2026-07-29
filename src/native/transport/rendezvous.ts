@@ -8,6 +8,7 @@
 import { hmac } from '@noble/hashes/hmac.js';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { supportNodeApiBase } from '../nodeOrigin.js';
+import { reportNodeRequestFailure, reportNodeRequestSuccess } from '../../lib/nodeHealth.js';
 
 // Must match Go oracle const rendezvousLabel = "xorein/server/rendezvous".
 const RENDEZVOUS_LABEL = 'xorein/server/rendezvous';
@@ -41,11 +42,18 @@ export async function rendezvousRegister(
   addrs: string[],
   ttlSeconds = 7200,
 ): Promise<void> {
-  const res = await fetch(`${supportNodeApiBase()}/rendezvous/register`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ namespace, peer_id: peerId, addrs, ttl_seconds: ttlSeconds }),
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${supportNodeApiBase()}/rendezvous/register`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ namespace, peer_id: peerId, addrs, ttl_seconds: ttlSeconds }),
+    });
+  } catch (error) {
+    reportNodeRequestFailure(error);
+    throw error;
+  }
+  reportNodeRequestSuccess();
   if (!res.ok) throw new Error(`rendezvous register: ${res.status}`);
 }
 
@@ -55,11 +63,18 @@ export async function rendezvousRegister(
 export async function rendezvousDiscover(namespace: string, limit = 50): Promise<RendezvousPeer[]> {
   // POST with a JSON body per the Go oracle (pkg/v0_1/control/handlers_rendezvous.go);
   // the control API has no GET variant of this endpoint.
-  const res = await fetch(`${supportNodeApiBase()}/rendezvous/discover`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ namespace, limit }),
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${supportNodeApiBase()}/rendezvous/discover`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ namespace, limit }),
+    });
+  } catch (error) {
+    reportNodeRequestFailure(error);
+    throw error;
+  }
+  reportNodeRequestSuccess();
   if (!res.ok) throw new Error(`rendezvous discover: ${res.status}`);
   const data = await res.json() as { peers: RendezvousPeer[] };
   return data.peers ?? [];

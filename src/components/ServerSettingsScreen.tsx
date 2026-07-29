@@ -2,6 +2,8 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Category, Channel, Server, User } from '@/types';
 import { X, Settings, Hash, Shield, Users, Link, Volume2, Crown, Pencil, Trash2, Plus, Copy, Check, FileText, Clock, Filter, ShieldAlert, Ban, AlertTriangle, Search, Bot, Key, Flag } from 'lucide-react';
 import { useFeature } from '@/hooks/useFeature';
+import { useNodeHealth } from '@/hooks/useNodeHealth';
+import { NODE_OFFLINE_MESSAGE } from '@/lib/nodeHealth';
 import { useEscapeKey } from '@/hooks/useEscapeKey';
 import { copyTextToClipboardSafely, safeConfirm } from '@/components/contextMenuUtils';
 import { resolveAvatarSrc } from '@/lib/avatar';
@@ -305,6 +307,18 @@ export const ServerSettingsScreen: React.FC<ServerSettingsScreenProps> = ({ serv
   const hasAuditLog = useFeature('auditLog');
   const hasAutoMod = useFeature('autoMod');
   const hasBotsFeature = useFeature('bots');
+  // Audit log / automod / bots are served by the HTTP support node; when it is
+  // unreachable these sections show an inline note (queries pause via mutations.ts).
+  const { nodeOffline } = useNodeHealth();
+  const nodeOfflineNote = nodeOffline ? (
+    <div
+      role="status"
+      data-testid="node-offline-section-note"
+      className="mb-4 rounded-r2 border border-accent-warning/30 bg-accent-warning/10 px-4 py-3 text-xs text-accent-warning"
+    >
+      {NODE_OFFLINE_MESSAGE}
+    </div>
+  ) : null;
 
   // Audit log / automod / bots — real queries backed by the control API.
   const auditLogQuery = useAuditLog(server.id, {
@@ -544,7 +558,16 @@ export const ServerSettingsScreen: React.FC<ServerSettingsScreenProps> = ({ serv
     }
   };
 
+  /** Audit/automod/bots are node-backed: refuse mutations with the canonical
+   * message while the node is offline instead of surfacing a raw transport error. */
+  const guardNodeOffline = (): boolean => {
+    if (!nodeOffline) return false;
+    showFeedback('error', NODE_OFFLINE_MESSAGE);
+    return true;
+  };
+
   const handleCreateRule = async () => {
+    if (guardNodeOffline()) return;
     const name = `Custom Rule ${(autoModRulesQuery.data?.length ?? 0) + 1}`;
     try {
       await createAutoModRuleMutation.mutateAsync({ name, type: 'keyword', enabled: false, actions: ['delete'] });
@@ -556,6 +579,7 @@ export const ServerSettingsScreen: React.FC<ServerSettingsScreenProps> = ({ serv
   };
 
   const toggleRule = async (id: string) => {
+    if (guardNodeOffline()) return;
     const rule = autoModRulesQuery.data?.find((r) => r.id === id);
     if (!rule) return;
     const nextEnabled = !rule.enabled;
@@ -569,6 +593,7 @@ export const ServerSettingsScreen: React.FC<ServerSettingsScreenProps> = ({ serv
   };
 
   const handleDeleteRule = async (id: string) => {
+    if (guardNodeOffline()) return;
     const rule = autoModRulesQuery.data?.find((r) => r.id === id);
     if (!rule) return;
     try {
@@ -712,35 +737,46 @@ export const ServerSettingsScreen: React.FC<ServerSettingsScreenProps> = ({ serv
           )}
 
           {activeSection === 'audit-log' && hasAuditLog && (
-            <AuditLogSection
-              filter={adminState.auditFilter}
-              onChangeFilter={(filter) => setAdminState((prev) => ({ ...prev, auditFilter: filter }))}
-              entries={filteredAuditEntries}
-            />
+            <>
+              {nodeOfflineNote}
+              <AuditLogSection
+                filter={adminState.auditFilter}
+                onChangeFilter={(filter) => setAdminState((prev) => ({ ...prev, auditFilter: filter }))}
+                entries={filteredAuditEntries}
+              />
+            </>
           )}
 
           {activeSection === 'automod' && hasAutoMod && (
-            <AutoModSection
-              rules={autoModRules}
-              onCreateRule={() => void handleCreateRule()}
-              onToggleRule={(id) => void toggleRule(id)}
-              onDeleteRule={(id) => void handleDeleteRule(id)}
-            />
+            <>
+              {nodeOfflineNote}
+              <AutoModSection
+                rules={autoModRules}
+                onCreateRule={() => void handleCreateRule()}
+                onToggleRule={(id) => void toggleRule(id)}
+                onDeleteRule={(id) => void handleDeleteRule(id)}
+              />
+            </>
           )}
 
           {activeSection === 'bots' && hasBotsFeature && (
+            <>
+            {nodeOfflineNote}
             <BotManagementSection
               bots={(botsQuery.data ?? []).map((b) => ({ id: b.id, name: b.name, token: b.token, created_at: b.created_at }))}
               onCreate={async (name) => {
+                if (nodeOffline) throw new Error(NODE_OFFLINE_MESSAGE);
                 const result = await createBotMutation.mutateAsync({ name });
                 await botsQuery.refetch();
                 return { id: result.id, name: result.name, token: result.token, created_at: result.created_at };
               }}
               onDelete={async (botId) => {
+                if (nodeOffline) throw new Error(NODE_OFFLINE_MESSAGE);
                 await deleteBotMutation.mutateAsync({ botId });
                 await botsQuery.refetch();
               }}
             />
+            </>
           )}
         </div>
       </div>
