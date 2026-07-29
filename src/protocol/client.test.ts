@@ -1,11 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { signManifest } from "./manifest";
 import type { SecurityMode } from "./capabilities";
-import { readBrowserChatActionSupport, readPersistedChatScopeState, writePersistedChatScopeState, XoreinClient, XoreinControlTransport, type XoreinConnectionSnapshot, type XoreinTransport } from "./client";
+import { configureChatScopePersistence, readBrowserChatActionSupport, readPersistedChatScopeState, writePersistedChatScopeState, XoreinClient, XoreinControlTransport, type XoreinConnectionSnapshot, type XoreinTransport } from "./client";
 import type { Message } from "../types";
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  // Reset chat-scope persistence to the unconfigured default and drop its
+  // in-memory cache so tests can't leak scope state into each other.
+  configureChatScopePersistence(null);
   window.localStorage.clear();
   window.sessionStorage.clear();
 });
@@ -435,31 +438,10 @@ describe("readPersistedChatScopeState", () => {
       },
     });
 
-    expect(JSON.parse(window.localStorage.getItem("harmolyn:xorein:chat-scope:ch-4") ?? "{}")).toEqual({
-      version: 1,
-      nickname: "Relay",
-      mutedUserIds: ["peer-1"],
-      inboxReadIds: ["msg-1"],
-      deletedMessageIds: ["msg-9"],
-      messages: [
-        {
-          id: "msg-2",
-          userId: "peer-2",
-          content: "persisted",
-          timestamp: "2026-05-27T10:09:00Z",
-        },
-      ],
-      threads: {
-        "thread-3": [
-          {
-            id: "msg-3",
-            userId: "peer-3",
-            content: "threaded",
-            timestamp: "2026-05-27T10:11:00Z",
-          },
-        ],
-      },
-    });
+    // SECURITY: without a configured at-rest cipher, writes stay in memory —
+    // decrypted chat content must never reach browser storage as plaintext.
+    expect(window.localStorage.getItem("harmolyn:xorein:chat-scope:ch-4")).toBeNull();
+    expect(window.sessionStorage.getItem("harmolyn:xorein:chat-scope:ch-4")).toBeNull();
 
     expect(readPersistedChatScopeState("ch-4")).toEqual({
       version: 1,

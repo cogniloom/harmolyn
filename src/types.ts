@@ -237,6 +237,13 @@ export interface XoreinRuntimeChannel {
   bitrate?: number;
   /** Voice channel participant cap (0/undefined = unlimited). */
   user_limit?: number;
+  /**
+   * Channel surface kind for non-voice channels (Discord-style channel type).
+   * Part of the owner-authoritative server structure: it persists with the
+   * channel record and propagates to members via sync.update like a rename.
+   * Absent = 'text' (backward compatible with channels stored before this field).
+   */
+  kind?: 'text' | 'forum' | 'announcement';
 }
 
 export interface XoreinRuntimeManifest {

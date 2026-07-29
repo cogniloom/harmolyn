@@ -3,21 +3,20 @@
 // Content-addressed: blob ID derived from SHA-256 of plaintext for dedup.
 import { sha256 } from '@noble/hashes/sha2.js';
 import { gcm as aesGcm } from '@noble/ciphers/aes.js';
+import { supportNodeOrigin } from '../nodeOrigin.js';
 import type { XoreinAttachment } from '../../types.js';
 
-const DEFAULT_NODE = 'https://node.xorein.com';
 const BLOB_KEY_INFO = 'xorein/blob/v1/encryption-key';
 const BLOB_NONCE_INFO = 'xorein/blob/v1/nonce';
 
 /**
  * The blob support node ORIGIN (scheme+host, no /v1) the local deployment is configured to
- * use. On a self-hosted/custom-node build this comes from VITE_XOREIN_CONTROL_ENDPOINT so a
- * user's ciphertext + filename never silently go to the default Harmolyn node. Matches how the
+ * use. Resolves the runtime-selected endpoint first, then VITE_XOREIN_CONTROL_ENDPOINT, so a
+ * user's ciphertext never silently goes to the default Harmolyn node. Matches how the
  * rest of the control API resolves its endpoint (xoreinControl.ts, store.ts toRuntimeSnapshot).
  */
 function configuredNodeOrigin(): string {
-  const raw = import.meta.env?.VITE_XOREIN_CONTROL_ENDPOINT?.trim();
-  return (raw || DEFAULT_NODE).replace(/\/+$/, '');
+  return supportNodeOrigin();
 }
 
 /** The /v1 API base for a node origin. */
@@ -102,10 +101,13 @@ export async function uploadBlob(
   const ctData = 'data:application/octet-stream;base64,' + toBase64(ciphertext);
 
   const origin = configuredNodeOrigin();
+  // ZERO-TRUST: the node stores an opaque blob — it must not learn the real
+  // filename (metadata). Recipients get the true name inside the E2EE message
+  // (XoreinAttachment.name); the node only ever sees "blob".
   const res = await fetch(`${apiBase(origin)}/uploads`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ filename, content_type: 'application/octet-stream', data: ctData }),
+    body: JSON.stringify({ filename: 'blob', content_type: 'application/octet-stream', data: ctData }),
   });
   if (!res.ok) throw new Error(`blob upload: ${res.status}`);
   const json = await res.json() as { id: string };

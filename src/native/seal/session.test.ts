@@ -3,6 +3,7 @@
 // wire, and tampering / wrong-peer is rejected.
 import { describe, it, expect } from 'vitest';
 import { SealSessions, type FetchBundle, type SerializedSealState } from './session.js';
+import { SKIPPED_KEY_TTL_MS, type RatchetState } from './ratchet.js';
 import { ChannelCrypto } from '../crowd/channel.js';
 import { generateSigningIdentity, type HybridSigningKey } from '../crypto/hybrid.js';
 import { identityKeyBlob } from '../identity/safetyNumber.js';
@@ -48,7 +49,7 @@ describe('SealSessions (1:1 DM E2EE)', () => {
     expect(new TextDecoder().decode(alice.decrypt('bob', wire2))).toBe(reply);
   });
 
-  it('ratchets across multiple messages without an im after the first', async () => {
+  it('attaches the X3DH im to every message until the peer confirms the session', async () => {
     const a = new SealSessions('a', mkSigning());
     const b = new SealSessions('b', mkSigning());
     const fetch: FetchBundle = async () => b.serveBundle();
@@ -56,9 +57,19 @@ describe('SealSessions (1:1 DM E2EE)', () => {
     const w1 = await a.encrypt('b', new TextEncoder().encode('m1'), fetch);
     const w2 = await a.encrypt('b', new TextEncoder().encode('m2'), fetch);
     expect(w1.im).toBeDefined();
-    expect(w2.im).toBeUndefined(); // session already established
+    // The session is UNCONFIRMED until b sends something back that decrypts —
+    // the im keeps riding so a dropped first message cannot wedge the DM.
+    expect(w2.im).toBeDefined();
     expect(new TextDecoder().decode(b.decrypt('a', w1))).toBe('m1');
     expect(new TextDecoder().decode(b.decrypt('a', w2))).toBe('m2');
+
+    // b replies; a decrypting an inbound ciphertext confirms the session…
+    const r1 = await b.encrypt('a', new TextEncoder().encode('r1'), async () => a.serveBundle());
+    expect(new TextDecoder().decode(a.decrypt('b', r1))).toBe('r1');
+    // …and the im stops riding.
+    const w3 = await a.encrypt('b', new TextEncoder().encode('m3'), fetch);
+    expect(w3.im).toBeUndefined();
+    expect(new TextDecoder().decode(b.decrypt('a', w3))).toBe('m3');
   });
 
   it('fails closed when no session and no bootstrap im is present', () => {
@@ -161,10 +172,110 @@ describe('SealSessions (1:1 DM E2EE)', () => {
     // Simulate B reloading: reconstruct purely from the persisted (serialized) state.
     const bReloaded = new SealSessions('b', bKey, { persisted: bState });
 
-    // A sends a SECOND message — no X3DH im, relies on the existing ratchet.
+    // A sends a SECOND message — the im still rides (A has not yet received
+    // anything from B), but decryption relies on the existing restored ratchet.
     const w2 = await a.encrypt('b', enc('m2'), async () => b.serveBundle());
-    expect(w2.im).toBeUndefined();
     expect(dec(bReloaded.decrypt('a', w2))).toBe('m2');
+  });
+
+  it('bootstraps from a later message when the first (im-carrying) message is dropped', async () => {
+    const a = new SealSessions('a', mkSigning());
+    const b = new SealSessions('b', mkSigning());
+    const fetch: FetchBundle = async () => b.serveBundle();
+    const enc = (s: string) => new TextEncoder().encode(s);
+    const dec = (u: Uint8Array) => new TextDecoder().decode(u);
+
+    await a.encrypt('b', enc('m1'), fetch); // LOST in transit — never reaches b
+    const w2 = await a.encrypt('b', enc('m2'), fetch);
+    // Without the pending-init fix this threw 'seal: no session and no X3DH init
+    // message' and the DM direction was wedged forever.
+    expect(dec(b.decrypt('a', w2))).toBe('m2');
+    // The session works both ways afterwards.
+    const r1 = await b.encrypt('a', enc('r1'), async () => a.serveBundle());
+    expect(dec(a.decrypt('b', r1))).toBe('r1');
+  });
+
+  it('recovers when the peer re-initiates after a crossed or rejected handshake', async () => {
+    const a = new SealSessions('a', mkSigning());
+    const b = new SealSessions('b', mkSigning());
+    const enc = (s: string) => new TextEncoder().encode(s);
+    const dec = (u: Uint8Array) => new TextDecoder().decode(u);
+
+    // a initiates toward b, but the message never arrives (or b rejected it —
+    // e.g. its one-time prekey was consumed by a concurrent initiator).
+    await a.encrypt('b', enc('lost'), async () => b.serveBundle());
+
+    // b, unaware, initiates its own session toward a. Previously a's wedged
+    // initiator session made this throw forever (no re-handshake path).
+    const wb = await b.encrypt('a', enc('hello from b'), async () => a.serveBundle());
+    expect(dec(a.decrypt('b', wb))).toBe('hello from b');
+
+    // Both directions converge on the adopted session.
+    const wa = await a.encrypt('b', enc('hello back'), async () => b.serveBundle());
+    expect(dec(b.decrypt('a', wa))).toBe('hello back');
+    const wb2 = await b.encrypt('a', enc('again'), async () => a.serveBundle());
+    expect(dec(a.decrypt('b', wb2))).toBe('again');
+  });
+
+  it('a replayed ciphertext neither decrypts nor breaks the session (session level)', async () => {
+    const a = new SealSessions('a', mkSigning());
+    const b = new SealSessions('b', mkSigning());
+    const fetch: FetchBundle = async () => b.serveBundle();
+    const enc = (s: string) => new TextEncoder().encode(s);
+    const dec = (u: Uint8Array) => new TextDecoder().decode(u);
+
+    const w1 = await a.encrypt('b', enc('m1'), fetch);
+    const w2 = await a.encrypt('b', enc('m2'), fetch);
+    expect(dec(b.decrypt('a', w1))).toBe('m1');
+
+    // A replay of w1 (e.g. the support node re-serving a mailbox blob) must throw…
+    expect(() => b.decrypt('a', w1)).toThrow();
+    // …and must NOT have advanced the receive chain: the next genuine message
+    // still decrypts. (Both assertions fail without the transactional ratchet +
+    // OPK-guarded reset path.)
+    expect(dec(b.decrypt('a', w2))).toBe('m2');
+  });
+
+  it('keeps the pending init across a reload so a restored initiator still bootstraps the peer', async () => {
+    const aKey = mkSigning();
+    let aState: SerializedSealState | undefined;
+    const a = new SealSessions('a', aKey, { onChange: (s) => { aState = s; } });
+    const b = new SealSessions('b', mkSigning());
+    const fetch: FetchBundle = async () => b.serveBundle();
+    const enc = (s: string) => new TextEncoder().encode(s);
+    const dec = (u: Uint8Array) => new TextDecoder().decode(u);
+
+    await a.encrypt('b', enc('m1'), fetch); // LOST; session unconfirmed
+    expect(aState).toBeDefined();
+
+    const aReloaded = new SealSessions('a', aKey, { persisted: aState });
+    const w2 = await aReloaded.encrypt('b', enc('m2'), fetch);
+    expect(w2.im).toBeDefined(); // pending init survived the reload
+    expect(dec(b.decrypt('a', w2))).toBe('m2');
+  });
+
+  it('prunes expired skipped-message keys from serialized state (never persisted)', async () => {
+    const a = new SealSessions('a', mkSigning());
+    const b = new SealSessions('b', mkSigning());
+    const fetch: FetchBundle = async () => b.serveBundle();
+    const enc = (s: string) => new TextEncoder().encode(s);
+    const dec = (u: Uint8Array) => new TextDecoder().decode(u);
+
+    const w1 = await a.encrypt('b', enc('m1'), fetch);
+    await a.encrypt('b', enc('m2'), fetch); // never delivered — its key gets skipped
+    const w3 = await a.encrypt('b', enc('m3'), fetch);
+    expect(dec(b.decrypt('a', w1))).toBe('m1');
+    expect(dec(b.decrypt('a', w3))).toBe('m3'); // skips m2 → one retained key
+
+    const live = (b as unknown as { sessions: Map<string, Array<{ rs: RatchetState }>> }).sessions.get('a')!;
+    expect(live[0].rs.skipList.size).toBe(1);
+
+    // Age the skipped key past the TTL: serialization must drop it so a
+    // plaintext-equivalent key for an undelivered message never reaches disk.
+    for (const e of live[0].rs.skipList.values()) e.addedAt -= SKIPPED_KEY_TTL_MS + 60_000;
+    const serialized = b.serialize();
+    const sr = serialized.sessions.find(([pid]) => pid === 'a')![1];
+    expect(sr.skipList.length).toBe(0);
   });
 });
 

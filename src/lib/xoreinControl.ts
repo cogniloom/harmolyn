@@ -1,6 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-import { DeeplinkValidationError, parseJoinDeepLink } from '@/protocol/deeplink';
+import { DeeplinkValidationError, parseJoinDeepLink, parseInviteMetadata, buildJoinDeepLink } from '@/protocol/deeplink';
 import { parseAbsoluteUrl } from '@/protocol/url';
 import { safeStorageGet, safeStorageRemove, safeStorageSet } from '@/lib/browserStorage';
 import { normalizeRuntimeEndpoint, normalizeRuntimeSettings as normalizeAuthRuntimeSettings } from '@/lib/authPreview';
@@ -308,7 +308,16 @@ export function normalizeJoinInput(raw: string): string {
 
 export async function discoverServerByInvite(runtimeSnapshot: XoreinRuntimeSnapshot | null, raw: string): Promise<XoreinServerPreview> {
   const deeplink = normalizeJoinInput(raw);
-  const preview = await requestControlApi<unknown>(runtimeSnapshot, 'POST', '/v1/servers/preview', { deeplink });
+  // ZERO-TRUST: never send the invite-capability token (`tok`) to the support
+  // node — it is the credential the owner verifies before admitting a joiner and
+  // serving history. When a token is embedded, rebuild the deeplink without it
+  // (the preview only needs the public fields: server id, owner, name). Links
+  // without a token (e.g. legacy signed invites) pass through unchanged.
+  const meta = parseInviteMetadata(deeplink);
+  const sanitized = meta.inviteToken
+    ? buildJoinDeepLink(meta.serverId, meta.ownerPeerId ?? '', meta.serverName, undefined, meta.seeds)
+    : deeplink;
+  const preview = await requestControlApi<unknown>(runtimeSnapshot, 'POST', '/v1/servers/preview', { deeplink: sanitized });
   return normalizeServerPreview(preview);
 }
 
@@ -924,9 +933,13 @@ export async function uploadAttachment(
   runtimeSnapshot: XoreinRuntimeSnapshot | null,
   input: { filename: string; contentType: string; data: string },
 ): Promise<XoreinUploadResult> {
+  // ZERO-TRUST: the node stores an opaque blob and must not learn the real
+  // filename or media type — that metadata travels inside the E2EE message.
+  // Callers keep their own names; only the wire form is anonymized. Matches
+  // src/native/blobs/blobs.ts (the native upload path).
   const result = await requestControlApi<unknown>(
     runtimeSnapshot, 'POST', '/v1/uploads',
-    { filename: input.filename, content_type: input.contentType, data: input.data },
+    { filename: 'blob', content_type: 'application/octet-stream', data: input.data },
   );
   if (!isRecord(result) || typeof result.id !== 'string' || typeof result.url !== 'string') {
     throw new XoreinControlError('invalid_response', 'xorein upload response was malformed.', 502);

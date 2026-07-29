@@ -1,8 +1,48 @@
 
 import React, { useEffect, useState } from 'react';
-import { Mic, MicOff, Headphones, HeadphoneOff, PhoneOff, Settings, Video, MonitorUp, Signal, Activity } from 'lucide-react';
+import { Mic, MicOff, Headphones, HeadphoneOff, PhoneOff, Settings, Video, MonitorUp, Signal, Activity, ShieldCheck, ShieldAlert } from 'lucide-react';
 import { Spinner } from '@/components/ui/Spinner';
 import { getVoiceSession } from '@/native/voice/registry';
+import { getState } from '@/native/state/store';
+
+/**
+ * Honest per-call media security badge. The voice layer records the LIVE mode in
+ * voice_sessions[].security_mode ('crowd' only while SFrame genuinely attached;
+ * downgraded to 'clear' on any transform failure or missing Insertable Streams) —
+ * this surfaces it, so the call never silently rides under the channel header's
+ * CROWD text badge while the media is actually DTLS-only. DTLS-only is still
+ * peer-to-peer encrypted (TURN sees only SRTP ciphertext), but it is not the
+ * channel-key E2EE the text badge claims — the distinction must be visible.
+ */
+const VoiceModeBadge: React.FC<{ channelId: string | null }> = ({ channelId }) => {
+  const [mode, setMode] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!channelId) { setMode(null); return; }
+    const tick = () => {
+      const session = getState().voice_sessions.find(v => v.channel_id === channelId);
+      setMode(session?.security_mode ?? null);
+    };
+    tick();
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+  }, [channelId]);
+
+  if (!mode) return null;
+  const e2ee = mode === 'crowd' || mode === 'seal' || mode === 'tree';
+  return (
+    <span
+      data-testid="voice-security-mode"
+      className={`text-[9px] font-mono shrink-0 flex items-center gap-1 ${e2ee ? 'text-accent-success' : 'text-accent-warning'}`}
+      title={e2ee
+        ? 'Call media is end-to-end encrypted with SFrame (channel key) on top of DTLS.'
+        : "SFrame is not active for this call — media is protected by peer-to-peer DTLS only. No relay can read it, but it is not encrypted under the channel's Crowd key."}
+    >
+      {e2ee ? <ShieldCheck size={9} /> : <ShieldAlert size={9} />}
+      {e2ee ? 'SFRAME E2EE' : 'DTLS ONLY'}
+    </span>
+  );
+};
 
 /** Live round-trip latency to mesh peers, sampled from RTCPeerConnection stats. */
 const LatencyReadout: React.FC<{ channelId: string | null }> = ({ channelId }) => {
@@ -133,6 +173,7 @@ export const VoiceControlBar: React.FC<VoiceControlBarProps> = ({
       <div className="flex items-center justify-between gap-3 mb-2.5">
         <span className="text-[9px] font-mono text-white/35 truncate max-w-[120px]">{effectiveState.statusDetail}</span>
         <div className="flex items-center gap-2 shrink-0">
+          <VoiceModeBadge channelId={effectiveState.channelId} />
           <LatencyReadout channelId={effectiveState.channelId} />
           <span className="text-[9px] font-mono text-white/20">{effectiveState.participantCount} member{effectiveState.participantCount === 1 ? '' : 's'}</span>
         </div>

@@ -107,7 +107,12 @@ export const SearchPanel: React.FC<SearchPanelProps> = ({ onClose, scopeType, sc
     let active = true;
     const trimmed = query.trim();
     if (!trimmed) {
-      setResults({ messages: [], results: [] });
+      // Functional update that keeps the previous state object when it is
+      // already empty: unconditionally setting a fresh {messages,results}
+      // object here re-renders, and if the `searchMessages` identity is not
+      // stable across renders this effect re-runs → infinite render/effect
+      // loop (it hard-hung the vitest worker under a per-render mock).
+      setResults((prev) => (prev.messages.length === 0 && prev.results.length === 0 ? prev : { messages: [], results: [] }));
       setSearchError(null);
       setLoading(false);
       return undefined;

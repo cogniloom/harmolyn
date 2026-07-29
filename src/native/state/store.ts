@@ -4,6 +4,7 @@
 // synchronous source of truth for getState(); persistence is a best-effort mirror.
 import { gcm } from '@noble/ciphers/aes.js';
 import { deriveKey } from '../seal/kdf.js';
+import { supportNodeOrigin } from '../nodeOrigin.js';
 import type {
   XoreinRuntimeSnapshot,
   XoreinRuntimeServer,
@@ -514,11 +515,11 @@ export function addChannel(serverId: string, channel: XoreinRuntimeChannel): voi
   });
 }
 
-/** Patch an existing channel's editable fields (name, topic, bitrate, user_limit). */
+/** Patch an existing channel's editable fields (name, topic, bitrate, user_limit, kind). */
 export function updateChannel(
   serverId: string,
   channelId: string,
-  patch: Partial<Pick<XoreinRuntimeChannel, 'name' | 'topic' | 'bitrate' | 'user_limit'>>,
+  patch: Partial<Pick<XoreinRuntimeChannel, 'name' | 'topic' | 'bitrate' | 'user_limit' | 'kind'>>,
 ): void {
   updateState(s => {
     const server = s.servers[serverId];
@@ -963,8 +964,11 @@ export function toRuntimeSnapshot(): XoreinRuntimeSnapshot {
     // engine once the transport connects) so deriveConnectionState can see that
     // the support node is reachable instead of reporting every server no-peer.
     known_peers: Object.values(s.peers),
-    // HTTP-routed operations (identity, pins, roles, etc.) need a control endpoint.
-    // Always include the default so requestControlApi can route even when native is active.
-    control_endpoint: import.meta.env.VITE_XOREIN_CONTROL_ENDPOINT?.trim() || 'https://node.xorein.com',
+    // HTTP-routed operations (identity, roles, uploads) need a control endpoint.
+    // Resolve it through the SINGLE resolver (runtime-selected endpoint first,
+    // then the build default) — hardcoding the build default here sent HTTP-routed
+    // traffic to the public node even after the user picked a self-hosted one,
+    // while blobs/mailbox/rendezvous correctly followed their choice.
+    control_endpoint: supportNodeOrigin(),
   };
 }

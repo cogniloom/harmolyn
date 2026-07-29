@@ -37,7 +37,8 @@ import { encryptChannelEnvelope, encryptDmEnvelope, channelSecurityMode, applyCr
 import { depositOfflineChat } from '../delivery/offline.js';
 import { addRelayOverride, removeRelayOverride } from '../transport/relays.js';
 import { PROTOCOLS } from '../families/families.js';
-import { parseJoinDeepLink } from '../../protocol/deeplink.js';
+import { parseJoinDeepLink, buildJoinDeepLink } from '../../protocol/deeplink.js';
+import { computeInviteToken } from '../sync/invite.js';
 
 /** Generate a fresh base64 32-byte Crowd epoch root for a new server. */
 function freshCrowdRoot(): string {
@@ -80,6 +81,33 @@ function uid(): string {
   return crypto.randomUUID();
 }
 
+// ── Deferred snapshot publish (send-path latency) ──────────────────────────
+//
+// publishNativeSnapshot() is heavy: a full snapshot JSON.stringify, three
+// localStorage writes, and synchronous 'focus'/'visibilitychange' dispatches that
+// kick off React Query refetches. Calling it inline on a message send serializes
+// all of that IN FRONT of the outbound network pipeline: the libp2p dial/negotiate
+// steps progress on microtasks, which cannot run until the current synchronous
+// block (including the publish and its listeners) finishes.
+//
+// Scheduling the publish on a macrotask (setTimeout 0) instead lets the ENTIRE
+// pending microtask queue — i.e. the dial + multistream-select + first socket
+// write of the just-initiated broadcast — drain first, so the encrypted envelope
+// reaches the wire before the UI-refresh storm begins. The local echo is delayed
+// by at most one event-loop turn (~0-4ms), which is imperceptible.
+//
+// Durability is unaffected: the store write (addMessage/enqueueOutbox → persist)
+// stays synchronous; only the UI snapshot mirror is deferred. Multiple sends in
+// one tick coalesce into a single publish.
+let deferredPublishTimer: ReturnType<typeof setTimeout> | null = null;
+function schedulePublishNativeSnapshot(): void {
+  if (deferredPublishTimer !== null) return;
+  deferredPublishTimer = setTimeout(() => {
+    deferredPublishTimer = null;
+    publishNativeSnapshot();
+  }, 0);
+}
+
 // ── Message mutations ──────────────────────────────────────────────────────
 
 export function nativeSendChannelMessage(
@@ -109,12 +137,19 @@ export function nativeSendChannelMessage(
     ...opts,
   };
   addMessage(msg);
-  publishNativeSnapshot();
 
   // P2P: broadcast a CROWD-ENCRYPTED envelope to all server members. The shared
   // epoch root is held locally and never sent to the support node, so the relay
   // only ever sees ciphertext. If no root is seeded yet (e.g. an owner-pending
   // placeholder join) the message stays local — we never transmit plaintext.
+  //
+  // LATENCY ORDER: the encrypted envelope goes onto the wire FIRST (the async
+  // broadcast below is initiated before any snapshot publish); the heavy snapshot
+  // publish is deferred one macrotask via schedulePublishNativeSnapshot so the
+  // dial/negotiate/write microtasks of the broadcast drain ahead of it. addMessage
+  // stays synchronous and FIRST so every delivery-status transition (including the
+  // transport-down branch inside the broadcast closure, which runs synchronously)
+  // finds the message already in the store.
   const members = server?.members ?? [];
   if (members.length > 1 && server) {
     const base = {
@@ -123,6 +158,9 @@ export function nativeSendChannelMessage(
       scope_type: 'channel',
       server_id: server.id,
       sender_id: msg.sender_peer_id,
+      // The reply reference must cross the wire, or the recipient renders the
+      // reply as an unattached message with no quoted context.
+      ...(opts.reply_to ? { reply_to: opts.reply_to } : {}),
     };
     const envelope = encryptChannelEnvelope(server.id, msg.sender_peer_id, base, body, opts.media);
     if (envelope) {
@@ -169,6 +207,8 @@ export function nativeSendChannelMessage(
         setMessageDeliveryStatus(msgId, reachedSomeone ? 'sent' : 'offline_queued');
         publishNativeSnapshot();
       })();
+      // Local echo: published AFTER the broadcast microtasks flush (see helper).
+      schedulePublishNativeSnapshot();
     } else {
       // No envelope (no crowd_root) — message stays local, no delivery possible.
       setMessageDeliveryStatus(msg.id, 'offline_queued');
@@ -210,12 +250,15 @@ export function nativeSendDmMessage(
     ...opts,
   };
   addMessage(msg);
-  publishNativeSnapshot();
 
   // P2P: deliver a SEAL-ENCRYPTED (X3DH + Double Ratchet) envelope to each other
   // DM participant. Each recipient gets its own ratchet ciphertext; if a session
   // cannot be established (peer unreachable) the message stays local and is not
   // transmitted in plaintext.
+  //
+  // LATENCY ORDER: same as the channel path — the seal/encrypt/deliver closure is
+  // initiated first and the snapshot publish is deferred one macrotask, so the
+  // encrypt+send microtask chain reaches the socket before the UI-refresh work.
   const participants = dm?.participants ?? [];
   const sender = msg.sender_peer_id;
   if (participants.length > 1) {
@@ -270,6 +313,8 @@ export function nativeSendDmMessage(
       setMessageDeliveryStatus(msgId, status);
       publishNativeSnapshot();
     })();
+    // Local echo: published AFTER the seal/deliver microtasks flush (see helper).
+    schedulePublishNativeSnapshot();
   } else {
     // No other participants (solo or just us): mark sent locally.
     setMessageDeliveryStatus(msg.id, 'sent');
@@ -384,6 +429,45 @@ export function nativeRemoveReaction(messageId: string, emoji: string): void {
   }
 }
 
+/**
+ * Deliver a notify.push metadata event (pin/unpin, poll vote, …) to `targets`,
+ * then DURABLY queue it for any member that could not be reached. These events
+ * are never otherwise reconciled for an online-but-unreachable peer (history
+ * merge de-dups by message id and does not update pinned/vote metadata), so a
+ * plain fire-and-forget broadcast would leave those members permanently stale.
+ * The outbox drain (reconnect + heartbeat) retries the missed peers.
+ */
+function broadcastNotifyDurable(targets: string[], payload: Record<string, unknown>): void {
+  if (!targets.length) return;
+  void (async () => {
+    const sync = getPeerSync();
+    let undelivered: string[] = targets;
+    if (sync) {
+      try {
+        const res = await sync.broadcastToScope(targets, PROTOCOLS.notify, 'notify.push', payload);
+        undelivered = Array.isArray(res) ? res : [];
+      } catch { undelivered = targets; }
+    }
+    if (undelivered.length) {
+      enqueueOutbox({ id: uid(), targets: undelivered, protocol: PROTOCOLS.notify, operation: 'notify.push', payload, created_at: nowISO(), attempts: 0 });
+    }
+  })();
+}
+
+function broadcastPinState(channelId: string, messageId: string, pinned: boolean): void {
+  const msg = getState().messages.find(m => m.id === messageId);
+  if (!msg) return;
+  const scopeMembers = getScopeMembers(channelId, 'channel', msg.server_id);
+  const targets = scopeMembers.filter(m => m !== localPeerId());
+  broadcastNotifyDurable(targets, {
+    kind: 'pin',
+    channel_id: channelId,
+    message_id: messageId,
+    pinned,
+    from_peer_id: localPeerId(),
+  });
+}
+
 export function nativePinMessage(channelId: string, messageId: string): void {
   // AUTHORIZATION: only a member with MANAGE_MESSAGES may pin. THROW (don't bare-return)
   // so the mutation rejects and React Query rolls back the caller's optimistic pin —
@@ -396,20 +480,8 @@ export function nativePinMessage(channelId: string, messageId: string): void {
   storePinMessage(messageId, true);
   publishNativeSnapshot();
 
-  // P2P: broadcast pin to scope members.
-  const msg = getState().messages.find(m => m.id === messageId);
-  if (msg) {
-    const scopeMembers = getScopeMembers(channelId, 'channel', msg.server_id);
-    if (scopeMembers.length > 1) {
-      void getPeerSync()?.broadcastToScope(scopeMembers, PROTOCOLS.notify, 'notify.push', {
-        kind: 'pin',
-        channel_id: channelId,
-        message_id: messageId,
-        pinned: true,
-        from_peer_id: localPeerId(),
-      });
-    }
-  }
+  // P2P: broadcast pin to scope members, durably queued for unreachable ones.
+  broadcastPinState(channelId, messageId, true);
 }
 
 export function nativeUnpinMessage(channelId: string, messageId: string): void {
@@ -420,20 +492,8 @@ export function nativeUnpinMessage(channelId: string, messageId: string): void {
   storePinMessage(messageId, false);
   publishNativeSnapshot();
 
-  // P2P: broadcast unpin to scope members.
-  const msg = getState().messages.find(m => m.id === messageId);
-  if (msg) {
-    const scopeMembers = getScopeMembers(channelId, 'channel', msg.server_id);
-    if (scopeMembers.length > 1) {
-      void getPeerSync()?.broadcastToScope(scopeMembers, PROTOCOLS.notify, 'notify.push', {
-        kind: 'pin',
-        channel_id: channelId,
-        message_id: messageId,
-        pinned: false,
-        from_peer_id: localPeerId(),
-      });
-    }
-  }
+  // P2P: broadcast unpin to scope members, durably queued for unreachable ones.
+  broadcastPinState(channelId, messageId, false);
 }
 
 // ── Server / channel mutations ─────────────────────────────────────────────
@@ -669,6 +729,24 @@ export function nativeDeleteServer(serverId: string): void {
  * Rotate a server's invite secret (owner-only). Invalidates every previously
  * minted invite link and returns the fresh secret so a new link can be built.
  */
+/**
+ * Mint the shareable invite deeplink for a server from the LIVE store record.
+ * The token must be computed here: the published runtime snapshot strips
+ * invite_secret (owner-only capability material), so UI layers can no longer
+ * mint tokens from snapshot data. Returns null when this identity holds no
+ * invite secret (non-owner, or invites revoked) — a token-less link would be
+ * rejected by the owner anyway, so we fail closed instead of sharing a dud.
+ */
+export function nativeInviteLink(serverId: string): string | null {
+  const server = getState().servers[serverId];
+  const me = localPeerId();
+  if (!server || !me) return null;
+  const owner = server.owner_peer_id || me;
+  if (!server.invite_secret) return null;
+  const token = computeInviteToken(server.invite_secret, serverId);
+  return buildJoinDeepLink(serverId, owner, server.name, token);
+}
+
 export function nativeRotateInvite(serverId: string): string | null {
   const server = getState().servers[serverId];
   if (!server || server.owner_peer_id !== localPeerId()) return null;
@@ -957,12 +1035,35 @@ export function nativeAcceptFriend(requestId: string): void {
     const me = localPeerId();
     const requesterPeerId = req.from_peer_id === me ? (req.to_peer_id ?? req.to_peer_addr) : req.from_peer_id;
     if (requesterPeerId) {
-      void getPeerSync()?.sendToPeer(requesterPeerId, PROTOCOLS.friends, 'friends.accept', {
+      const payload = {
         kind: 'accept',
         id: req.id,
         from_peer_id: me,
         display_name: getState().identity?.profile?.display_name,
-      });
+      };
+      // DURABLE delivery: a one-shot fire-and-forget send here was the P0 — if the
+      // first dial to the requester failed (cold circuit, requester briefly offline),
+      // the accept was lost forever while our presence heartbeat kept reaching them,
+      // leaving their outgoing request stuck on PENDING. Queue the accept in the
+      // durable outbox on failure so the drain (reconnect + 25s heartbeat) retries it
+      // until the requester's node acknowledges.
+      void (async () => {
+        const sync = getPeerSync();
+        const delivered = sync
+          ? await sync.sendToPeer(requesterPeerId, PROTOCOLS.friends, 'friends.accept', payload)
+          : false;
+        if (!delivered) {
+          enqueueOutbox({
+            id: uid(),
+            targets: [requesterPeerId],
+            protocol: PROTOCOLS.friends,
+            operation: 'friends.accept',
+            payload,
+            created_at: nowISO(),
+            attempts: 0,
+          });
+        }
+      })();
     }
   }
   // Let the new friend see us online immediately rather than after the heartbeat.
@@ -1052,6 +1153,64 @@ export function nativeUpdatePresence(
       status_text: opts.status_text,
     }).catch(() => { /* non-fatal */ });
   }
+}
+
+// ── Typing producer ────────────────────────────────────────────────────────
+// The composer calls nativeNotifyTyping(scopeId) on every keystroke; this layer
+// debounces the network side so peers see "is typing" without a broadcast per
+// keypress: at most one presence broadcast per TYPING_REBROADCAST_MS while the
+// user keeps typing, and an automatic stop-typing broadcast after
+// TYPING_IDLE_STOP_MS of inactivity (or an explicit nativeStopTyping on send).
+const TYPING_REBROADCAST_MS = 2_500;
+const TYPING_IDLE_STOP_MS = 4_000;
+let _typingScope: string | null = null;
+let _typingLastSentAt = 0;
+let _typingStopTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** Broadcast presence carrying the given typing scope, preserving status/status_text. */
+function broadcastTypingState(typingInScope: string | undefined): void {
+  const me = localPeerId();
+  const own = getState().presence?.[me];
+  nativeUpdatePresence(own?.status ?? 'online', {
+    status_text: own?.status_text,
+    ...(typingInScope ? { typing_in_scope: typingInScope } : {}),
+  });
+}
+
+/**
+ * Report that the local user is composing in `scopeId` (channel or DM id).
+ * Debounced: safe to call once per keystroke. Publishes typing presence to all
+ * co-members/friends and schedules the stop-typing broadcast automatically.
+ */
+export function nativeNotifyTyping(scopeId: string): void {
+  if (!scopeId || !localPeerId()) return;
+  if (_typingStopTimer) clearTimeout(_typingStopTimer);
+  _typingStopTimer = setTimeout(() => {
+    _typingStopTimer = null;
+    nativeStopTyping();
+  }, TYPING_IDLE_STOP_MS);
+  const now = Date.now();
+  if (_typingScope === scopeId && now - _typingLastSentAt < TYPING_REBROADCAST_MS) return;
+  _typingScope = scopeId;
+  _typingLastSentAt = now;
+  broadcastTypingState(scopeId);
+}
+
+/**
+ * Report that the local user stopped composing (message sent, composer cleared,
+ * or idle timeout). Broadcasts a presence update with the typing flag cleared.
+ * Idempotent — a no-op when we never announced typing.
+ */
+export function nativeStopTyping(): void {
+  if (_typingStopTimer) {
+    clearTimeout(_typingStopTimer);
+    _typingStopTimer = null;
+  }
+  if (_typingScope == null) return;
+  _typingScope = null;
+  _typingLastSentAt = 0;
+  if (!localPeerId()) return;
+  broadcastTypingState(undefined);
 }
 
 /**
@@ -1244,28 +1403,12 @@ export function nativeCastPollVote(messageId: string, optionIndex: number): void
   const scopeMembers = getScopeMembers(msg.scope_id, msg.scope_type, msg.server_id);
   const targets = scopeMembers.filter(m => m !== peerId);
   if (targets.length === 0) return;
-  const payload = {
+  // Best-effort broadcast, then DURABLY queue the vote for any member that was offline
+  // (see broadcastNotifyDurable — poll results are never otherwise reconciled).
+  broadcastNotifyDurable(targets, {
     kind: 'poll_vote',
     message_id: messageId,
     option_index: optionIndex,
     from_peer_id: peerId,
-  };
-  // Best-effort broadcast, then DURABLY queue the vote for any member that was offline.
-  // Poll results are never otherwise reconciled (history merge de-dups an existing poll
-  // message by id and won't update its vote tallies), so a fire-and-forget send would
-  // leave an offline member permanently showing stale results. The outbox drain retries
-  // notify.push to the missed peers when they reconnect.
-  void (async () => {
-    const sync = getPeerSync();
-    let undelivered: string[] = targets;
-    if (sync) {
-      try {
-        const res = await sync.broadcastToScope(targets, PROTOCOLS.notify, 'notify.push', payload);
-        undelivered = Array.isArray(res) ? res : [];
-      } catch { undelivered = targets; }
-    }
-    if (undelivered.length) {
-      enqueueOutbox({ id: uid(), targets: undelivered, protocol: PROTOCOLS.notify, operation: 'notify.push', payload, created_at: nowISO(), attempts: 0 });
-    }
-  })();
+  });
 }

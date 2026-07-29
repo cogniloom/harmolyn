@@ -212,4 +212,76 @@ describe("FriendsPanel", () => {
     expect(await screen.findByText("Alpha Friend")).toBeTruthy();
     expect(screen.queryByText("Beta Friend")).toBeNull();
   });
+
+  it("resolves a friend's display name from known_peers while keeping the peer id visible", async () => {
+    vi.mocked(useRuntimeSnapshot).mockReturnValue({
+      ...createHappyRuntime(),
+      known_peers: [
+        { peer_id: "peer-bob", role: "peer", display_name: "Bob", addresses: [] },
+      ],
+      presence: {
+        "peer-bob": { status: "online" as const, updated_at: "2026-04-22T00:00:00Z" },
+      },
+      friends: [
+        { id: "friend-bob", from_peer_id: "peer-local", to_peer_id: "peer-bob", status: "accepted" as const },
+      ],
+      friend_requests: [],
+    });
+
+    const user = userEvent.setup();
+    render(<FriendsPanel onOpenDM={() => ({ ok: true })} />);
+
+    await user.click(screen.getByRole("button", { name: /^all/i }));
+    // The learned display name is the row title…
+    expect(screen.getByText("Bob")).toBeTruthy();
+    // …and the raw peer id stays visible (secondary line) instead of BEING the title.
+    expect(screen.getByText("peer-bob")).toBeTruthy();
+  });
+
+  it("excludes the local identity from the friends list even when own presence exists", async () => {
+    vi.mocked(useRuntimeSnapshot).mockReturnValue({
+      ...createHappyRuntime(),
+      known_peers: [],
+      presence: {
+        // Own presence entry (published by the native engine) must NOT become a friend row.
+        "peer-local": { status: "online" as const, updated_at: "2026-04-22T00:00:00Z" },
+        "peer-bob": { status: "online" as const, updated_at: "2026-04-22T00:00:00Z" },
+      },
+      friends: [
+        { id: "friend-bob", from_peer_id: "peer-local", to_peer_id: "peer-bob", status: "accepted" as const },
+      ],
+      friend_requests: [],
+    });
+
+    const user = userEvent.setup();
+    render(<FriendsPanel onOpenDM={() => ({ ok: true })} />);
+
+    await user.click(screen.getByRole("button", { name: /^all/i }));
+    expect(screen.getByText("ALL FRIENDS — 1")).toBeTruthy();
+    expect(screen.queryByText("peer-local")).toBeNull();
+    // Exactly one Message action — none offered for your own identity.
+    expect(screen.getAllByRole("button", { name: "Message" }).length).toBe(1);
+  });
+
+  it("renders a friend's broadcast custom status text", async () => {
+    vi.mocked(useRuntimeSnapshot).mockReturnValue({
+      ...createHappyRuntime(),
+      known_peers: [
+        { peer_id: "peer-bob", role: "peer", display_name: "Bob", addresses: [] },
+      ],
+      presence: {
+        "peer-bob": { status: "online" as const, status_text: "BRB coffee", updated_at: "2026-04-22T00:00:00Z" },
+      },
+      friends: [
+        { id: "friend-bob", from_peer_id: "peer-local", to_peer_id: "peer-bob", status: "accepted" as const },
+      ],
+      friend_requests: [],
+    });
+
+    const user = userEvent.setup();
+    render(<FriendsPanel onOpenDM={() => ({ ok: true })} />);
+
+    await user.click(screen.getByRole("button", { name: /^all/i }));
+    expect(screen.getByText("BRB coffee")).toBeTruthy();
+  });
 });

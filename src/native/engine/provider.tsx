@@ -11,7 +11,21 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { resolveFeatureFlag } from '@/config/featureFlags';
 import { hasValidSession } from '@/native/identity/storage';
+import { configureNativeStore } from '@/native/state/store';
 import type { XoreinNativeEngine, EngineActivity } from './engine';
+
+// Pre-engine safety: the native store's persistence backend defaults to
+// localStorage, and until the engine's bootstrap resolves the real identity
+// mode the in-memory state is EMPTY and unencrypted. A stray UI mutation firing
+// in that window (e.g. Layout's setActiveScope effect while a registered
+// identity is still locked) would persist that empty plaintext state to
+// localStorage, permanently overwriting the registered user's encrypted state
+// blob before it was ever loaded (the reload-wipes-account P0). Route all
+// pre-engine writes to throwaway per-tab sessionStorage; engine bootstrap
+// re-configures the real backend immediately before it loads the store.
+if (typeof window !== 'undefined' && resolveFeatureFlag('nativeEngine')) {
+  configureNativeStore({ guest: true });
+}
 
 type NativeEngineState =
   | 'disabled'

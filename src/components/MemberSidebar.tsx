@@ -1,7 +1,7 @@
 
 import React, { useEffect, useState } from 'react';
 import { useRuntimeSnapshot } from '@/lib/xoreinRuntimeContext';
-import { moderationAction } from '@/lib/xoreinControl';
+import { useRuntimeMutations } from '@/hooks/runtime/useRuntimeMutations';
 import type { XoreinRuntimeSnapshot } from '@/types';
 import { motion } from 'framer-motion';
 import { User } from '@/types';
@@ -164,6 +164,9 @@ const TimeoutModal: React.FC<{ user: User; onClose: () => void; onApply: (durati
 export const MemberSidebar: React.FC<MemberSidebarProps> = ({ members, currentUser, serverOwnerId, serverId, collapsed, onToggleCollapse, isOverlay, runtimeSnapshot, onOpenDM }) => {
   const hookRuntimeSnapshot = useRuntimeSnapshot();
   const liveRuntimeSnapshot = runtimeSnapshot ?? hookRuntimeSnapshot;
+  // Moderation routes through the mutation facade (the single switch-point) — a
+  // component must never call the xoreinControl HTTP client directly.
+  const mutations = useRuntimeMutations();
   const hasTimeout = useFeature('timeout');
   const [timeoutTarget, setTimeoutTarget] = useState<User | null>(null);
   const [timedOutUsers, setTimedOutUsers] = useState<Record<string, { duration: string; reason: string }>>({});
@@ -184,6 +187,18 @@ export const MemberSidebar: React.FC<MemberSidebarProps> = ({ members, currentUs
     'OPERATORS': normalizedMembers.filter(m => m.status === 'online' || m.status === 'dnd'),
     'IDLE': normalizedMembers.filter(m => m.status === 'idle'),
     'OFFLINE': normalizedMembers.filter(m => m.status === 'offline'),
+  };
+
+  // A member's broadcast custom status (presence.status_text). Member ids are raw
+  // peer ids except the local user, whose row id is remapped — resolve that back
+  // to the snapshot's peer_id so your own custom status renders too.
+  const statusTextFor = (userId: string): string | undefined => {
+    const presence = liveRuntimeSnapshot?.presence;
+    if (!presence || typeof presence !== 'object' || Array.isArray(presence)) return undefined;
+    const peerKey = userId === normalizedCurrentUser.id ? (liveRuntimeSnapshot?.peer_id ?? userId) : userId;
+    const entry = (presence as Record<string, { status_text?: string } | undefined>)[peerKey];
+    const text = typeof entry?.status_text === 'string' ? entry.status_text.trim() : '';
+    return text || undefined;
   };
 
   const getStatusColor = (status: string) => {
@@ -213,7 +228,7 @@ export const MemberSidebar: React.FC<MemberSidebarProps> = ({ members, currentUs
 
   const handleTimeoutApply = async (user: User, duration: string, reason: string) => {
     try {
-      await moderationAction(liveRuntimeSnapshot, serverId, 'mute', {
+      await mutations.moderationAction(serverId, 'mute', {
         target_peer_id: user.id,
         duration_ms: Number(duration) * 1000,
         reason: reason.trim() || undefined,
@@ -268,6 +283,7 @@ export const MemberSidebar: React.FC<MemberSidebarProps> = ({ members, currentUs
                     </div>
                     <div className="flex items-center gap-1.5">
                       <span className="text-[8px] uppercase font-bold tracking-wider opacity-50" style={{ color: u.status === 'online' ? '#05FFA1' : u.status === 'dnd' ? '#FF2A6D' : u.status === 'idle' ? '#FFB020' : 'rgba(255,255,255,0.3)' }}>{u.status}</span>
+                      {statusTextFor(u.id) && <span className="text-[9px] text-primary/70 font-mono truncate">{statusTextFor(u.id)}</span>}
                       {timedOutUsers[u.id] && <span className="text-[8px] uppercase font-bold tracking-wider text-accent-warning">{timedOutUsers[u.id].duration}s hold</span>}
                       <div className="text-[9px] theme-text-dim font-mono truncate hidden group-hover:block transition-all"> // {u.bio?.substring(0, 15)}</div>
                     </div>

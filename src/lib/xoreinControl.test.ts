@@ -222,6 +222,23 @@ describe("requestControlApi (through control functions)", () => {
     expect(JSON.parse(init.body ?? "{}").deeplink).toBe(makeXoreinInviteDeeplink("alpha"));
   });
 
+  it("strips the invite-capability token from the deeplink before asking the node for a preview", async () => {
+    const fetchMock = vi.fn(async (..._args: unknown[]) => jsonResponse(discoveryResponse()));
+    vi.stubGlobal("fetch", fetchMock);
+
+    // v1 join link carrying the owner-verified HMAC capability token.
+    const payload = btoa(JSON.stringify({ v: 1, owner: "owner-peer-owner-peer-x1", name: "Hub", tok: "SECRET-CAPABILITY" }))
+      .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    await discoverServerByInvite(runtime, `xorein://join/alpha?invite=${payload}`);
+
+    const sent = String((JSON.parse(String((fetchMock.mock.calls[0]?.[1] as { body?: string })?.body ?? "{}")) as { deeplink?: string }).deeplink ?? "");
+    // The capability must never reach the support node, in any encoding.
+    expect(sent).not.toContain("SECRET-CAPABILITY");
+    expect(atob(sent.split("invite=")[1].replace(/-/g, "+").replace(/_/g, "/"))).not.toContain("SECRET-CAPABILITY");
+    // Public preview fields survive.
+    expect(sent).toContain("xorein://join/alpha");
+  });
+
   it("rejects primitive discovery bodies before normalizing them", async () => {
     injectControlToken("tok-123");
     const fetchMock = vi.fn(async (..._args: unknown[]) => jsonResponse("oops"));

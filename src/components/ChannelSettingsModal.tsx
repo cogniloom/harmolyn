@@ -33,11 +33,16 @@ export const ChannelSettingsModal: React.FC<ChannelSettingsModalProps> = ({ chan
     return () => window.removeEventListener('keydown', onKey);
   }, [onClose]);
 
+  // Channel names are normalized on save (lowercased, spaces → hyphens). Computed
+  // here too so the form can TELL the user what will actually be saved instead of
+  // silently rewriting their input.
+  const normalizedName = name.trim().toLowerCase().replace(/\s+/g, '-');
+  const nameWillChange = Boolean(name.trim()) && normalizedName !== name.trim();
+
   const handleSave = () => {
-    const trimmed = name.trim().toLowerCase().replace(/\s+/g, '-');
-    if (!trimmed) return;
+    if (!normalizedName) return;
     onSave({
-      name: trimmed,
+      name: normalizedName,
       topic: topic.trim(),
       ...(isVoice ? { bitrate, user_limit: userLimit } : {}),
     });
@@ -65,15 +70,23 @@ export const ChannelSettingsModal: React.FC<ChannelSettingsModalProps> = ({ chan
         {/* Content */}
         <div className="p-6 space-y-5 overflow-y-auto flex-1">
           <div className="space-y-1.5">
-            <label className="micro-label text-text-tertiary">CHANNEL NAME</label>
+            <label htmlFor="channel-name-input" className="micro-label text-text-tertiary">CHANNEL NAME</label>
             <input
+              id="channel-name-input"
               type="text"
               value={name}
               autoFocus
               onChange={e => setName(e.target.value)}
               onKeyDown={e => { if (e.key === 'Enter') handleSave(); }}
+              aria-describedby={nameWillChange ? 'channel-name-normalized-note' : undefined}
               className="w-full h-12 px-5 rounded-full bg-surface-dark border border-stroke-subtle text-text-primary text-body focus:border-stroke-primary focus:outline-none transition-colors"
             />
+            {nameWillChange && (
+              <p id="channel-name-normalized-note" role="note" className="text-[10px] text-text-tertiary px-1">
+                Channel names are lowercase and use hyphens instead of spaces — this will be saved as{' '}
+                <span className="text-text-secondary font-mono">{isVoice ? '' : '#'}{normalizedName}</span>.
+              </p>
+            )}
           </div>
 
           <div className="space-y-1.5">

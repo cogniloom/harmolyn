@@ -14,11 +14,23 @@ interface PollMessageProps {
   onVote?: (index: number) => void;
 }
 
-export const PollMessage: React.FC<PollMessageProps> = ({ question, options: initialOptions, totalVotes: initialTotal, votedIndex: initialVoted, onVote }) => {
-  const normalizedOptions = useMemo(() => normalizePollOptions(initialOptions), [initialOptions]);
-  const [options, setOptions] = useState(normalizedOptions);
-  const [totalVotes, setTotalVotes] = useState(normalizePollCount(initialTotal, normalizedOptions));
-  const [votedIndex, setVotedIndex] = useState(initialVoted);
+export const PollMessage: React.FC<PollMessageProps> = ({ question, options: liveOptions, totalVotes: liveTotal, votedIndex: liveVotedIndex, onVote }) => {
+  const normalizedOptions = useMemo(() => normalizePollOptions(liveOptions), [liveOptions]);
+  // The poll renders from LIVE props on every render — votes and the local user's
+  // own vote are derived by the caller from the runtime snapshot (poll_votes +
+  // local peer id), so remote peers' votes appear without a remount. The only
+  // local state is a thin optimistic overlay bridging the gap between clicking a
+  // vote and the snapshot reflecting it; once props carry a vote, props win.
+  const [pendingVote, setPendingVote] = useState<number | null>(null);
+  const optimistic = liveVotedIndex === null && pendingVote !== null;
+  const votedIndex = liveVotedIndex ?? pendingVote;
+  const options = optimistic
+    ? normalizedOptions.map((option, index) => index === pendingVote ? { ...option, votes: option.votes + 1 } : option)
+    : normalizedOptions;
+  const totalVotes = normalizePollCount(
+    typeof liveTotal === 'number' && Number.isFinite(liveTotal) ? liveTotal + (optimistic ? 1 : 0) : liveTotal,
+    options,
+  );
   const safeQuestion = normalizePollQuestion(question);
 
   if (options.length === 0) {
@@ -38,10 +50,7 @@ export const PollMessage: React.FC<PollMessageProps> = ({ question, options: ini
 
   const vote = (i: number) => {
     if (votedIndex !== null) return; // already voted
-    const updated = options.map((o, idx) => idx === i ? { ...o, votes: o.votes + 1 } : o);
-    setOptions(updated);
-    setTotalVotes(totalVotes + 1);
-    setVotedIndex(i);
+    setPendingVote(i);
     onVote?.(i);
   };
 

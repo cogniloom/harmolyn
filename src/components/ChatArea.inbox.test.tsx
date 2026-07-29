@@ -73,14 +73,15 @@ vi.mock('@/hooks/runtime/mutations', () => ({
   useSubmitReport: () => ({ mutate: vi.fn(), mutateAsync: vi.fn() }),
 }));
 
-vi.mock('@/lib/xoreinControl', async () => {
-  const actual = await vi.importActual<typeof import('@/lib/xoreinControl')>('@/lib/xoreinControl');
-  return {
-    ...actual,
+// ChatArea must reach notification read-state/search through the mutation
+// facade (privacy: on the native path these are handled locally and never sent
+// to the untrusted support node) — never by importing xoreinControl directly.
+vi.mock('@/hooks/runtime/useRuntimeMutations', () => ({
+  useRuntimeMutations: () => ({
     searchNotifications: searchNotificationsMock,
     markNotificationsRead: markNotificationsReadMock,
-  };
-});
+  }),
+}));
 
 const channel: Channel = { id: 'ch-1', name: 'general', type: 'text', categoryId: 'cat-1' };
 const messages: Message[] = [
@@ -119,7 +120,6 @@ describe('ChatArea inbox', () => {
     );
 
     await waitFor(() => expect(searchNotificationsMock).toHaveBeenCalledWith(
-      expect.any(Object),
       expect.objectContaining({ scope_type: 'channel', scope_id: 'ch-1', unread_only: true }),
     ));
 
@@ -127,7 +127,6 @@ describe('ChatArea inbox', () => {
     await user.click(screen.getByRole('button', { name: /nova/i }));
 
     expect(markNotificationsReadMock).toHaveBeenCalledWith(
-      expect.any(Object),
       expect.objectContaining({ read_through_message_id: 'm1', scope_type: 'channel', scope_id: 'ch-1' }),
     );
   });

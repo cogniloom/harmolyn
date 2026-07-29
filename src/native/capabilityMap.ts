@@ -76,6 +76,10 @@ export const CAPABILITY_MAP: CapabilityEntry[] = [
     description: 'Leave a server; notifies the owner over P2P' },
   { name: 'deleteServer', route: 'native', p2pPropagated: true,
     description: 'Delete a server (owner only); notifies all members to forget it' },
+  { name: 'inviteLink', route: 'native-local', p2pPropagated: false,
+    description: 'Mint the shareable invite deeplink from the live invite secret (snapshot strips it)' },
+  { name: 'previewServerInvite', route: 'native-local', p2pPropagated: false,
+    description: 'Invite preview renders locally from the parsed deeplink on the native path — the support node is never told which server the user is about to join (HTTP preview is legacy-branch only)' },
   { name: 'rotateInvite', route: 'native-local', p2pPropagated: false,
     description: 'Rotate invite secret; new links are valid, old links rejected' },
   { name: 'revokeInvite', route: 'native-local', p2pPropagated: false,
@@ -152,8 +156,8 @@ export const CAPABILITY_MAP: CapabilityEntry[] = [
     description: 'Delete a server role; propagated via sync.update' },
   { name: 'assignRole', route: 'native', p2pPropagated: true,
     description: 'Assign roles to a member; propagated via sync.update' },
-  { name: 'moderationAction', route: 'http', p2pPropagated: false,
-    description: 'Kick/ban/mute via HTTP (moderation flag gated)' },
+  { name: 'moderationAction', route: 'native', p2pPropagated: true,
+    description: 'Kick/ban natively (owner removal + crowd-epoch rotation; ban also rotates the invite secret). Mute/slowmode/unban have no native primitive yet and reject honestly — moderation payloads are NEVER sent to the support node on the native path' },
 
   // ── Polls ─────────────────────────────────────────────────────────────────
   { name: 'castPollVote', route: 'native', p2pPropagated: true,
@@ -174,14 +178,14 @@ export const CAPABILITY_MAP: CapabilityEntry[] = [
     description: 'Owner-side moderation: mark a received report resolved/dismissed (local state)' },
 
   // ── Notifications ─────────────────────────────────────────────────────────
-  { name: 'markNotificationsRead', route: 'http', p2pPropagated: false,
-    description: 'Mark notifications as read via HTTP' },
-  { name: 'searchNotifications', route: 'http', p2pPropagated: false,
-    description: 'Search/filter notifications via HTTP' },
+  { name: 'markNotificationsRead', route: 'native-local', p2pPropagated: false,
+    description: 'Clear a scope unread locally — read state never leaves the device' },
+  { name: 'searchNotifications', route: 'native-local', p2pPropagated: false,
+    description: 'Inbox items are derived client-side; no scope ids are sent to the support node' },
 
   // ── Blobs / uploads ───────────────────────────────────────────────────────
   { name: 'uploadAttachment', route: 'http', p2pPropagated: false,
-    description: 'Upload an E2EE attachment ciphertext via HTTP blob store' },
+    description: 'Upload an E2EE attachment ciphertext via HTTP blob store (filename/type anonymized on the wire)' },
 ];
 
 /** Quick lookup: route for a capability name. */

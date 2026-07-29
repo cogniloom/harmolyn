@@ -8,8 +8,6 @@ import { resolveAvatarSrc } from '@/lib/avatar';
 import { createCollisionResistantId } from '@/lib/localIds';
 import { useCreateChannel, useCreateRole, useUpdateRole, useDeleteRole, useAssignRole, useModerationAction, useUpdateChannel, useDeleteChannel, useAuditLog, useAutoModRules, useCreateAutoModRule, useUpdateAutoModRule, useDeleteAutoModRule, useBots, useCreateBot, useDeleteBot } from '@/hooks/runtime/mutations';
 import { useRuntimeMutations } from '@/hooks/runtime/useRuntimeMutations';
-import { buildJoinDeepLink } from '@/protocol/deeplink';
-import { computeInviteToken } from '@/native/sync/invite';
 import { useRuntimeSnapshot } from '@/lib/xoreinRuntimeContext';
 import { ReportInbox } from '@/components/ReportInbox';
 
@@ -276,11 +274,6 @@ export const ServerSettingsScreen: React.FC<ServerSettingsScreenProps> = ({ serv
   // owner) so a joiner can dial you over the relay circuit and pull the server.
   const snapshot = useRuntimeSnapshot();
   const ownerPeerId = snapshot?.identity?.peer_id?.trim() ?? '';
-  // Mint the invite capability token from the server's local-only secret so the
-  // shareable link grants history access; owners verify it on sync.join.
-  const inviteSecret = snapshot?.servers?.find((s) => s.id === server.id)?.invite_secret;
-  const inviteToken = inviteSecret ? computeInviteToken(inviteSecret, server.id) : undefined;
-  const inviteDeepLink = ownerPeerId ? buildJoinDeepLink(server.id, ownerPeerId, server.name, inviteToken) : '';
   const createChannelMutation = useCreateChannel();
   const updateChannelMutation = useUpdateChannel();
   const deleteChannelMutation = useDeleteChannel();
@@ -304,6 +297,10 @@ export const ServerSettingsScreen: React.FC<ServerSettingsScreenProps> = ({ serv
     return adminState.roles;
   }, [snapshot, server.id, adminState.roles]);
   const mutations = useRuntimeMutations();
+  // Real, shareable P2P invite minted from the LIVE store secret — the published
+  // snapshot strips invite_secret, so it cannot be derived from render state.
+  // Recomputed each render; rotate/revoke publish a fresh snapshot and re-render.
+  const inviteDeepLink = mutations.inviteLink?.(server.id) ?? '';
   const hasRoles = useFeature('rolesManagement');
   const hasAuditLog = useFeature('auditLog');
   const hasAutoMod = useFeature('autoMod');

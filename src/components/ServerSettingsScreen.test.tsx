@@ -20,6 +20,11 @@ const deleteServer = vi.fn();
 const updateServerMeta = vi.fn();
 const rotateInvite = vi.fn();
 const revokeInvite = vi.fn();
+// Mirrors the native accessor: mints the deeplink from live store state
+// (the runtime snapshot no longer carries invite_secret).
+const inviteLink = vi.fn(
+  (serverId: string) => `xorein://join/${serverId}?invite=test-invite-token`,
+);
 
 vi.mock("@/hooks/runtime/mutations", async () => {
   const actual = await vi.importActual<typeof import("@/hooks/runtime/mutations")>("@/hooks/runtime/mutations");
@@ -45,7 +50,7 @@ vi.mock("@/hooks/runtime/mutations", async () => {
 });
 
 vi.mock("@/hooks/runtime/useRuntimeMutations", () => ({
-  useRuntimeMutations: () => ({ removeMember, deleteServer, updateServerMeta, rotateInvite, revokeInvite }),
+  useRuntimeMutations: () => ({ removeMember, deleteServer, updateServerMeta, rotateInvite, revokeInvite, inviteLink }),
 }));
 
 // Mock the runtime snapshot so the local identity OWNS srv-1 (owner_peer_id ===

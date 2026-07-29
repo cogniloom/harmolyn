@@ -26,8 +26,9 @@ import { useFeature } from '@/hooks/useFeature';
 import { useSendChannelMessage, useSendDmMessage, useEditMessage, useDeleteMessage, useAddReaction, useRemoveReaction, usePinMessage, useUnpinMessage, useCastPollVote, useLoadOlderHistory, useSetPeerVerified, useSubmitReport } from '@/hooks/runtime/mutations';
 import { KeyVerification } from '@/components/KeyVerification';
 import { ReportModal, type ReportSubmission } from '@/components/ReportModal';
-import { markNotificationsRead, searchNotifications } from '@/lib/xoreinControl';
+import { useRuntimeMutations } from '@/hooks/runtime/useRuntimeMutations';
 import { uploadEncryptedAttachment } from '@/native/blobs/blobs';
+import { nativeNotifyTyping, nativeStopTyping } from '@/native/state/mutations';
 import { useContextMenu } from '@/components/GlobalContextMenuContext';
 import { readShellRuntimeData } from '@/data';
 import {
@@ -35,7 +36,7 @@ import {
   readPersistedChatScopeState,
   writePersistedChatScopeState,
 } from '@/protocol/client';
-import { Hash, Bell, Pin, Users, Search, MoreHorizontal, MessageSquare, AtSign, Smile, Sticker, PlusCircle, X, Send, LayoutTemplate, Menu, Trash2, MicOff, Image, FileText, Reply, CornerUpRight, Pencil, Check, PanelRightClose, Forward, BarChart3, Link2, ArrowDown, MessageCircle, Inbox, Star, Lock, AlertTriangle, Clock, WifiOff, Flag } from 'lucide-react';
+import { Hash, Bell, Pin, Users, Search, MoreHorizontal, MessageSquare, AtSign, Smile, Sticker, PlusCircle, X, Send, LayoutTemplate, Menu, Trash2, MicOff, Image, FileText, Reply, CornerUpRight, Pencil, Check, PanelRightClose, Forward, BarChart3, Link2, ArrowDown, MessageCircle, Inbox, Star, Lock, AlertTriangle, Clock, WifiOff, Flag, SlidersHorizontal } from 'lucide-react';
 import { useEscapeKey } from '@/hooks/useEscapeKey';
 import { usePersistentState } from '@/hooks/usePersistentState';
 import { PREVIEW_STORAGE_KEYS } from '@/config/storageKeys';
@@ -121,25 +122,52 @@ const getStatusColor = (status: string) => {
   }
 };
 
+// Gradient text (background-clip: text + transparent fill) is a progressive
+// enhancement: where the technique is unsupported the transparent fill would
+// leave the author name INVISIBLE. Detect support once and otherwise fall back
+// to a solid colour — a username must never be invisible.
+const SUPPORTS_TEXT_CLIP_GRADIENT =
+  typeof CSS !== 'undefined' && typeof CSS.supports === 'function' &&
+  (CSS.supports('-webkit-background-clip', 'text') || CSS.supports('background-clip', 'text'));
+const SUPPORTS_COLOR_MIX =
+  typeof CSS !== 'undefined' && typeof CSS.supports === 'function' &&
+  CSS.supports('color', 'color-mix(in srgb, red 60%, transparent)');
+
+// Append an alpha to a user colour WITHOUT ever producing invalid CSS. The old
+// `${color}AA` trick only parses for 6-digit hex colours; native-path users get
+// `hsl(h 72% 58%)` colours (data.ts colorForSeed), and `hsl(...)AA` invalidates
+// the whole gradient declaration — which, combined with the transparent text
+// fill, rendered every author name invisible (blank names in the E2E shots).
+const fadeColor = (color: string, alphaHex: string, percent: number): string => {
+  if (/^#[0-9a-fA-F]{6}$/.test(color)) return `${color}${alphaHex}`;
+  return SUPPORTS_COLOR_MIX ? `color-mix(in srgb, ${color} ${percent}%, transparent)` : color;
+};
+
 // Enhanced Username Component with cyberpunk visual effects
 const UsernameDisplay = ({ user, compact = false }: { user: User, compact?: boolean }) => {
   const isSpecial = user.role === 'Admin' || user.role === 'Moderator';
   const baseColor = user.color || '#F6F8F8';
-  
-  const gradient = baseColor === '#13DDEC' 
-    ? 'linear-gradient(135deg, #13DDEC 0%, #00A8CC 100%)' 
-    : `linear-gradient(135deg, ${baseColor} 0%, ${baseColor}AA 100%)`;
-  
-  const glowColor = `${baseColor}66`;
+
+  const gradient = baseColor === '#13DDEC'
+    ? 'linear-gradient(135deg, #13DDEC 0%, #00A8CC 100%)'
+    : `linear-gradient(135deg, ${baseColor} 0%, ${fadeColor(baseColor, 'AA', 67)} 100%)`;
+
+  const glowColor = fadeColor(baseColor, '66', 40);
 
   return (
     <span className={`font-bold ${compact ? 'text-xs' : 'text-[13px]'} tracking-tight cursor-pointer transition-all duration-300 relative px-1 -mx-1 rounded-md inline-flex items-center gap-1.5`}>
-      <span 
+      <span
         className="transition-all duration-300 hover:brightness-125 font-display"
-        style={{ 
-          background: gradient,
-          WebkitBackgroundClip: 'text',
-          WebkitTextFillColor: 'transparent',
+        style={{
+          // Solid fallback colour first — it paints the glyphs whenever the
+          // gradient-clip technique is unavailable, so the name always renders.
+          color: baseColor,
+          ...(SUPPORTS_TEXT_CLIP_GRADIENT ? {
+            background: gradient,
+            WebkitBackgroundClip: 'text',
+            backgroundClip: 'text',
+            WebkitTextFillColor: 'transparent',
+          } : {}),
           filter: isSpecial && !compact ? `drop-shadow(0 0 6px ${glowColor})` : 'none',
         }}
       >
@@ -202,6 +230,9 @@ function normalizeChatMessages(value: unknown): Message[] {
     const reactions = Array.isArray(record.reactions)
       ? record.reactions.filter((reaction): reaction is { emoji: string; count: number; reacted: boolean } => isReactionRecord(reaction))
       : undefined;
+    const deletedAt = typeof record.deletedAt === 'string' && record.deletedAt.trim() ? record.deletedAt.trim() : undefined;
+    const deletedBy = typeof record.deletedBy === 'string' && record.deletedBy.trim() ? record.deletedBy.trim() : undefined;
+    const pollVotes = normalizePollVotes(record.poll_votes);
 
     seen.add(id);
     normalized.push({
@@ -218,10 +249,33 @@ function normalizeChatMessages(value: unknown): Message[] {
       ...(typeof record.pinned === 'boolean' ? { pinned: record.pinned } : {}),
       ...(typeof record.sticker === 'boolean' ? { sticker: record.sticker } : {}),
       ...(typeof record.delivery_status === 'string' ? { delivery_status: record.delivery_status as Message['delivery_status'] } : {}),
+      ...(deletedAt ? { deletedAt } : {}),
+      ...(deletedBy ? { deletedBy } : {}),
+      ...(pollVotes ? { poll_votes: pollVotes } : {}),
+      ...(record.securityMode === 'seal' || record.securityMode === 'crowd' || record.securityMode === 'clear' ? { securityMode: record.securityMode } : {}),
+      ...(typeof record.encrypted === 'boolean' ? { encrypted: record.encrypted } : {}),
     });
   }
 
   return normalized;
+}
+
+/** Validate `poll_votes` (option index → voter peer ids) from an untrusted record. */
+function normalizePollVotes(value: unknown): Record<number, string[]> | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return undefined;
+  }
+  const normalized: Record<number, string[]> = {};
+  let any = false;
+  for (const [key, voters] of Object.entries(value as Record<string, unknown>)) {
+    const index = Number(key);
+    if (!Number.isInteger(index) || index < 0 || !Array.isArray(voters)) {
+      continue;
+    }
+    normalized[index] = voters.filter((voter): voter is string => typeof voter === 'string' && voter.trim().length > 0);
+    any = true;
+  }
+  return any ? normalized : undefined;
 }
 
 function isReactionRecord(value: unknown): value is { emoji: string; count: number; reacted: boolean } {
@@ -374,6 +428,28 @@ const formatAttachmentLabel = (file: File) => {
   return `${file.name} • ${sizeKb} KB`;
 };
 
+const POLL_CONTENT_PREFIX = '🗳️ POLL:';
+
+/** Parse a poll message body (`🗳️ POLL:{"q":…,"o":[…]}`). Null when not a poll / malformed. */
+function parsePollContent(content: string): { q: string; o: string[] } | null {
+  if (typeof content !== 'string' || !content.startsWith(POLL_CONTENT_PREFIX)) return null;
+  try {
+    const raw = JSON.parse(content.slice(POLL_CONTENT_PREFIX.length)) as { q?: unknown; o?: unknown };
+    if (typeof raw.q !== 'string' || !Array.isArray(raw.o)) return null;
+    const options = raw.o.filter((option): option is string => typeof option === 'string' && option.trim().length > 0);
+    if (options.length === 0) return null;
+    return { q: raw.q, o: options };
+  } catch {
+    return null;
+  }
+}
+
+/** Human-readable one-line preview of a message body (hides encoded poll payloads). */
+function messagePreviewText(content: string): string {
+  const poll = parsePollContent(content);
+  return poll ? `🗳️ ${poll.q}` : content;
+}
+
 export const ChatArea: React.FC<ChatAreaProps> = ({
   channel,
   messages,
@@ -470,6 +546,10 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   const hasMentionAutocomplete = useFeature('mentionAutocomplete');
   const hasFileUploads = useFeature('fileUploads');
 
+  // Notification read-state/search go through the mutation facade: on the native
+  // path they are handled locally and never reach the support node (which channel
+  // you read, and when, is identity metadata the untrusted node must not see).
+  const { searchNotifications, markNotificationsRead } = useRuntimeMutations();
   const sendChannelMutation = useSendChannelMessage();
   const sendDmMutation = useSendDmMessage();
   const editMutation = useEditMessage();
@@ -502,6 +582,21 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
 
   useEscapeKey(() => setShowSecuritySummary(false), showSecuritySummary);
 
+  // Ctrl/Cmd+F opens the advanced message search — the shortcut documented in the
+  // keyboard-shortcuts overlay ("Search Messages"). Browser find is intentionally
+  // overridden while a chat scope is focused, matching Discord.
+  useEffect(() => {
+    if (!hasAdvancedSearch) return;
+    const handler = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && (e.key === 'f' || e.key === 'F')) {
+        e.preventDefault();
+        setShowSearchPanel((prev) => !prev);
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [hasAdvancedSearch]);
+
   const persistScopeState = useCallback((next: {
     messages?: Message[];
     mutedUserIds?: Set<string>;
@@ -532,31 +627,150 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
     else toast.info(text);
   }, [toast]);
 
+  // Merge the LIVE runtime view of the scope with the locally persisted copy.
+  //
+  // The network owns message facts (body/edits/reactions/pins/deletes/poll votes/
+  // security provenance), so for any id present in the live snapshot the LIVE copy
+  // wins — a stale persisted copy must never shadow a remote reaction, edit, pin
+  // or delete. Persistence only contributes:
+  //   • messages MISSING from the live snapshot (offline history, locally composed
+  //     `local-msg-*` entries), appended in their persisted order, and
+  //   • local tombstone annotations (deletedAt/deletedBy) for locally deleted ids.
   const mergePersistedMessages = useCallback((incomingMessages: Message[], persistedMessages: Message[], deletedIds: Set<string>) => {
-    if (persistedMessages.length === 0) {
-      // Preserve tombstones (deletedAt set) rather than filtering them out
-      return incomingMessages.map(m => deletedIds.has(m.id) && !m.deletedAt
-        ? { ...m, deletedAt: new Date().toISOString() }
-        : m,
-      );
-    }
+    const stampTombstone = (message: Message): Message =>
+      message.deletedAt ? message : { ...message, deletedAt: new Date().toISOString() };
+    const persistedById = new Map(persistedMessages.map((message) => [message.id, message]));
+    const incomingIds = new Set(incomingMessages.map((message) => message.id));
 
-    const merged = [...persistedMessages];
-    const seen = new Set(merged.map((message) => message.id));
-    for (const incomingMessage of incomingMessages) {
-      if (!seen.has(incomingMessage.id)) {
-        // If deleted, include as tombstone
-        if (deletedIds.has(incomingMessage.id)) {
-          merged.push({ ...incomingMessage, deletedAt: incomingMessage.deletedAt ?? new Date().toISOString() });
-        } else {
-          merged.push(incomingMessage);
-        }
+    // Persisted-only messages keep their persisted RELATIVE position: walk the
+    // persisted order backwards to find each one's first successor that is also
+    // live, and inject it just before that successor (locally composed messages
+    // with no live successor land at the end, as before).
+    const insertBefore = new Map<string, Message[]>();
+    const tail: Message[] = [];
+    const queued = new Set<string>();
+    let nextLiveSuccessor: string | null = null;
+    for (let i = persistedMessages.length - 1; i >= 0; i--) {
+      const persisted = persistedMessages[i];
+      if (incomingIds.has(persisted.id)) {
+        nextLiveSuccessor = persisted.id;
+        continue;
+      }
+      if (queued.has(persisted.id)) continue;
+      queued.add(persisted.id);
+      const entry = deletedIds.has(persisted.id) ? stampTombstone(persisted) : persisted;
+      if (nextLiveSuccessor) {
+        insertBefore.set(nextLiveSuccessor, [entry, ...(insertBefore.get(nextLiveSuccessor) ?? [])]);
+      } else {
+        tail.unshift(entry);
       }
     }
+
+    const emitted = new Set<string>();
+    const merged: Message[] = [];
+    for (const incoming of incomingMessages) {
+      if (emitted.has(incoming.id)) continue;
+      emitted.add(incoming.id);
+      const before = insertBefore.get(incoming.id);
+      if (before) merged.push(...before);
+      const persisted = persistedById.get(incoming.id);
+      if (deletedIds.has(incoming.id) || incoming.deletedAt) {
+        // Tombstone — prefer the locally recorded deletion stamp/actor when known.
+        merged.push({
+          ...incoming,
+          deletedAt: persisted?.deletedAt ?? incoming.deletedAt ?? new Date().toISOString(),
+          ...(persisted?.deletedBy && !incoming.deletedBy ? { deletedBy: persisted.deletedBy } : {}),
+        });
+      } else {
+        merged.push(incoming);
+      }
+    }
+    merged.push(...tail);
+
     return merged;
   }, []);
 
+  // Remote-delete detection: the native store drops deleted messages from the
+  // published snapshot entirely, so the only signal a receiver gets is a message
+  // id VANISHING from the live view. Track every id we have seen live for the
+  // current scope; when one disappears while the scope still has live messages,
+  // synthesize a stable "Message deleted" tombstone (Discord-class behavior)
+  // instead of letting the message silently evaporate.
+  const liveSeenRef = useRef<Map<string, Message>>(new Map());
+  const remoteTombstonesRef = useRef<Map<string, Message>>(new Map());
+  const liveOrderRef = useRef<string[]>([]);
+  const lastMergedChannelRef = useRef<string | null>(null);
+
+  const buildLiveView = useCallback((incomingMessages: Message[]): Message[] => {
+    const seen = liveSeenRef.current;
+    const tombstones = remoteTombstonesRef.current;
+    const incomingIds = new Set(incomingMessages.map((message) => message.id));
+
+    // A message that reappears was never deleted (transient snapshot blip) — heal it.
+    for (const id of [...tombstones.keys()]) {
+      if (incomingIds.has(id)) tombstones.delete(id);
+    }
+
+    // An entirely empty live view is ambiguous (engine restart / scope reset), so
+    // only treat disappearances as deletions while OTHER live messages remain.
+    if (incomingMessages.length > 0) {
+      for (const [id, lastSeen] of seen) {
+        if (!incomingIds.has(id) && !tombstones.has(id)) {
+          tombstones.set(id, { ...lastSeen, content: '', deletedAt: new Date().toISOString() });
+        }
+      }
+    }
+    for (const message of incomingMessages) {
+      seen.set(message.id, message);
+    }
+
+    // Re-anchor tombstones where the message used to sit: walk the previous render
+    // order backwards to find each vanished id's first SURVIVING successor, then
+    // emit the tombstone just before that successor (or at the end).
+    const insertBefore = new Map<string, Message[]>();
+    const tail: Message[] = [];
+    let nextSurvivor: string | null = null;
+    for (let i = liveOrderRef.current.length - 1; i >= 0; i--) {
+      const id = liveOrderRef.current[i];
+      if (incomingIds.has(id)) {
+        nextSurvivor = id;
+        continue;
+      }
+      const tombstone = tombstones.get(id);
+      if (!tombstone) continue;
+      if (nextSurvivor) {
+        insertBefore.set(nextSurvivor, [tombstone, ...(insertBefore.get(nextSurvivor) ?? [])]);
+      } else {
+        tail.unshift(tombstone);
+      }
+    }
+    const anchored = new Set([...insertBefore.values(), tail].flat().map((message) => message.id));
+
+    const liveView: Message[] = [];
+    for (const message of incomingMessages) {
+      const before = insertBefore.get(message.id);
+      if (before) liveView.push(...before);
+      liveView.push(message);
+    }
+    liveView.push(...tail);
+    // Tombstones whose whole neighborhood vanished from the previous order still render (at the end).
+    for (const [id, tombstone] of tombstones) {
+      if (!anchored.has(id) && !liveView.some((message) => message.id === id)) {
+        liveView.push(tombstone);
+      }
+    }
+    liveOrderRef.current = liveView.map((message) => message.id);
+    return liveView;
+  }, []);
+
   useEffect(() => {
+    if (lastMergedChannelRef.current !== (channel?.id ?? null)) {
+      lastMergedChannelRef.current = channel?.id ?? null;
+      liveSeenRef.current = new Map();
+      remoteTombstonesRef.current = new Map();
+      liveOrderRef.current = [];
+    }
+
     if (!channel?.id) {
       setMessagesState(normalizedMessages);
       setMutedUsers(new Set());
@@ -569,7 +783,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
 
     const persisted = readPersistedChatScopeState(channel.id);
     const persistedDeletedIds = new Set(persisted.deletedMessageIds);
-    setMessagesState(mergePersistedMessages(normalizedMessages, persisted.messages, persistedDeletedIds));
+    setMessagesState(mergePersistedMessages(buildLiveView(normalizedMessages), persisted.messages, persistedDeletedIds));
     setMutedUsers(new Set(persisted.mutedUserIds));
     setThreadRepliesByParent(persisted.threads);
     setLocalNickname(persisted.nickname);
@@ -579,7 +793,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
       tone: chatSupport.mode === 'offline' ? 'error' : 'info',
       text: chatSupport.detail,
     });
-  }, [channel?.id, chatSupport.detail, chatSupport.mode, mergePersistedMessages, normalizedMessages]);
+  }, [buildLiveView, channel?.id, chatSupport.detail, chatSupport.mode, mergePersistedMessages, normalizedMessages]);
 
   const handleContextMenu = (e: React.MouseEvent, msgId: string) => {
     e.preventDefault();
@@ -623,6 +837,12 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   const handleInputChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const val = e.target.value;
     setInputValue(val);
+    // Broadcast typing presence to the scope (debounced + auto-stop in the
+    // native layer); clearing the composer stops it immediately.
+    if (channel?.id) {
+      if (val.trim()) nativeNotifyTyping(channel.id);
+      else nativeStopTyping();
+    }
     if (val === '/') {
       setShowSlashCommands(true);
     } else {
@@ -706,16 +926,22 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
 
     if (chatSupport.mode !== 'offline' && channel?.id) {
       const content = inputValue;
+      // Carry the reply reference on the wire (locally composed `local-msg-*`
+      // targets only exist on this device, so never reference them remotely).
+      const replyTarget = replyingTo;
+      const replyToId = replyTarget && !replyTarget.id.startsWith(MESSAGE_ID_PREFIX) ? replyTarget.id : undefined;
       setInputValue('');
       setReplyingTo(null);
+      nativeStopTyping();
       try {
         if (isDM) {
           await sendDmMutation.mutateAsync({ dmId: channel.id, content });
         } else {
-          await sendChannelMutation.mutateAsync({ channelId: channel.id, content });
+          await sendChannelMutation.mutateAsync({ channelId: channel.id, content, ...(replyToId ? { replyTo: replyToId } : {}) });
         }
       } catch (error) {
         setInputValue(content);
+        setReplyingTo(replyTarget);
         showFeedback('error', error instanceof Error ? error.message : 'Failed to send message.', 'system');
       }
     } else {
@@ -1063,6 +1289,9 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   const liveShellData = readShellRuntimeData();
   const runtimeSnapshot = liveShellData.runtimeSnapshot ?? null;
   const currentUserName = liveShellData.currentUser.username.toLowerCase();
+  // The local peer id — poll voter lists (`poll_votes`) contain raw peer ids, so
+  // deriving "my own vote" needs the identity, not the 'me' alias.
+  const localPeerId = runtimeSnapshot?.identity?.peer_id ?? '';
 
   // Safety-number verification data for a DM: the other participant's pinned hybrid
   // identity + our own, resolved from the runtime snapshot. Undefined for channels.
@@ -1139,12 +1368,12 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
       return;
     }
 
-    void searchNotifications(runtimeSnapshot, {
+    void searchNotifications({
       scope_type: isDM ? 'dm' : 'channel',
       scope_id: channel.id,
       unread_only: true,
-    }).catch(() => { /* best-effort — support node may be unavailable */ });
-  }, [channel, hasInbox, isDM, runtimeSnapshot]);
+    }).catch(() => { /* best-effort — native path answers locally */ });
+  }, [channel, hasInbox, isDM, runtimeSnapshot, searchNotifications]);
 
   const unreadInboxItems = useMemo(() => {
     const selfName = currentUserName;
@@ -1324,15 +1553,25 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
              <button aria-label="Member List" onClick={onToggleMemberList} className="hover:text-primary transition-colors"><Users size={16} /></button>
              <div className="relative group">
                 <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-white/20 group-focus-within:text-primary transition-colors" />
-                <input 
-                    type="text" 
-                    placeholder="Search..." 
+                <input
+                    type="text"
+                    placeholder="Search..."
                     className="bg-bg-0/50 border border-white/5 rounded-full px-10 py-1.5 text-xs focus:outline-none focus:border-primary/50 focus:w-52 transition-all w-40 font-mono text-white placeholder-white/40"
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
                     aria-label="Search messages"
                 />
              </div>
+             {hasAdvancedSearch && (
+               <button
+                 aria-label="Advanced search"
+                 title="Advanced search (Ctrl+F) — filters by sender and date"
+                 onClick={() => setShowSearchPanel(true)}
+                 className={`transition-colors ${showSearchPanel ? 'text-primary' : 'hover:text-primary'}`}
+               >
+                 <SlidersHorizontal size={16} />
+               </button>
+             )}
           </div>
         </div>
       </div>
@@ -1411,9 +1650,15 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
           const user = getUser(msg.userId);
           const isSpecial = user.role === 'Admin' || user.role === 'Moderator';
           const isMe = msg.userId === 'me';
+          // Polls: the body carries an encoded payload (🗳️ POLL:{json}) that must
+          // never render as message text — the modern layout shows only the poll
+          // card; compact layouts show a readable "🗳️ question" summary instead.
+          const poll = parsePollContent(msg.content);
           const displayContent = msg.sticker
             ? <span className="text-5xl leading-none">{msg.content}</span>
-            : searchQuery ? highlightText(msg.content, searchQuery) : renderMarkdown(msg.content);
+            : poll
+              ? <span className="italic">🗳️ {searchQuery ? highlightText(poll.q, searchQuery) : poll.q}</span>
+              : searchQuery ? highlightText(msg.content, searchQuery) : renderMarkdown(msg.content);
           const replyMsg = msg.replyToId ? messagesState.find(m => m.id === msg.replyToId) : null;
           const replyUser = replyMsg ? getUser(replyMsg.userId) : null;
 
@@ -1472,7 +1717,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                             <div className={`flex items-center gap-1.5 mb-1 px-2.5 py-0.5 rounded-full bg-white/5 border border-white/5 text-[10px] ${isMe ? 'self-end' : 'self-start'}`}>
                               <CornerUpRight size={9} className="text-primary/50" />
                               <span className="font-bold text-white/50">{replyUser.username}</span>
-                              <span className="text-white/30 truncate max-w-[160px]">{replyMsg.content}</span>
+                              <span className="text-white/30 truncate max-w-[160px]">{messagePreviewText(replyMsg.content)}</span>
                             </div>
                           )}
                           {!isMe && <div className="ml-1 mb-0.5 text-[9px] font-bold text-white/40 tracking-wider uppercase">{user.username}</div>}
@@ -1590,7 +1835,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                     <div className="w-[2px] h-3.5 bg-primary/30 rounded-full"></div>
                     <UserAvatar user={replyUser} className="w-3.5 h-3.5 rounded-full" alt="" />
                     <span className="text-[10px] font-bold text-white/50">{replyUser.username}</span>
-                    <span className="text-[10px] text-white/30 truncate max-w-[240px]">{replyMsg.content}</span>
+                    <span className="text-[10px] text-white/30 truncate max-w-[240px]">{messagePreviewText(replyMsg.content)}</span>
                   </div>
                 )}
                 <div className="flex items-center gap-2.5 mb-1.5 flex-wrap min-h-[20px]">
@@ -1624,34 +1869,36 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                       <span className="text-white/30">enter to <button onClick={saveEdit} className="text-primary hover:underline">save</button></span>
                     </div>
                   </div>
-                ) : (
+                ) : poll ? null : (
                   <div className="theme-text-secondary leading-relaxed font-chat font-light text-[15px] selection:bg-primary/30 selection:text-white tracking-wide break-words select-text cursor-text">
                     {displayContent}
                     {msg.editedAt && <span className="text-white/20 text-[9px] ml-1">(edited)</span>}
                   </div>
                 )}
-                
-                {/* Poll embed — data encoded in message content, votes P2P-synced */}
-                {msg.content.startsWith('🗳️ POLL:') && (() => {
-                  try {
-                    const raw = JSON.parse(msg.content.slice('🗳️ POLL:'.length)) as { q: string; o: string[] };
-                    const votes = msg.poll_votes ?? {};
-                    const options = raw.o.map((text, i) => ({ text, votes: (votes[i] ?? []).length }));
-                    const totalVotes = options.reduce((sum, o) => sum + o.votes, 0);
-                    return (
-                      <PollMessage
-                        question={raw.q}
-                        options={options}
-                        totalVotes={totalVotes}
-                        votedIndex={null}
-                        onVote={(i) => castPollVoteMutation.mutate({ messageId: msg.id, optionIndex: i })}
-                      />
-                    );
-                  } catch { return null; }
+
+                {/* Poll embed — rendered from LIVE snapshot data (poll_votes syncs P2P):
+                    vote counts and the local user's own vote are derived per render,
+                    so remote votes appear without a remount. */}
+                {poll && (() => {
+                  const votes = msg.poll_votes ?? {};
+                  const options = poll.o.map((text, i) => ({ text, votes: (votes[i] ?? []).length }));
+                  const totalVotes = options.reduce((sum, o) => sum + o.votes, 0);
+                  const ownVoteIndex = localPeerId
+                    ? poll.o.findIndex((_text, i) => (votes[i] ?? []).includes(localPeerId))
+                    : -1;
+                  return (
+                    <PollMessage
+                      question={poll.q}
+                      options={options}
+                      totalVotes={totalVotes}
+                      votedIndex={ownVoteIndex >= 0 ? ownVoteIndex : null}
+                      onVote={(i) => castPollVoteMutation.mutate({ messageId: msg.id, optionIndex: i })}
+                    />
+                  );
                 })()}
 
-                {/* Media Embeds */}
-                <MediaEmbed content={msg.content} />
+                {/* Media Embeds (never for polls — the body is an encoded payload) */}
+                {!poll && <MediaEmbed content={msg.content} />}
 
                 {/* End-to-end encrypted attachments (decrypted on view) */}
                 {msg.media && msg.media.length > 0 && (
@@ -1754,7 +2001,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                           <X size={12} />
                         </button>
                       </div>
-                      <div className="text-xs text-white/70 leading-relaxed">{renderMarkdown(m.content)}</div>
+                      <div className="text-xs text-white/70 leading-relaxed">{renderMarkdown(messagePreviewText(m.content))}</div>
                     </div>
                   );
                 })
@@ -1807,7 +2054,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                 <div className="w-[2px] h-6 bg-primary rounded-full flex-shrink-0"></div>
                 <div className="flex-1 min-w-0">
                   <div className="micro-label text-primary mb-0.5">REPLYING TO // {getUser(replyingTo.userId).username.toUpperCase()}</div>
-                  <div className="text-[10px] text-white/50 truncate">{replyingTo.content}</div>
+                  <div className="text-[10px] text-white/50 truncate">{messagePreviewText(replyingTo.content)}</div>
                 </div>
                 <button onClick={() => setReplyingTo(null)} className="p-1 text-white/30 hover:text-white hover:bg-white/10 rounded-full transition-colors" aria-label="Cancel reply">
                   <X size={14} />
@@ -1984,9 +2231,15 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
         />
       )}
 
-      {/* Search Panel */}
+      {/* Search Panel (advanced search — sender/date filters over the runtime store) */}
       {showSearchPanel && hasAdvancedSearch && (
-        <SearchPanel onClose={() => setShowSearchPanel(false)} />
+        <SearchPanel
+          onClose={() => setShowSearchPanel(false)}
+          scopeType={isDM ? 'dm' : 'channel'}
+          scopeId={channel.id}
+          serverId={historyServerId}
+          users={normalizedUsers}
+        />
       )}
 
       {/* Security mode summary — surfaces the REAL negotiated mode and its
@@ -2094,7 +2347,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
             nextReadIds.add(item.id);
             setInboxReadIds(nextReadIds);
             persistScopeState({ inboxReadIds: nextReadIds });
-            void markNotificationsRead(runtimeSnapshot, {
+            void markNotificationsRead({
               read_through_message_id: item.messageId,
               scope_type: isDM ? 'dm' : 'channel',
               scope_id: channel?.id,
@@ -2111,7 +2364,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
             setInboxReadIds(nextReadIds);
             persistScopeState({ inboxReadIds: nextReadIds });
             if (latestMessageId && chatSupport.mode !== 'offline') {
-              void markNotificationsRead(runtimeSnapshot, {
+              void markNotificationsRead({
                 read_through_message_id: latestMessageId,
                 scope_type: isDM ? 'dm' : 'channel',
                 scope_id: channel?.id,

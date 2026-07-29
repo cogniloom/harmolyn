@@ -191,10 +191,123 @@ export function unframeMessage(buf: Uint8Array): Uint8Array | null {
   return buf.subarray(4, 4 + len);
 }
 
+/**
+ * Read exactly ONE length-prefixed message from a stream and return as soon as
+ * that message is complete.
+ *
+ * LATENCY: the obvious `for await (const chunk of stream)` alternative only ends
+ * when the peer's FIN arrives, so every request paid an extra relay-circuit
+ * traversal purely to learn that a message we had already fully received was in
+ * fact finished. The 4-byte length prefix tells us that directly.
+ *
+ * Returns null if the stream ends before a complete frame arrives.
+ */
+export async function readFramedMessage(
+  stream: AsyncIterable<Uint8Array | { subarray(): Uint8Array }>,
+): Promise<Uint8Array | null> {
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  let joined: Uint8Array | null = null;
+
+  const assemble = (): Uint8Array => {
+    if (chunks.length === 1) return chunks[0];
+    const total = new Uint8Array(size);
+    let off = 0;
+    for (const c of chunks) { total.set(c, off); off += c.length; }
+    return total;
+  };
+
+  for await (const chunk of stream) {
+    const bytes = chunk instanceof Uint8Array ? chunk : chunk.subarray();
+    chunks.push(bytes);
+    size += bytes.length;
+    if (size < 4) continue;
+    joined = assemble();
+    const len = new DataView(joined.buffer, joined.byteOffset).getUint32(0, false);
+    if (size >= 4 + len) return joined.subarray(4, 4 + len);
+  }
+  // Stream ended: fall back to whatever arrived (handles a peer that closed
+  // without ever completing a frame).
+  if (!chunks.length) return null;
+  return unframeMessage(joined ?? assemble());
+}
+
 // ── Family stream call ─────────────────────────────────────────────────────
 
 import type { Libp2p } from 'libp2p';
-import type { Multiaddr } from '@multiformats/multiaddr';
+// LATENCY: static import — the previous per-call `await import('@multiformats/multiaddr')`
+// added a module-resolution microtask hop to EVERY outbound message. The transport layer
+// already imports this module statically, so hoisting costs nothing in bundle terms.
+import { multiaddr, type Multiaddr } from '@multiformats/multiaddr';
+
+// Stream-open options shared by the reuse and fresh-dial paths.
+// - runOnLimitedConnection: relay circuits are 'limited' connections.
+// - negotiateFully:false — LATENCY: with a single protocol, multistream-select may
+//   write the protocol name together with the first data chunk instead of waiting a
+//   full relay-circuit RTT for the ack. Harmless no-op on libp2p versions that do
+//   not implement optimistic select. A protocol mismatch then surfaces on the
+//   response read, which callers already treat as "peer unreachable".
+const STREAM_OPTS = { runOnLimitedConnection: true, negotiateFully: false } as const;
+
+// Cap protocol negotiation on a REUSED connection. A relay-killed circuit can stay
+// 'open' in the local pool (zombie); without this cap a send to it burns the full
+// default 10s negotiation timeout before the fresh-dial fallback runs.
+const REUSE_NEGOTIATION_TIMEOUT_MS = 5_000;
+
+/**
+ * Open an outbound stream to the peer behind `ma`.
+ *
+ * LATENCY + CORRECTNESS: prefer `newStream` on an EXISTING open connection to the
+ * peer instead of `dialProtocol(multiaddr)`. Dialing by circuit multiaddr makes
+ * libp2p 3.x establish a whole new relayed connection (reservation + Noise +
+ * muxer) per message and then abort it as a 'Duplicate multiaddr connection'
+ * (connection-manager guard) whenever any connection to that peer+relay addr
+ * already exists — returning the OLD connection, which may be a zombie whose
+ * circuit the relay already reset. That both wasted a full circuit setup per
+ * message and, once the first circuit died, made every send time out into the
+ * mailbox fallback. Reusing the open connection directly skips the per-message
+ * circuit dial entirely; if the reused connection turns out broken, every stale
+ * connection to the peer is aborted and ONE genuinely fresh dial (`force:true`,
+ * which bypasses both the reuse shortcut and the duplicate-multiaddr abort) is
+ * attempted before giving up to the caller's mailbox/outbox fallback.
+ */
+/** The target peer of a (possibly circuit) multiaddr: its LAST /p2p/ component. */
+function circuitTargetPeer(ma: Multiaddr): string | undefined {
+  const comps = ma.getComponents();
+  for (let i = comps.length - 1; i >= 0; i--) {
+    if (comps[i].name === 'p2p') return comps[i].value;
+  }
+  return undefined;
+}
+
+async function openFamilyStream(node: Libp2p, ma: Multiaddr, protocol: string) {
+  const targetPeer = circuitTargetPeer(ma);
+  const existing = targetPeer == null ? undefined : node
+    .getConnections()
+    .find(c => c.status === 'open' && c.remotePeer.toString() === targetPeer);
+
+  if (existing != null) {
+    try {
+      return await existing.newStream(protocol, {
+        ...STREAM_OPTS,
+        signal: AbortSignal.timeout(REUSE_NEGOTIATION_TIMEOUT_MS),
+      });
+    } catch (err) {
+      // Broken/zombie connection: evict every connection to this peer so the
+      // fresh dial below (and future sends) cannot be pinned back onto it.
+      for (const c of node.getConnections()) {
+        if (c.remotePeer.toString() === targetPeer) {
+          try { c.abort(err instanceof Error ? err : new Error('peerstream: stale connection')); } catch { /* already closed */ }
+        }
+      }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      return await (node as any).dialProtocol(ma, protocol, { ...STREAM_OPTS, force: true });
+    }
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return await (node as any).dialProtocol(ma, protocol, STREAM_OPTS);
+}
 
 /** Open a stream to a peer on a given protocol, send one request, read one response. */
 export async function callFamily(
@@ -205,23 +318,22 @@ export async function callFamily(
   payload?: Uint8Array,
   requestId?: string,
 ): Promise<PeerStreamResponse> {
-  const { multiaddr } = await import('@multiformats/multiaddr');
   const ma = typeof peer === 'string' ? multiaddr(peer) : peer;
   const reqId = requestId ?? crypto.randomUUID();
   const reqBytes = encodePeerStreamRequest({ operation, payload, requestId: reqId });
   const framed = frameMessage(reqBytes);
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const stream = await (node as any).dialProtocol(ma, protocol, { runOnLimitedConnection: true });
+  // LATENCY NOTE: opening this stream is the single dominant cost of a message
+  // (~50ms median through a relay circuit, measured; the local store write and
+  // the wire-send initiation together are ~1ms). The remaining win is a
+  // persistent multiplexed stream per (peer, protocol) — the wire format already
+  // carries a requestId, so responses can be correlated — rather than a fresh
+  // stream per request. That is a protocol-level change and is not attempted here.
+  const stream = await openFamilyStream(node, ma, protocol);
   stream.send(framed);
   await stream.sendCloseWrite();
 
-  const chunks: Uint8Array[] = [];
-  for await (const chunk of stream) {
-    chunks.push(chunk?.subarray ? chunk.subarray() : new Uint8Array(chunk));
-  }
-  const raw = chunks.length === 1 ? chunks[0] : concat(...chunks);
-  const msg = unframeMessage(raw);
+  const msg = await readFramedMessage(stream);
   if (!msg) throw new Error('peerstream: empty or malformed response');
   return decodePeerStreamResponse(msg);
 }

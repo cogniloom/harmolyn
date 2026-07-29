@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -13,9 +13,30 @@ function renderRail(ui: ReactElement) {
 }
 
 const updatePresenceMutateAsync = vi.fn();
+// Per-test feature-flag overrides (default: every flag off, as before).
+const featureFlags: Record<string, boolean> = {};
+// The runtime snapshot ChannelRail sees (owner gating etc.). Default: none.
+let railSnapshotValue: unknown = null;
+// Mutation-facade spies (both the RQ wrappers and direct facade calls resolve here).
+const facadeCreateChannel = vi.fn();
+const facadeUpdateChannel = vi.fn();
+const facadeDeleteChannel = vi.fn();
 
 vi.mock('@/hooks/useFeature', () => ({
-  useFeature: () => false,
+  useFeature: (flag: string) => featureFlags[flag] ?? false,
+}));
+
+vi.mock('@/lib/xoreinRuntimeContext', () => ({
+  useRuntimeSnapshot: () => railSnapshotValue,
+}));
+
+vi.mock('@/hooks/runtime/useRuntimeMutations', () => ({
+  useRuntimeMutations: () => ({
+    createChannel: facadeCreateChannel,
+    updateChannel: facadeUpdateChannel,
+    deleteChannel: facadeDeleteChannel,
+    updatePresence: updatePresenceMutateAsync,
+  }),
 }));
 
 vi.mock('@/hooks/runtime/mutations', async () => {
@@ -304,5 +325,106 @@ describe('ChannelRail status picker', () => {
     // rather than computed visibility.)
     const listWhenCollapsed = screen.getByText('lobby').closest('div.space-y-0\\.5');
     expect(listWhenCollapsed).toHaveClass('hidden');
+  });
+});
+
+describe('ChannelRail channel creation (owner)', () => {
+  const server: Server = {
+    id: 'srv',
+    name: 'Test Server',
+    icon: '',
+    ownerId: 'neo',
+    members: [currentUser],
+    categories: [
+      {
+        id: 'cat-1',
+        name: 'General',
+        channels: [
+          { id: 'chan-1', name: 'lobby', type: 'text', categoryId: 'cat-1' },
+        ],
+      },
+    ],
+  };
+
+  function renderOwnedRail() {
+    return renderRail(
+      <ChannelRail
+        server={server}
+        activeChannelId="chan-1"
+        currentUser={currentUser}
+        users={[currentUser]}
+        directMessages={[]}
+        connectionState={connectionState}
+        connectedVoiceChannelId={null}
+        collapsed={false}
+        onToggleCollapse={() => {}}
+        onSelectChannel={() => {}}
+        onJoinVoice={() => {}}
+        onOpenSettings={() => {}}
+      />,
+    );
+  }
+
+  beforeEach(() => {
+    // Local identity owns the server, so channel management is available.
+    railSnapshotValue = {
+      identity: { peer_id: 'neo-peer' },
+      servers: [{ id: 'srv', owner_peer_id: 'neo-peer', members: ['neo-peer'], channels: {} }],
+    };
+    featureFlags.announcementChannels = true;
+    facadeCreateChannel.mockReset().mockResolvedValue({ id: 'chan-news', server_id: 'srv', name: 'news', voice: false });
+    facadeUpdateChannel.mockReset().mockResolvedValue(undefined);
+    facadeDeleteChannel.mockReset().mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    railSnapshotValue = null;
+    delete featureFlags.announcementChannels;
+  });
+
+  it('shows the Add channel control persistently (not hover-gated)', () => {
+    renderOwnedRail();
+
+    const addButton = screen.getByRole('button', { name: 'Add channel' });
+    // Subdued but visible without hovering the category — the old opacity-0 +
+    // hover-reveal made the control undiscoverable.
+    expect(addButton.className).toContain('opacity-50');
+    expect(addButton.className).not.toContain('opacity-0 ');
+  });
+
+  it('creates a plain text channel through the facade', async () => {
+    const user = userEvent.setup();
+    renderOwnedRail();
+
+    await user.click(screen.getByRole('button', { name: 'Add channel' }));
+    await user.type(screen.getByPlaceholderText('channel-name'), 'random');
+    await user.click(screen.getByRole('button', { name: /create/i }));
+
+    await waitFor(() => expect(facadeCreateChannel).toHaveBeenCalledWith('srv', 'random', false));
+    expect(facadeUpdateChannel).not.toHaveBeenCalled();
+  });
+
+  it('offers Announce at creation and stamps the synced kind onto the new channel', async () => {
+    const user = userEvent.setup();
+    renderOwnedRail();
+
+    await user.click(screen.getByRole('button', { name: 'Add channel' }));
+    await user.click(screen.getByRole('button', { name: /announce/i }));
+    await user.type(screen.getByPlaceholderText('channel-name'), 'news');
+    await user.click(screen.getByRole('button', { name: /create/i }));
+
+    await waitFor(() => expect(facadeCreateChannel).toHaveBeenCalledWith('srv', 'news', false));
+    await waitFor(() =>
+      expect(facadeUpdateChannel).toHaveBeenCalledWith('srv', 'chan-news', { kind: 'announcement' }));
+  });
+
+  it('hides the Announce option when the feature flag is off', async () => {
+    featureFlags.announcementChannels = false;
+    const user = userEvent.setup();
+    renderOwnedRail();
+
+    await user.click(screen.getByRole('button', { name: 'Add channel' }));
+    expect(screen.queryByRole('button', { name: /announce/i })).toBeNull();
+    expect(screen.getByRole('button', { name: /text/i })).toBeTruthy();
   });
 });

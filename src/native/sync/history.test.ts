@@ -7,7 +7,7 @@
 //   • a non-member cannot page history (cursor pull returns nothing for them),
 //   • a brand-new joiner's initial window is clamped to join_history_messages.
 import { describe, it, expect, beforeEach } from 'vitest';
-import { initStore, setNativeIdentity, addServer, addMessage } from '../state/store.js';
+import { initStore, setNativeIdentity, addServer, addMessage, updateServer, getState } from '../state/store.js';
 import { handleSyncRequest } from './inbound.js';
 import { computeInviteToken } from './invite.js';
 import type { XoreinRuntimeMessage } from '../../types.js';
@@ -175,5 +175,81 @@ describe('handleSyncRequest — cursor pagination (WS-D)', () => {
     seed(3);
     const res = handleSyncRequest('sync.pull', { server_id: SRV }, MEMBER);
     expect((res.server as Record<string, unknown>).invite_secret).toBeUndefined();
+  });
+});
+
+// Finding 6 regression: the pre-join history boundary must be enforced by EVERY
+// responder, not only the owner. member_since is distributed as owner-authoritative
+// record metadata (sync.join/pull responses + sync.update), persisted member-side,
+// and a non-owner responder with NO recorded boundary for the requester fails
+// closed to the join_history_messages allowance instead of serving the full window.
+describe('handleSyncRequest — pre-join boundary on non-owner responders (finding 6)', () => {
+  const NEWBIE = 'newbie';
+
+  beforeEach(() => {
+    localStorage.clear();
+    initStore();
+  });
+
+  it('FAILS CLOSED: a member responder with no recorded boundary serves only the join allowance', () => {
+    // Responder is a plain MEMBER; requester NEWBIE is on the member list but the
+    // responder's copy holds no member_since entry for them (e.g. it predates their
+    // join). Without the fix, applyJoinBoundary saw memberSince=undefined and served
+    // the full 20-message pre-join window.
+    setNativeIdentity({ id: MEMBER, peer_id: MEMBER });
+    seed(20, { owner: OWNER });
+    updateServer(SRV, { members: [OWNER, MEMBER, NEWBIE] });
+    const res = handleSyncRequest('sync.pull', { server_id: SRV }, NEWBIE);
+    expect(res.ok).toBe(true);
+    // join_history_messages = 0 → zero pre-join history from a non-owner responder.
+    expect((res.messages as XoreinRuntimeMessage[]).length).toBe(0);
+  });
+
+  it('enforces the owner-distributed boundary on a member responder (pre-join withheld, post-join served)', () => {
+    setNativeIdentity({ id: MEMBER, peer_id: MEMBER });
+    seed(10, { owner: OWNER }); // created_at 00:00:00 .. 00:00:09
+    updateServer(SRV, {
+      members: [OWNER, MEMBER, NEWBIE],
+      member_since: { [NEWBIE]: '2026-01-01T00:00:05.000Z' },
+    });
+    const res = handleSyncRequest('sync.pull', { server_id: SRV }, NEWBIE);
+    expect(res.ok).toBe(true);
+    expect((res.messages as XoreinRuntimeMessage[]).map(m => m.id))
+      .toEqual(['m-0005', 'm-0006', 'm-0007', 'm-0008', 'm-0009']);
+  });
+
+  it('persists member_since from an owner sync.update so members can enforce it later', () => {
+    setNativeIdentity({ id: MEMBER, peer_id: MEMBER });
+    seed(5, { owner: OWNER });
+    handleSyncRequest('sync.update', {
+      server_id: SRV,
+      server: {
+        id: SRV, owner_peer_id: OWNER,
+        members: [OWNER, MEMBER, NEWBIE],
+        member_since: { [NEWBIE]: '2026-01-01T00:00:03.000Z' },
+        server_rev: 1,
+      },
+    }, OWNER);
+    expect(getState().servers[SRV].member_since).toEqual({ [NEWBIE]: '2026-01-01T00:00:03.000Z' });
+    // The persisted boundary is enforced on the next member-served pull.
+    const res = handleSyncRequest('sync.pull', { server_id: SRV }, NEWBIE);
+    expect((res.messages as XoreinRuntimeMessage[]).map(m => m.id)).toEqual(['m-0003', 'm-0004']);
+  });
+
+  it('the served server record carries member_since but still strips invite_secret', () => {
+    setNativeIdentity({ id: OWNER, peer_id: OWNER });
+    seed(3);
+    updateServer(SRV, { member_since: { [MEMBER]: '2026-01-01T00:00:01.000Z' } });
+    const res = handleSyncRequest('sync.pull', { server_id: SRV }, MEMBER);
+    const served = res.server as Record<string, unknown>;
+    expect(served.member_since).toEqual({ [MEMBER]: '2026-01-01T00:00:01.000Z' });
+    expect(served.invite_secret).toBeUndefined();
+  });
+
+  it('never clamps the requesting OWNER, even on a member responder with no boundary map', () => {
+    setNativeIdentity({ id: MEMBER, peer_id: MEMBER });
+    seed(5, { owner: OWNER });
+    const res = handleSyncRequest('sync.pull', { server_id: SRV }, OWNER);
+    expect((res.messages as XoreinRuntimeMessage[]).length).toBe(5);
   });
 });

@@ -179,16 +179,20 @@ export function x3dhInitiate(
   let opkIndex = -1;
   let opkPubUsed: Uint8Array | undefined;
 
-  // DH4 (OPK) if available. Pick a RANDOM unconsumed one-time prekey (a consumed
-  // slot is published as 32 zero bytes) rather than always index 0 — this spreads
-  // usage across the pool so no single OPK backs many sessions, and reduces the
-  // chance two concurrent initiators pick the same slot.
+  // DH4 (OPK) if available. Pick an unconsumed one-time prekey (a consumed slot is
+  // published as 32 zero bytes) DETERMINISTICALLY from our identity seed + the
+  // bundle's SPK: different initiators still spread across the pool (their seeds
+  // differ), but the SAME initiator retrying against the same bundle re-picks the
+  // SAME slot instead of burning a fresh one per attempt — a retry after a failed
+  // or unconfirmed handshake is idempotent on the responder's OPK pool.
   const available: number[] = [];
   for (let i = 0; i < bundle.one_time_prekeys_x25519.length; i++) {
     if (bundle.one_time_prekeys_x25519[i].some(b => b !== 0)) available.push(i);
   }
   if (available.length > 0) {
-    const pick = available[Math.floor(Math.random() * available.length)];
+    const sel = deriveKey(myEdSeed, spkPub, 'xorein/seal/v1/opk-select', 4);
+    const selU32 = new DataView(sel.buffer, sel.byteOffset).getUint32(0, false);
+    const pick = available[selU32 % available.length];
     const opkPub = new Uint8Array(bundle.one_time_prekeys_x25519[pick]);
     const dh4 = x25519.getSharedSecret(ekPriv, opkPub);
     x3dhSecret = new Uint8Array([...x3dhSecret, ...dh4]);

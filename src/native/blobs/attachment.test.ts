@@ -15,8 +15,10 @@ function mockNodeUploads() {
       const body = JSON.parse(init?.body ?? '{}');
       const id = `u${++n}`;
       store.set(id, body.data);
-      // The node stores opaque ciphertext + a forced opaque content_type.
+      // The node stores opaque ciphertext + a forced opaque content_type, and
+      // must never learn the real filename (metadata zero-trust).
       expect(body.content_type).toBe('application/octet-stream');
+      expect(body.filename).toBe('blob');
       return { ok: true, status: 200, json: async () => ({ id }) };
     }
     const m = u.match(/\/uploads\/([^/]+)$/);
@@ -32,7 +34,10 @@ function mockNodeUploads() {
 }
 
 describe('encrypted attachments (priv-4)', () => {
-  afterEach(() => vi.restoreAllMocks());
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+  });
 
   it('uploads opaque ciphertext and round-trips the file via the key in the message', async () => {
     const { store } = mockNodeUploads();
@@ -56,6 +61,8 @@ describe('encrypted attachments (priv-4)', () => {
   });
 
   it('targets the configured node and records its origin so recipients fetch from the right node', async () => {
+    // Pin the "no override" premise: the ambient .env may set a local endpoint.
+    vi.stubEnv('VITE_XOREIN_CONTROL_ENDPOINT', '');
     const { urls } = mockNodeUploads();
     const att = await uploadEncryptedAttachment(new TextEncoder().encode('hi'), 'f', 'text/plain');
     // With no VITE_XOREIN_CONTROL_ENDPOINT override, uploads target the default node's /v1.

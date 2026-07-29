@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { X, Link, ArrowRight, Shield, Loader2, AlertTriangle } from 'lucide-react';
-import { discoverServerByInvite, type XoreinServerPreview } from '@/lib/xoreinControl';
+import { useRuntimeMutations, type XoreinServerPreview } from '@/hooks/runtime/useRuntimeMutations';
 import { parseInviteMetadata, type InviteMetadata } from '@/protocol/deeplink';
 import { PendingButton } from '@/components/ui/PendingButton';
 import { useEscapeKey } from '@/hooks/useEscapeKey';
@@ -49,7 +49,16 @@ function normalizeDiscoveryPreview(value: unknown): {
   };
 }
 
-export const JoinServerModal: React.FC<JoinServerModalProps> = ({ onClose, onJoin, initialValue = '', runtimeSnapshot = null }) => {
+export const JoinServerModal: React.FC<JoinServerModalProps> = ({ onClose, onJoin, initialValue = '' }) => {
+  // ZERO-TRUST: preview goes through the mutation facade. On the native path it is
+  // a local no-op (the support node must not learn which server the user is about
+  // to join before they join it); only the HTTP/legacy branch queries the node.
+  // Held in a ref so the debounced discovery effect re-runs only when the INPUT
+  // changes — the facade object's identity changes with every runtime-snapshot
+  // publish, and keying the effect on it would re-fire discovery in a loop.
+  const { previewServerInvite } = useRuntimeMutations();
+  const previewServerInviteRef = useRef(previewServerInvite);
+  previewServerInviteRef.current = previewServerInvite;
   const [inviteLink, setInviteLink] = useState(initialValue);
   const [discoveryLoading, setDiscoveryLoading] = useState(false);
   const [joining, setJoining] = useState(false);
@@ -100,13 +109,14 @@ export const JoinServerModal: React.FC<JoinServerModalProps> = ({ onClose, onJoi
       return;
     }
 
-    // Best-effort enrichment via the support node (optional; failure is non-fatal).
+    // Best-effort enrichment (optional; failure is non-fatal). Resolves locally
+    // (null) on the native path; only the HTTP/legacy branch asks the support node.
     let cancelled = false;
     const timeoutId = window.setTimeout(async () => {
       setDiscoveryLoading(true);
       try {
-        const nextDiscovery = await discoverServerByInvite(runtimeSnapshot, trimmed);
-        if (!cancelled && normalizeDiscoveryPreview(nextDiscovery)) setDiscovery(nextDiscovery);
+        const nextDiscovery = await previewServerInviteRef.current(trimmed);
+        if (!cancelled && nextDiscovery && normalizeDiscoveryPreview(nextDiscovery)) setDiscovery(nextDiscovery);
       } catch {
         /* support node optional — local preview already shown */
       } finally {
@@ -118,7 +128,8 @@ export const JoinServerModal: React.FC<JoinServerModalProps> = ({ onClose, onJoi
       cancelled = true;
       window.clearTimeout(timeoutId);
     };
-  }, [inviteLink, runtimeSnapshot]);
+  // The facade fn is read through a ref (see above) so only the input re-arms the debounce.
+  }, [inviteLink]);
 
   const handleJoin = async () => {
     if (!inviteLink.trim()) return;

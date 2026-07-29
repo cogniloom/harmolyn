@@ -17,6 +17,8 @@
 // supports Insertable Streams, but is NOT required to join (unlike the old SFU
 // design, where SFrame was mandatory because the SFU forwarded frames).
 
+import { supportNodeApiBase, supportNodeOrigin } from '../nodeOrigin.js';
+
 export const VOICE_OPS = {
   presence: 'voice.presence',
   offer: 'voice.offer',
@@ -77,24 +79,47 @@ export interface VoiceOfferResponse {
 }
 
 /**
+ * PRIVACY: every ICE server in the list receives STUN binding requests carrying the
+ * user's real IP the moment a call starts — an ICE entry is a disclosure of "this
+ * address is in a call right now" to whoever operates that server. The default
+ * configuration therefore talks ONLY to the user's configured support node
+ * (self-hosted nodes included via supportNodeOrigin()). A public Google STUN
+ * fallback exists solely behind this explicit, default-OFF opt-in for users on
+ * NATs their node's STUN cannot traverse, and is never shipped in the default list.
+ */
+export const PUBLIC_STUN_OPT_IN_KEY = 'harmolyn:voice:allow-public-stun';
+const PUBLIC_STUN_URL = 'stun:stun.l.google.com:19302';
+
+function optionalPublicStun(): RTCIceServer[] {
+  try {
+    if (typeof localStorage !== 'undefined' && localStorage.getItem(PUBLIC_STUN_OPT_IN_KEY) === 'true') {
+      return [{ urls: [PUBLIC_STUN_URL] }];
+    }
+  } catch { /* storage unavailable (workers/tests) — stay private */ }
+  return [];
+}
+
+/**
  * Fetch short-lived TURN credentials from the support node (for NAT traversal
  * when a direct/relayed peer connection needs a TURN relay). Falls back to a
- * STUN-only configuration when the node serves no TURN credentials.
+ * STUN-only configuration when the node serves no TURN credentials. Only the
+ * configured support node appears in the ICE list unless the user explicitly
+ * opted in to the public STUN fallback (see PUBLIC_STUN_OPT_IN_KEY above).
  */
 export async function fetchTurnCredentials(): Promise<RTCIceServer[]> {
   try {
-    const resp = await fetch('https://node.xorein.com/v1/voice/turn-credentials', { method: 'GET' });
+    const resp = await fetch(`${supportNodeApiBase()}/voice/turn-credentials`, { method: 'GET' });
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const data = await resp.json() as { urls: string[]; username: string; credential: string };
     return [
       { urls: data.urls, username: data.username, credential: data.credential },
-      { urls: ['stun:stun.l.google.com:19302'] },
+      ...optionalPublicStun(),
     ];
   } catch {
-    // STUN-only fallback (public + node STUN). Works for most non-symmetric NATs.
+    // STUN-only fallback (node STUN). Works for most non-symmetric NATs.
     return [
-      { urls: ['stun:node.xorein.com:3479'] },
-      { urls: ['stun:stun.l.google.com:19302'] },
+      { urls: [`stun:${new URL(supportNodeOrigin()).hostname}:3479`] },
+      ...optionalPublicStun(),
     ];
   }
 }

@@ -73,14 +73,44 @@ export function addMember(g: GroupState, member: Member): Commit {
   return rotateEpoch(g, nextEpoch, [member.peerId], []);
 }
 
-/** Remove a member and rotate the epoch (removed peer cannot decrypt future messages). */
-export function removeMember(g: GroupState, peerId: string): Commit {
+/**
+ * Remove a member and rotate the epoch with a FRESH random root.
+ *
+ * FORWARD SECRECY: the removed peer holds the current `rootKey`, and every
+ * derivation-based rotation (`HKDF(rootKey, epochId)`) is computable from it
+ * offline, forever. So a membership-removal rotation must NOT derive — it mints
+ * fresh entropy the removed peer never sees (mirrors Crowd's
+ * `rotateEpochMembership`, spec 13 §6.2). The returned `epochRoot` is SECRET key
+ * material: the caller must distribute it to the REMAINING members over the
+ * authenticated E2EE channel (never to the removed peer, never in the plaintext
+ * Commit); they apply it with `installEpochRoot(g, commit.epochId, epochRoot)`.
+ */
+export function removeMember(g: GroupState, peerId: string): { commit: Commit; epochRoot: Uint8Array } {
   const before = g.members.length;
   g.members = g.members.filter(m => m.peerId !== peerId);
   if (g.members.length === before) throw new Error('tree: peer not a member');
   if (g.members.length === 0) throw new Error('tree: group disbanded');
   const nextEpoch = g.currentEpoch.epochId + 1;
-  return rotateEpoch(g, nextEpoch, [], [peerId]);
+  const freshRoot = crypto.getRandomValues(new Uint8Array(32));
+  g.prevEpochs = [g.currentEpoch, ...g.prevEpochs].slice(0, LEGACY_WINDOW_SIZE);
+  g.rootKey = new Uint8Array(freshRoot);
+  g.currentEpoch = deriveEpoch(g.rootKey, nextEpoch, uint64BE(nextEpoch));
+  return { commit: { epochId: nextEpoch, addedPeers: [], removedPeers: [peerId] }, epochRoot: freshRoot };
+}
+
+/**
+ * Install an EXTERNALLY-supplied epoch root (received from the remover over the
+ * authenticated channel after a membership-removal rotation) as the new current
+ * epoch. Monotonic: an epoch not strictly newer than the current one is ignored,
+ * so a replayed or stale rotation can neither roll the group back nor desync it.
+ * The previous epoch stays in the legacy window so in-flight messages under it
+ * still decrypt.
+ */
+export function installEpochRoot(g: GroupState, epochId: number, root: Uint8Array): void {
+  if (epochId <= g.currentEpoch.epochId) return; // stale / duplicate — never roll back
+  g.prevEpochs = [g.currentEpoch, ...g.prevEpochs].slice(0, LEGACY_WINDOW_SIZE);
+  g.rootKey = new Uint8Array(root);
+  g.currentEpoch = deriveEpoch(g.rootKey, epochId, uint64BE(epochId));
 }
 
 // ── Encryption / decryption ────────────────────────────────────────────────
@@ -122,6 +152,14 @@ function deriveEpoch(rootKey: Uint8Array, epochId: number, salt: Uint8Array | nu
   return { epochId, epochKey, messageCount: 0, startedAt: Date.now() };
 }
 
+/**
+ * Derivation-based rotation: next root = HKDF(current root). ONLY safe when no
+ * member was removed — anyone holding the current root can compute every future
+ * derived root, so membership REMOVALS must go through the fresh-random-root path
+ * in `removeMember` instead. Used for member adds (the added peer receives the
+ * post-add state and cannot invert HKDF to read pre-add epochs) and for
+ * count-based rotations where membership is unchanged.
+ */
 function rotateEpoch(g: GroupState, newEpochId: number, added: string[], removed: string[]): Commit {
   const epochNonce = uint64BE(newEpochId);
   const newRoot = deriveKey(g.rootKey, epochNonce, LABEL_TREE_EPOCH_ROOT, 32);

@@ -288,8 +288,10 @@ function createShellRuntimeData(): ShellRuntimeData {
     return nextUser;
   };
 
+  // Deleted messages are NOT dropped: they map to content-stripped tombstones so
+  // every member renders a consistent "Message deleted" row (Discord-class UX)
+  // instead of the message silently vanishing on receivers.
   const mappedMessages = (runtimeSnapshot?.messages ?? [])
-    .filter((message) => !message.deleted)
     .sort((left, right) => toTimestamp(left.created_at) - toTimestamp(right.created_at))
     .map((message) => mapMessage(message, currentPeerId, ensureUser));
 
@@ -433,15 +435,19 @@ function mapMessage(
   ensureUser: (peerId: string, options?: { role?: string; fallbackName?: string; muted?: boolean }) => User,
 ): { scopeId: string; message: Message } {
   ensureUser(message.sender_peer_id);
+  // A deleted message becomes a content-stripped tombstone (deletedAt drives the
+  // "Message deleted" row) rather than disappearing from the mapped view.
+  const deleted = message.deleted === true;
   return {
     scopeId: message.scope_id,
     message: {
       id: message.id,
       userId: mapPeerIdToUserId(message.sender_peer_id, currentPeerId),
-      content: message.body,
+      content: deleted ? '' : message.body,
       timestamp: formatMessageTimestamp(message.created_at),
       editedAt: message.updated_at ? formatMessageTimestamp(message.updated_at) : undefined,
       replyToId: message.reply_to,
+      ...(deleted ? { deletedAt: message.updated_at || message.created_at || new Date(0).toISOString() } : {}),
       ...(message.reactions && message.reactions.length > 0 ? { reactions: message.reactions } : {}),
       ...(message.media && message.media.length > 0 ? { media: message.media } : {}),
       ...(message.pinned === true ? { pinned: true } : {}),
@@ -893,6 +899,19 @@ function normalizeRuntimeMessage(value: unknown): XoreinRuntimeMessage {
         && typeof (r as { count?: unknown }).count === 'number')
       .map((r) => ({ emoji: r.emoji, count: r.count, reacted: (r as { reacted?: unknown }).reacted === true }))
     : undefined;
+  // Fields below are re-read by mapMessage(). Dropping any of them here silently
+  // reverts live state on the next merge tick: `pinned` un-pins, `poll_votes`
+  // hides other people's votes, and — worst — losing `security_mode`/`encrypted`
+  // strips a message's provenance, which the badge reads as unknown and reports
+  // as UNENCRYPTED. Keep this list in sync with mapMessage.
+  const raw = value as unknown as Record<string, unknown>;
+  const pinned = typeof raw.pinned === 'boolean' ? raw.pinned : undefined;
+  const deliveryStatus = typeof raw.delivery_status === 'string' ? raw.delivery_status : undefined;
+  const securityMode = raw.security_mode === 'seal' || raw.security_mode === 'crowd' || raw.security_mode === 'clear'
+    ? raw.security_mode
+    : undefined;
+  const encrypted = typeof raw.encrypted === 'boolean' ? raw.encrypted : undefined;
+  const pollVotes = normalizeRuntimePollVotes(raw.poll_votes);
   return {
     id,
     scope_type: scopeType,
@@ -907,7 +926,28 @@ function normalizeRuntimeMessage(value: unknown): XoreinRuntimeMessage {
     ...(createdAt ? { created_at: createdAt } : {}),
     ...(updatedAt ? { updated_at: updatedAt } : {}),
     ...(deleted !== undefined ? { deleted } : {}),
+    ...(pinned !== undefined ? { pinned } : {}),
+    ...(deliveryStatus ? { delivery_status: deliveryStatus as XoreinRuntimeMessage['delivery_status'] } : {}),
+    ...(securityMode ? { security_mode: securityMode } : {}),
+    ...(encrypted !== undefined ? { encrypted } : {}),
+    ...(pollVotes ? { poll_votes: pollVotes } : {}),
   };
+}
+
+/** Poll votes as `{ optionIndex: [peerId, ...] }`, dropping malformed entries. */
+function normalizeRuntimePollVotes(value: unknown): Record<number, string[]> | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const out: Record<number, string[]> = {};
+  let any = false;
+  for (const [key, voters] of Object.entries(value as Record<string, unknown>)) {
+    const index = Number(key);
+    if (!Number.isInteger(index) || index < 0 || !Array.isArray(voters)) continue;
+    const peers = voters.filter((p): p is string => typeof p === 'string' && p.trim().length > 0);
+    if (!peers.length) continue;
+    out[index] = peers;
+    any = true;
+  }
+  return any ? out : undefined;
 }
 
 function normalizeRuntimeVoiceSessionArray(value: unknown): XoreinRuntimeVoiceSession[] | undefined {
@@ -1090,12 +1130,26 @@ function normalizeRuntimeChannel(value: unknown, serverId: string): XoreinRuntim
     return undefined;
   }
   const createdAt = typeof value.created_at === 'string' && value.created_at.trim() ? value.created_at.trim() : undefined;
+  // Channel kind is owner-authoritative server structure that propagates P2P like
+  // a rename; dropping it here made a switch to Announce/Forum invisible to every
+  // client (including the one that made it) and lost on reload. Same for the
+  // topic/bitrate/user_limit settings.
+  const kind = value.kind === 'text' || value.kind === 'forum' || value.kind === 'announcement'
+    ? value.kind
+    : undefined;
+  const topic = typeof value.topic === 'string' && value.topic.trim() ? value.topic.trim() : undefined;
+  const bitrate = typeof value.bitrate === 'number' && Number.isFinite(value.bitrate) ? value.bitrate : undefined;
+  const userLimit = typeof value.user_limit === 'number' && Number.isFinite(value.user_limit) ? value.user_limit : undefined;
   return {
     id,
     server_id: channelServerId,
     name,
     voice: value.voice,
     ...(createdAt ? { created_at: createdAt } : {}),
+    ...(kind ? { kind } : {}),
+    ...(topic ? { topic } : {}),
+    ...(bitrate !== undefined ? { bitrate } : {}),
+    ...(userLimit !== undefined ? { user_limit: userLimit } : {}),
   };
 }
 

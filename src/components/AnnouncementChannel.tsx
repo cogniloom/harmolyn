@@ -1,8 +1,8 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { Megaphone, Loader2, Plus, Send, Sparkles, ThumbsUp, X } from 'lucide-react';
-import type { Channel } from '@/types';
-import { addReaction, searchMessages, sendChannelMessage, type XoreinMessageRecord } from '@/lib/xoreinControl';
+import React, { useMemo, useState } from 'react';
+import { Megaphone, Plus, Send, Sparkles, ThumbsUp, X } from 'lucide-react';
+import type { Channel, XoreinRuntimeMessage } from '@/types';
 import { useRuntimeSnapshot } from '@/lib/xoreinRuntimeContext';
+import { useRuntimeMutations } from '@/hooks/runtime/useRuntimeMutations';
 
 interface AnnouncementChannelProps {
   channel: Channel;
@@ -10,7 +10,7 @@ interface AnnouncementChannelProps {
 }
 
 interface AnnouncementEntry {
-  message: XoreinMessageRecord;
+  message: XoreinRuntimeMessage;
   title: string;
   content: string;
 }
@@ -23,7 +23,7 @@ function normalizeAnnouncementText(value: unknown, fallback: string): string {
   return typeof value === 'string' && value.trim() ? value.trim() : fallback;
 }
 
-function normalizeAnnouncementMessage(value: unknown): XoreinMessageRecord | null {
+function normalizeAnnouncementMessage(value: unknown): XoreinRuntimeMessage | null {
   if (!isAnnouncementRecord(value)) {
     return null;
   }
@@ -36,6 +36,17 @@ function normalizeAnnouncementMessage(value: unknown): XoreinMessageRecord | nul
   if (!id || !scopeType || !scopeId || !senderPeerId || !body) {
     return null;
   }
+  if (value.deleted === true) {
+    return null;
+  }
+
+  // Preserve reaction tallies so the React control can render live counts —
+  // dropping them here made the 👍 count permanently invisible on announcements.
+  const reactions = Array.isArray(value.reactions)
+    ? (value.reactions as XoreinRuntimeMessage['reactions'])?.filter(
+        (r) => r && typeof r.emoji === 'string' && typeof r.count === 'number',
+      )
+    : undefined;
 
   return {
     id,
@@ -43,16 +54,21 @@ function normalizeAnnouncementMessage(value: unknown): XoreinMessageRecord | nul
     scope_id: scopeId,
     sender_peer_id: senderPeerId,
     body,
+    ...(reactions && reactions.length > 0 ? { reactions } : {}),
     ...(typeof value.server_id === 'string' && value.server_id.trim() ? { server_id: value.server_id.trim() } : {}),
     ...(typeof value.reply_to === 'string' && value.reply_to.trim() ? { reply_to: value.reply_to.trim() } : {}),
     ...(typeof value.forwarded_from === 'string' && value.forwarded_from.trim() ? { forwarded_from: value.forwarded_from.trim() } : {}),
     ...(typeof value.created_at === 'string' && value.created_at.trim() ? { created_at: value.created_at.trim() } : {}),
     ...(typeof value.updated_at === 'string' && value.updated_at.trim() ? { updated_at: value.updated_at.trim() } : {}),
-    ...(typeof value.deleted === 'boolean' ? { deleted: value.deleted } : {}),
   };
 }
 
-function normalizeAnnouncementEntries(value: unknown): AnnouncementEntry[] {
+/**
+ * Derive the announcement feed for this channel from the runtime snapshot's
+ * message list (the same live P2P data the text surface renders) — newest first,
+ * deduped by id, malformed records dropped.
+ */
+function deriveAnnouncementEntries(value: unknown, channelId: string): AnnouncementEntry[] {
   if (!Array.isArray(value)) {
     return [];
   }
@@ -62,7 +78,7 @@ function normalizeAnnouncementEntries(value: unknown): AnnouncementEntry[] {
 
   for (const entry of value) {
     const message = normalizeAnnouncementMessage(entry);
-    if (!message || seen.has(message.id)) {
+    if (!message || message.scope_type !== 'channel' || message.scope_id !== channelId || seen.has(message.id)) {
       continue;
     }
     seen.add(message.id);
@@ -70,7 +86,9 @@ function normalizeAnnouncementEntries(value: unknown): AnnouncementEntry[] {
     normalized.push({ message, ...parsed });
   }
 
-  return normalized;
+  // Newest first (broadcast feed). Entries without a timestamp sink to the end.
+  return normalized.sort((a, b) =>
+    (Date.parse(b.message.created_at ?? '') || 0) - (Date.parse(a.message.created_at ?? '') || 0));
 }
 
 function normalizeRuntimePeerId(value: unknown): string {
@@ -96,42 +114,22 @@ function splitAnnouncementBody(body: string): { title: string; content: string }
 }
 
 export const AnnouncementChannel: React.FC<AnnouncementChannelProps> = ({ channel, headerControl }) => {
+  // The announcement feed reads straight from the runtime snapshot — the same
+  // native-engine data path as the text surface. New announcements (local sends
+  // and inbound P2P deliveries alike) appear reactively on the next snapshot
+  // publish; there is no imperative load step and no support-node round-trip.
   const runtimeSnapshot = useRuntimeSnapshot();
-  const [entries, setEntries] = useState<AnnouncementEntry[]>([]);
-  const [loading, setLoading] = useState(false);
+  const runtimeMutations = useRuntimeMutations();
   const [composing, setComposing] = useState(false);
   const [draftTitle, setDraftTitle] = useState('');
   const [draftContent, setDraftContent] = useState('');
   const [feedback, setFeedback] = useState<string | null>(null);
   const currentPeerId = normalizeRuntimePeerId(runtimeSnapshot);
 
-  const loadAnnouncements = useMemo(() => async () => {
-    if (!runtimeSnapshot) {
-      setEntries([]);
-      setFeedback('Start the local xorein runtime to load announcements.');
-      return;
-    }
-
-    setLoading(true);
-    setFeedback(null);
-    try {
-      const result = await searchMessages(runtimeSnapshot, {
-        scope_type: 'channel',
-        scope_id: channel.id,
-        limit: 50,
-      });
-      setEntries(normalizeAnnouncementEntries(result.results));
-    } catch (error) {
-      setEntries([]);
-      setFeedback(error instanceof Error ? error.message : 'Unable to load announcements from xorein.');
-    } finally {
-      setLoading(false);
-    }
-  }, [channel.id, runtimeSnapshot]);
-
-  useEffect(() => {
-    void loadAnnouncements();
-  }, [loadAnnouncements]);
+  const entries = useMemo(
+    () => deriveAnnouncementEntries(runtimeSnapshot?.messages, channel.id),
+    [runtimeSnapshot?.messages, channel.id],
+  );
 
   const handlePublish = async () => {
     const title = draftTitle.trim();
@@ -147,12 +145,11 @@ export const AnnouncementChannel: React.FC<AnnouncementChannelProps> = ({ channe
 
     try {
       const body = [title || 'Announcement', content].filter(Boolean).join('\n\n');
-      await sendChannelMessage(runtimeSnapshot, channel.id, body);
+      await runtimeMutations.sendChannelMessage(channel.id, body);
       setDraftTitle('');
       setDraftContent('');
       setComposing(false);
-      setFeedback('Announcement published through xorein.');
-      await loadAnnouncements();
+      setFeedback(null);
     } catch (error) {
       setFeedback(error instanceof Error ? error.message : 'Unable to publish announcement.');
     }
@@ -165,8 +162,8 @@ export const AnnouncementChannel: React.FC<AnnouncementChannelProps> = ({ channe
     }
 
     try {
-      await addReaction(runtimeSnapshot, messageId, '👍');
-      setFeedback('Reaction sent through xorein.');
+      await runtimeMutations.addReaction(messageId, '👍');
+      setFeedback(null);
     } catch (error) {
       setFeedback(error instanceof Error ? error.message : 'Unable to react to this announcement.');
     }
@@ -201,7 +198,7 @@ export const AnnouncementChannel: React.FC<AnnouncementChannelProps> = ({ channe
           <div className="glass-card rounded-r2 p-4 border border-primary/15 bg-primary/5 space-y-3">
             <div className="flex items-center justify-between gap-2">
               <div className="micro-label text-text-tertiary">COMPOSE // ANNOUNCEMENT</div>
-              <button onClick={() => setComposing(false)} className="text-text-tertiary hover:text-primary transition-colors">
+              <button onClick={() => setComposing(false)} className="text-text-tertiary hover:text-primary transition-colors" aria-label="Close announcement composer">
                 <X size={14} />
               </button>
             </div>
@@ -228,12 +225,7 @@ export const AnnouncementChannel: React.FC<AnnouncementChannelProps> = ({ channe
           </div>
         )}
 
-        {loading ? (
-          <div className="flex flex-col items-center justify-center py-16 text-center text-text-tertiary gap-3">
-            <Loader2 size={24} className="animate-spin text-primary/50" />
-            <p className="text-body text-text-secondary">Loading live announcements</p>
-          </div>
-        ) : entries.length === 0 ? (
+        {entries.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-16 text-center text-text-tertiary gap-3">
             <Sparkles size={28} className="text-white/20" />
             <p className="text-body text-text-secondary">No announcements yet</p>
@@ -262,6 +254,9 @@ export const AnnouncementChannel: React.FC<AnnouncementChannelProps> = ({ channe
                   >
                     <ThumbsUp size={12} />
                     React
+                    {(entry.message.reactions ?? []).filter((r) => r.emoji === '👍').map((r) => (
+                      <span key={r.emoji} className="text-primary">{r.count}</span>
+                    ))}
                   </button>
                 </div>
                 {entry.content && (

@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
 import { User, UserStatus, XoreinFriendRecord } from '@/types';
-import { USERS, CURRENT_USER } from '@/data';
+import { USERS } from '@/data';
 import { useRuntimeSnapshot } from '@/lib/xoreinRuntimeContext';
 import { useRuntimeMutations } from '@/hooks/runtime/useRuntimeMutations';
 import { PendingButton } from '@/components/ui/PendingButton';
@@ -13,6 +13,9 @@ import { copyTextToClipboardSafely } from '@/components/contextMenuUtils';
 import { type MessageRequest } from '@/components/messageRequestsData';
 
 type FriendsTab = 'online' | 'all' | 'pending' | 'blocked' | 'requests';
+
+/** A resolved friend row: base user plus the peer's broadcast custom status. */
+type FriendUser = User & { statusText?: string };
 
 interface FriendRequest {
   recordId: string;
@@ -161,29 +164,40 @@ export const FriendsPanel: React.FC<FriendsPanelProps> = ({ onOpenDM, hasIdentit
     );
   }, [runtimeSnapshot]);
 
-  const resolveUser = (userId: string): User => {
+  const resolveUser = (userId: string): FriendUser => {
     const staticUser = normalizedStaticUsers.find((user) => user.id === userId);
     const peer = runtimePeers.get(userId);
     const presence = runtimePresence.get(userId);
     const runtimeStatus = presence ? (presence.status === 'idle' || presence.status === 'dnd' || presence.status === 'offline' ? presence.status : 'online') : undefined;
+    const statusText = typeof presence?.status_text === 'string' && presence.status_text.trim() ? presence.status_text.trim() : undefined;
     if (staticUser) {
       return {
         ...staticUser,
         status: runtimeStatus ?? staticUser.status,
+        statusText,
       };
     }
 
+    // Resolve the peer's broadcast display name (carried on friend-request/accept
+    // payloads and presence, upserted into known_peers); fall back to the raw
+    // peer id only when no name was ever learned.
+    const displayName = typeof peer?.display_name === 'string' && peer.display_name.trim() ? peer.display_name.trim() : '';
     return {
       id: userId,
-      username: peer?.source ? userId : userId,
-      avatar: resolveAvatarSrc(CURRENT_USER.avatar, CURRENT_USER.username),
+      username: displayName || userId,
+      avatar: resolveAvatarSrc(peer?.avatar, displayName || userId),
       status: (runtimeStatus as UserStatus) ?? 'offline',
       role: peer?.role,
       bio: peer?.source ? `SOURCE // ${peer.source.toUpperCase()}` : undefined,
+      statusText,
     };
   };
 
-  const visibleFriendIds = Array.from(new Set([...Array.from(friendIdSet), ...runtimePresence.keys()]));
+  // Union accepted friends with peers we hold live presence for, but NEVER the
+  // local identity itself — your own presence entry must not render you as a
+  // friend row (self-inflated counts + a "Message yourself" affordance).
+  const visibleFriendIds = Array.from(new Set([...Array.from(friendIdSet), ...runtimePresence.keys()]))
+    .filter((userId) => userId && userId !== currentPeerId);
   const allFriends = visibleFriendIds
     .map((userId) => resolveUser(userId))
     .filter((user) => !blockedUsers.includes(user.id));
@@ -199,7 +213,7 @@ export const FriendsPanel: React.FC<FriendsPanelProps> = ({ onOpenDM, hasIdentit
     ...(hasMessageRequests ? [{ key: 'requests' as FriendsTab, label: 'REQUESTS', count: messageRequests.length }] : []),
   ];
 
-  const filterUsers = (users: User[]) => {
+  const filterUsers = (users: FriendUser[]) => {
     if (!searchQuery.trim()) return users;
     return users.filter((user) => user.username.toLowerCase().includes(searchQuery.toLowerCase()));
   };
@@ -297,7 +311,7 @@ export const FriendsPanel: React.FC<FriendsPanelProps> = ({ onOpenDM, hasIdentit
     </div>
   );
 
-  const renderFriendRow = (user: User, actions: React.ReactNode, index = 0) => (
+  const renderFriendRow = (user: FriendUser, actions: React.ReactNode, index = 0) => (
     <motion.div
       key={user.id}
       initial={{ opacity: 0, y: 10 }}
@@ -311,7 +325,13 @@ export const FriendsPanel: React.FC<FriendsPanelProps> = ({ onOpenDM, hasIdentit
       </div>
       <div className="flex-1 min-w-0">
         <div className="font-bold text-foreground font-display text-[13px] truncate">{user.username}</div>
-        <div className="micro-label text-white/30 tracking-widest text-[8px]">{getStatusLabel(user.status)}</div>
+        <div className="micro-label text-white/30 tracking-widest text-[8px]">
+          {getStatusLabel(user.status)}
+          {user.statusText && <span className="ml-1.5 normal-case tracking-normal text-primary/70 font-mono text-[9px]">{user.statusText}</span>}
+        </div>
+        {user.username !== user.id && (
+          <div className="text-[8px] font-mono text-white/20 truncate" title={user.id}>{user.id}</div>
+        )}
       </div>
       <div className="flex items-center gap-1.5 opacity-100 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100 transition-opacity">
         {actions}
@@ -591,6 +611,10 @@ interface RuntimePeerRecord {
   public_key?: string;
   source?: string;
   last_seen_at?: string;
+  /** Broadcast display name learned via friend requests / presence. */
+  display_name?: string;
+  /** Broadcast avatar data: URI learned via presence. */
+  avatar?: string;
 }
 
 interface RuntimePresenceRecord {

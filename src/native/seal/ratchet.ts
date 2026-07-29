@@ -13,8 +13,16 @@ const LABEL_RATCHET_STEP  = 'xorein/seal/v1/ratchet-step';
 export const HEADER_SIZE = 53;
 const HEADER_VERSION = 0x01;
 const MAX_SKIPPED = 1000;
+/**
+ * Skipped message keys are plaintext-equivalent: anyone holding one can decrypt the
+ * matching recorded ciphertext forever. Bound their lifetime so a message that never
+ * arrives does not leave its key on disk indefinitely (forward secrecy) and so stale
+ * entries cannot permanently exhaust the MAX_SKIPPED budget and wedge the session.
+ */
+export const SKIPPED_KEY_TTL_MS = 7 * 24 * 3600 * 1000; // 7 days
 
-interface SkipKey { ratchetPub: string; counter: number; }
+/** A retained skipped-message key plus its creation time (for age-based expiry). */
+export interface SkipEntry { mk: Uint8Array; addedAt: number }
 
 export interface RatchetState {
   rootKey:          Uint8Array; // 32
@@ -26,7 +34,7 @@ export interface RatchetState {
   sendRatchetPriv:  Uint8Array; // 32
   sendRatchetPub:   Uint8Array; // 32
   remoteRatchetPub: Uint8Array; // 32
-  skipList:         Map<string, Uint8Array>; // SkipKey→messageKey
+  skipList:         Map<string, SkipEntry>; // `${hex(ratchetPub)}:${counter}` → skipped key
 }
 
 function skipKeyStr(ratchetPub: Uint8Array, counter: number): string {
@@ -80,8 +88,22 @@ export function ratchetEncrypt(s: RatchetState, plaintext: Uint8Array): [Uint8Ar
   return [header, ct];
 }
 
-/** Decrypt a message given header (53 bytes) and ciphertext. */
+/**
+ * Decrypt a message given header (53 bytes) and ciphertext.
+ *
+ * TRANSACTIONAL: all ratchet-state mutation happens on a working COPY, and the
+ * caller's state is swapped only after the AEAD tag verifies (mirrors the
+ * "authenticate before committing" rule the first-contact path in session.ts
+ * follows, and the Signal spec's "discard the state object when decryption
+ * fails"). A replayed, reordered, or forged ciphertext therefore throws WITHOUT
+ * advancing the receive chain, re-keying the root, replacing the local ratchet
+ * keypair, or consuming skipped keys — the session keeps decrypting genuine
+ * traffic. Without this, a single duplicated ciphertext (e.g. a mailbox blob
+ * re-served by the untrusted support node, or an outbox retry) would permanently
+ * destroy the receive direction.
+ */
 export function ratchetDecrypt(s: RatchetState, header: Uint8Array, ciphertext: Uint8Array): Uint8Array {
+  if (header.length < HEADER_SIZE) throw new Error('ratchet: short header');
   if (header[0] !== HEADER_VERSION) throw new Error('ratchet: unsupported header version');
   const view = new DataView(header.buffer, header.byteOffset);
   const counter = view.getUint32(1, false);
@@ -89,25 +111,75 @@ export function ratchetDecrypt(s: RatchetState, header: Uint8Array, ciphertext: 
   const ratchetPub = header.slice(9, 41);
   const nonce = header.slice(41, 53);
 
-  // Check skip list.
+  // Work on a deep copy; commit only on AEAD success.
+  const w = cloneRatchetState(s);
+  pruneSkipList(w);
+
+  let messageKey: Uint8Array;
   const sk = skipKeyStr(ratchetPub, counter);
-  if (s.skipList.has(sk)) {
-    const mk = s.skipList.get(sk)!;
-    s.skipList.delete(sk);
-    return openMessage(mk, nonce, header, ciphertext);
+  const skipped = w.skipList.get(sk);
+  if (skipped) {
+    messageKey = skipped.mk;
+    w.skipList.delete(sk);
+  } else {
+    const needsDHStep = !ratchetPub.every((b, i) => b === w.remoteRatchetPub[i]);
+    if (needsDHStep) {
+      skipMessages(w, w.remoteRatchetPub, prevChainLen);
+      dhRatchetStep(w, ratchetPub);
+    }
+    skipMessages(w, ratchetPub, counter);
+    const adv = advanceRecvChain(w);
+    messageKey = adv.messageKey;
+    w.recvChainKey = adv.nextChainKey;
+    w.recvCounter++;
   }
 
-  const needsDHStep = !ratchetPub.every((b, i) => b === s.remoteRatchetPub[i]);
-  if (needsDHStep) {
-    skipMessages(s, s.remoteRatchetPub, prevChainLen);
-    dhRatchetStep(s, ratchetPub);
-  }
-  skipMessages(s, ratchetPub, counter);
+  const pt = openMessage(messageKey, nonce, header, ciphertext); // throws on bad tag
+  commitRatchetState(s, w); // tag verified — commit atomically
+  return pt;
+}
 
-  const { messageKey, nextChainKey } = advanceRecvChain(s);
-  s.recvChainKey = nextChainKey;
-  s.recvCounter++;
-  return openMessage(messageKey, nonce, header, ciphertext);
+/**
+ * Drop skipped message keys older than SKIPPED_KEY_TTL_MS. Run before every
+ * decrypt (reclaims the MAX_SKIPPED budget) and before serialization (so a
+ * plaintext-equivalent key for a message that never arrived does not persist to
+ * disk beyond the window).
+ */
+export function pruneSkipList(s: RatchetState, now: number = Date.now()): void {
+  for (const [k, e] of s.skipList) {
+    if (now - e.addedAt > SKIPPED_KEY_TTL_MS) s.skipList.delete(k);
+  }
+}
+
+function cloneRatchetState(s: RatchetState): RatchetState {
+  return {
+    rootKey:          new Uint8Array(s.rootKey),
+    sendChainKey:     new Uint8Array(s.sendChainKey),
+    recvChainKey:     new Uint8Array(s.recvChainKey),
+    sendCounter:      s.sendCounter,
+    recvCounter:      s.recvCounter,
+    prevSendChainLen: s.prevSendChainLen,
+    sendRatchetPriv:  new Uint8Array(s.sendRatchetPriv),
+    sendRatchetPub:   new Uint8Array(s.sendRatchetPub),
+    remoteRatchetPub: new Uint8Array(s.remoteRatchetPub),
+    skipList: new Map(
+      [...s.skipList.entries()].map(([k, e]) => [k, { mk: new Uint8Array(e.mk), addedAt: e.addedAt }]),
+    ),
+  };
+}
+
+/** Copy every field of `src` into `dst` in place (callers hold `dst` by reference). */
+function commitRatchetState(dst: RatchetState, src: RatchetState): void {
+  dst.rootKey          = src.rootKey;
+  dst.sendChainKey     = src.sendChainKey;
+  dst.recvChainKey     = src.recvChainKey;
+  dst.sendCounter      = src.sendCounter;
+  dst.recvCounter      = src.recvCounter;
+  dst.prevSendChainLen = src.prevSendChainLen;
+  dst.sendRatchetPriv  = src.sendRatchetPriv;
+  dst.sendRatchetPub   = src.sendRatchetPub;
+  dst.remoteRatchetPub = src.remoteRatchetPub;
+  dst.skipList         = src.skipList;
 }
 
 // ── Internal helpers ───────────────────────────────────────────────────────
@@ -126,15 +198,26 @@ function skipMessages(s: RatchetState, ratchetPub: Uint8Array, targetCounter: nu
   if (s.skipList.size + (targetCounter - s.recvCounter) > MAX_SKIPPED) {
     throw new Error('ratchet: too many skipped messages');
   }
+  const now = Date.now();
   while (s.recvCounter < targetCounter) {
     const { messageKey, nextChainKey } = advanceRecvChain(s);
-    s.skipList.set(skipKeyStr(ratchetPub, s.recvCounter), messageKey);
+    s.skipList.set(skipKeyStr(ratchetPub, s.recvCounter), { mk: messageKey, addedAt: now });
     s.recvChainKey = nextChainKey;
     s.recvCounter++;
   }
 }
 
 function dhRatchetStep(s: RatchetState, newRemotePub: Uint8Array): void {
+  // FORWARD SECRECY / boundedness: after a DH step, only the chain we are leaving
+  // (the immediately-previous remote ratchet key) may still have undelivered
+  // messages realistically in flight — its skipped keys were just minted by
+  // skipMessages above. Purge skipped keys belonging to any OLDER chain so
+  // retired plaintext-equivalent keys don't accumulate in memory or on disk.
+  const keepPrefix = `${hex(s.remoteRatchetPub)}:`;
+  for (const k of s.skipList.keys()) {
+    if (!k.startsWith(keepPrefix)) s.skipList.delete(k);
+  }
+
   const dhOut = x25519.getSharedSecret(s.sendRatchetPriv, newRemotePub);
   const okm1 = deriveKey(s.rootKey, dhOut, LABEL_RATCHET_STEP, 64);
   const newRoot = okm1.slice(0, 32);

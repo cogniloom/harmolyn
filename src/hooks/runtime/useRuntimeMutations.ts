@@ -5,7 +5,7 @@
 import { useMemo } from 'react';
 import { useNativeEngine } from '@/native/engine/provider';
 import { useRuntimeSnapshot } from '@/lib/xoreinRuntimeContext';
-import type { XoreinRuntimeSnapshot } from '@/types';
+import type { XoreinRuntimeChannel, XoreinRuntimeSnapshot } from '@/types';
 import { resolveFeatureFlag } from '@/config/featureFlags';
 import {
   nativeSendChannelMessage, nativeSendDmMessage,
@@ -17,7 +17,7 @@ import {
   type ChannelEditPatch, type ServerMetaPatch,
   nativeUpdateServerMeta, nativeRemoveMember,
   nativeLeaveServer, nativeDeleteServer,
-  nativeRotateInvite, nativeRevokeInvite,
+  nativeRotateInvite, nativeRevokeInvite, nativeInviteLink,
   nativeSetActiveScope, nativeMarkScopeRead,
   nativeJoinVoice, nativeLeaveVoice,
   nativeAddRelay, nativeRemoveRelay as nativeRemoveRelayMutation,
@@ -48,9 +48,23 @@ import {
   searchMessages as xoreinSearchMessages,
   uploadAttachment,
   sendVoiceFrame,
+  discoverServerByInvite,
+  type XoreinServerPreview,
 } from '@/lib/xoreinControl';
 
+// Re-exported so components can type invite previews without importing the HTTP
+// control client directly (components must only talk to this facade).
+export type { XoreinServerPreview } from '@/lib/xoreinControl';
+
 type Snapshot = XoreinRuntimeSnapshot | null | undefined;
+
+/**
+ * Channel edit patch accepted by the facade: the native ChannelEditPatch plus the
+ * synced channel `kind` (text/forum/announcement). `kind` is part of the
+ * owner-authoritative server structure — routing it through updateChannel makes it
+ * persist and propagate to members exactly like a rename (broadcastServerUpdate).
+ */
+export type ChannelPatch = ChannelEditPatch & { kind?: XoreinRuntimeChannel['kind'] };
 
 export function useRuntimeMutations() {
   const { engine, registerIdentity } = useNativeEngine();
@@ -79,13 +93,13 @@ export function useRuntimeMutations() {
         }
         if (engineActive) {
           await registerIdentity(passphrase, displayName, bio);
-        }
-        // Best-effort: inform the support node of the display name (non-fatal;
-        // it 401s on most origins, which must never block local registration).
-        try {
+        } else {
+          // HTTP-only mode: the node holds the identity record, so it needs the
+          // profile. On the native path we deliberately do NOT tell the support
+          // node who this user is — the identity is local and peers learn the
+          // display name P2P (join/presence payloads), so sending it would leak
+          // identity metadata to a service that is only meant to relay bytes.
           await createIdentity(snap, displayName, bio);
-        } catch {
-          /* support node optional in native mode */
         }
         // Read the freshly-registered peer_id from the LIVE native store, never the
         // stale `snap` closure (which predates this registration and would skip the
@@ -105,13 +119,12 @@ export function useRuntimeMutations() {
       // reload) and is broadcast to peers via voice/presence.
       updateProfile: async (displayName: string, bio?: string, avatar?: string) => {
         if (engineActive) {
+          // Profile lives locally and propagates P2P; the support node is never
+          // told the display name/bio (identity-metadata zero-trust).
           mergeNativeIdentityProfile(displayName, bio, avatar);
           publishNativeSnapshot();
-        }
-        try {
+        } else {
           await createIdentity(snap, displayName, bio);
-        } catch {
-          /* support node optional in native mode */
         }
         const peerId = engineActive ? (getState().identity?.peer_id ?? '') : (snap?.identity?.peer_id ?? '');
         return { peer_id: peerId, display_name: displayName, ...(bio ? { bio } : {}), ...(avatar ? { avatar } : {}) };
@@ -126,6 +139,14 @@ export function useRuntimeMutations() {
       },
       getIdentityBackup: (passphrase: string) => getIdentityBackup(snap, passphrase),
     };
+
+    // Invite preview — shared by both branches and gated on the FLAG, not on engine
+    // liveness: while the native engine is still bootstrapping (`engine` briefly
+    // null), the facade serves the HTTP branch, but the user has NOT opted into
+    // HTTP mode — previewing then would still tell the support node which server
+    // they are about to join. Only a genuinely HTTP-mode client may preview.
+    const previewServerInvite = (deeplink: string): Promise<XoreinServerPreview | null> =>
+      engineActive ? Promise.resolve(null) : discoverServerByInvite(snap, deeplink);
 
     if (native) {
       return {
@@ -146,9 +167,17 @@ export function useRuntimeMutations() {
         // Server / channel — native
         createServer: (input: { name: string; description?: string }) =>
           Promise.resolve(nativeCreateServer(input.name, input.description)),
-        createChannel: (serverId: string, name: string, voice = false) =>
-          Promise.resolve(nativeCreateChannel(serverId, name, voice)),
-        updateChannel: (serverId: string, channelId: string, patch: ChannelEditPatch) =>
+        createChannel: (serverId: string, name: string, voice = false, kind?: XoreinRuntimeChannel['kind']) => {
+          const channel = nativeCreateChannel(serverId, name, voice);
+          // Announce/Forum at creation time: stamp the kind onto the fresh channel
+          // record so it persists and broadcasts with the server structure.
+          if (!voice && kind && kind !== 'text') {
+            const kindPatch: ChannelPatch = { kind };
+            nativeUpdateChannel(serverId, channel.id, kindPatch);
+          }
+          return Promise.resolve(channel);
+        },
+        updateChannel: (serverId: string, channelId: string, patch: ChannelPatch) =>
           Promise.resolve(nativeUpdateChannel(serverId, channelId, patch)),
         deleteChannel: (serverId: string, channelId: string) =>
           Promise.resolve(nativeDeleteChannel(serverId, channelId)),
@@ -160,6 +189,7 @@ export function useRuntimeMutations() {
         deleteServer: (serverId: string) => Promise.resolve(nativeDeleteServer(serverId)),
         rotateInvite: (serverId: string) => Promise.resolve(nativeRotateInvite(serverId)),
         revokeInvite: (serverId: string) => Promise.resolve(nativeRevokeInvite(serverId)),
+        inviteLink: (serverId: string) => nativeInviteLink(serverId),
 
         // Read-state / notifications — native
         setActiveScope: (scopeId: string | null) => Promise.resolve(nativeSetActiveScope(scopeId)),
@@ -214,7 +244,33 @@ export function useRuntimeMutations() {
         deleteRole: (serverId: string, roleId: string) => Promise.resolve(nativeDeleteRole(serverId, roleId)),
         assignRole: (serverId: string, peerId: string, roleId: string) => Promise.resolve(nativeAssignRole(serverId, peerId, roleId)),
         castPollVote: (messageId: string, optionIndex: number) => Promise.resolve(nativeCastPollVote(messageId, optionIndex)),
-        moderationAction: (serverId: string, action: string, input: object) => moderationAction(snap, serverId, action as Parameters<typeof moderationAction>[2], input),
+        // Moderation — native only, NEVER HTTP (zero-trust): the payload (server id,
+        // moderator identity, target peer id, free-text reason) is exactly the social
+        // metadata the support node must not learn — and on the native path the node
+        // holds no server record, so the HTTP call could not succeed anyway. kick/ban
+        // map onto the owner-authoritative removal primitive (removal + crowd-epoch
+        // rotation = cryptographic revocation); ban additionally rotates the invite
+        // secret so any link the removed peer still holds is dead. Actions with no
+        // native primitive yet (mute/timeout, slowmode, unban) reject with an honest
+        // error the UI surfaces, instead of silently shipping the payload to the node.
+        moderationAction: (serverId: string, action: string, input: object) => {
+          if (action === 'kick' || action === 'ban') {
+            const target = String((input as { target_peer_id?: string }).target_peer_id ?? '');
+            if (!target) return Promise.reject(new Error('Moderation requires a target peer.'));
+            nativeRemoveMember(serverId, target);
+            if (action === 'ban') nativeRotateInvite(serverId);
+            return Promise.resolve();
+          }
+          return Promise.reject(new Error(
+            `"${action}" is not supported by the P2P engine yet, so nothing was sent. (Moderation is never routed through the support node.)`,
+          ));
+        },
+        // Invite preview — native: the pasted deeplink itself carries everything the
+        // UI renders (parseInviteMetadata, local), and the authoritative manifest
+        // arrives from the owner during joinServer. Asking the support node for a
+        // preview would tell it which server the user is ABOUT to join — never do
+        // that on the P2P path (the shared helper resolves null when the flag is on).
+        previewServerInvite,
         ...identityOps,
         setVoiceMuted: (channelId: string, muted: boolean) =>
           resolveFeatureFlag('voiceMediaTransport') && engine
@@ -240,9 +296,22 @@ export function useRuntimeMutations() {
             ? Promise.resolve(nativeAcceptFriend(requestId))
             : Promise.resolve(nativeDeclineFriend(requestId)),
         removeFriend: (friendId: string) => removeFriend(snap, friendId),
-        // Notifications — HTTP
-        markNotificationsRead: (input: { read_through_message_id: string; server_id?: string; scope_type?: 'channel' | 'dm'; scope_id?: string }) => markNotificationsRead(snap, input),
-        searchNotifications: (filter?: Parameters<typeof searchNotifications>[1]) => searchNotifications(snap, filter),
+        // Notifications — native/local. Read-state (which scopes you read, and
+        // when) is identity metadata: on the native path it is recorded in the
+        // local native store only and NOTHING is sent to the support node.
+        markNotificationsRead: (input: { read_through_message_id: string; server_id?: string; scope_type?: 'channel' | 'dm'; scope_id?: string }) => {
+          if (input.scope_id) nativeMarkScopeRead(input.scope_id);
+          return Promise.resolve({
+            scope_id: input.scope_id ?? '',
+            scope_type: input.scope_type ?? 'channel',
+            read_through_message_id: input.read_through_message_id,
+            updated_at: new Date().toISOString(),
+          });
+        },
+        // Mention/reply inbox entries are derived client-side from the local
+        // message store (see ChatArea.unreadInboxItems); there is no remote
+        // notification index to query, so answer with an empty record set.
+        searchNotifications: (_filter?: Parameters<typeof searchNotifications>[1]) => Promise.resolve([] as Awaited<ReturnType<typeof searchNotifications>>),
         // Message search — native local store (full-text over P2P messages, no API round-trip).
         searchMessages: (q?: Parameters<typeof nativeSearchMessages>[0]) => Promise.resolve(nativeSearchMessages(q ?? {})),
         // Uploads — HTTP (blob store)
@@ -263,9 +332,12 @@ export function useRuntimeMutations() {
       addReaction: (messageId: string, emoji: string) => addReaction(snap, messageId, emoji),
       removeReaction: (messageId: string, emoji: string) => removeReaction(snap, messageId, emoji),
       createServer: (input: { name: string; description?: string }) => createServer(snap, input),
-      createChannel: (serverId: string, name: string, voice = false) =>
+      // `kind` is a native-store concept (synced server structure); the support-node
+      // API has no notion of it, so it is accepted for signature parity but only
+      // takes effect on the native path.
+      createChannel: (serverId: string, name: string, voice = false, _kind?: XoreinRuntimeChannel['kind']) =>
         createChannel(snap, serverId, name, voice),
-      updateChannel: (serverId: string, channelId: string, patch: ChannelEditPatch) =>
+      updateChannel: (serverId: string, channelId: string, patch: ChannelPatch) =>
         Promise.resolve(nativeUpdateChannel(serverId, channelId, patch)),
       deleteChannel: (serverId: string, channelId: string) =>
         Promise.resolve(nativeDeleteChannel(serverId, channelId)),
@@ -277,6 +349,7 @@ export function useRuntimeMutations() {
       deleteServer: (serverId: string) => Promise.resolve(nativeDeleteServer(serverId)),
       rotateInvite: (serverId: string) => Promise.resolve(nativeRotateInvite(serverId)),
       revokeInvite: (serverId: string) => Promise.resolve(nativeRevokeInvite(serverId)),
+      inviteLink: (serverId: string) => nativeInviteLink(serverId),
       setActiveScope: (scopeId: string | null) => Promise.resolve(nativeSetActiveScope(scopeId)),
       markScopeRead: (scopeId: string) => Promise.resolve(nativeMarkScopeRead(scopeId)),
       setPeerVerified: (peerId: string, verified: boolean) => Promise.resolve(nativeSetPeerVerified(peerId, verified)),
@@ -301,6 +374,11 @@ export function useRuntimeMutations() {
       castPollVote: (_messageId: string, _optionIndex: number) => Promise.resolve(),
       moderationAction: (serverId: string, action: string, input: object) =>
         moderationAction(snap, serverId, action as Parameters<typeof moderationAction>[2], input),
+      // Invite preview — the shared helper only consults the support node for a
+      // genuinely HTTP-mode client (nativeEngine flag OFF). While the native engine
+      // is merely bootstrapping (this branch, engine still null), the preview stays
+      // local: the node must not learn which server a user is about to join.
+      previewServerInvite,
       ...identityOps,
       setVoiceMuted: (channelId: string, muted: boolean) => setVoiceMuted(snap, channelId, muted),
       setVoiceCamera: (_channelId: string, _on: boolean) => Promise.resolve(),

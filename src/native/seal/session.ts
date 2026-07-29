@@ -14,7 +14,7 @@ import {
   buildBundle, verifyBundle, resignBundle, x3dhInitiate, x3dhRespond,
   type PrekeyBundle, type PrekeyPrivate, type InitialMessage,
 } from './bundle.js';
-import { ratchetEncrypt, ratchetDecrypt, type RatchetState } from './ratchet.js';
+import { ratchetEncrypt, ratchetDecrypt, pruneSkipList, type RatchetState } from './ratchet.js';
 import type { HybridSigningKey } from '../crypto/hybrid.js';
 import { peerIdToEdPub } from '../delivery/offline.js';
 import { identityKeyBlob } from '../identity/safetyNumber.js';
@@ -76,6 +76,11 @@ interface SerializedPrekeyPrivate { spkPriv: string; opkPrivs: string[]; mlkemSk
 export interface SerializedSealState {
   bundle: PrekeyBundle;
   priv: SerializedPrekeyPrivate;
+  /**
+   * Per-peer ratchet sessions. A peer id may appear more than once: the FIRST
+   * occurrence is the current session, later ones are recently-archived sessions
+   * kept so a crossed first-contact handshake converges instead of wedging.
+   */
   sessions: Array<[string, SerializedRatchet]>;
   /** Indices of one-time prekeys already consumed (never reusable). */
   consumedOpks?: number[];
@@ -84,13 +89,19 @@ export interface SerializedSealState {
    * that fetched the previous bundle (before a rotation) can still complete.
    */
   retired?: Array<{ bundle: PrekeyBundle; priv: SerializedPrekeyPrivate; consumedOpks: number[] }>;
+  /**
+   * X3DH init messages still riding on outgoing messages for sessions the peer has
+   * not yet confirmed (no inbound ciphertext decrypted under them yet).
+   */
+  pendingInit?: Array<[string, SealInitWire]>;
 }
 
 interface SerializedRatchet {
   rootKey: string; sendChainKey: string; recvChainKey: string;
   sendCounter: number; recvCounter: number; prevSendChainLen: number;
   sendRatchetPriv: string; sendRatchetPub: string; remoteRatchetPub: string;
-  skipList: Array<[string, string]>;
+  /** [skipKey, b64 messageKey, addedAt?] — 2-tuples are legacy pre-TTL entries. */
+  skipList: Array<[string, string] | [string, string, number]>;
 }
 
 export interface SealSessionsOptions {
@@ -126,6 +137,8 @@ function deserializePrekeyPrivate(s: SerializedPrekeyPrivate): PrekeyPrivate {
 }
 
 function serializeRatchet(rs: RatchetState): SerializedRatchet {
+  // Expired skipped keys are plaintext-equivalent — never let them reach disk.
+  pruneSkipList(rs);
   return {
     rootKey: b64(rs.rootKey),
     sendChainKey: b64(rs.sendChainKey),
@@ -136,11 +149,12 @@ function serializeRatchet(rs: RatchetState): SerializedRatchet {
     sendRatchetPriv: b64(rs.sendRatchetPriv),
     sendRatchetPub: b64(rs.sendRatchetPub),
     remoteRatchetPub: b64(rs.remoteRatchetPub),
-    skipList: [...rs.skipList.entries()].map(([k, v]) => [k, b64(v)] as [string, string]),
+    skipList: [...rs.skipList.entries()].map(([k, e]) => [k, b64(e.mk), e.addedAt] as [string, string, number]),
   };
 }
 
 function deserializeRatchet(s: SerializedRatchet): RatchetState {
+  const now = Date.now();
   return {
     rootKey: unb64(s.rootKey),
     sendChainKey: unb64(s.sendChainKey),
@@ -151,9 +165,26 @@ function deserializeRatchet(s: SerializedRatchet): RatchetState {
     sendRatchetPriv: unb64(s.sendRatchetPriv),
     sendRatchetPub: unb64(s.sendRatchetPub),
     remoteRatchetPub: unb64(s.remoteRatchetPub),
-    skipList: new Map(s.skipList.map(([k, v]) => [k, unb64(v)])),
+    // Legacy pre-TTL entries carry no timestamp — stamp them now so they age out
+    // one TTL from this load rather than surviving forever.
+    skipList: new Map(s.skipList.map((e) => [e[0], { mk: unb64(e[1]), addedAt: typeof e[2] === 'number' ? e[2] : now }])),
   };
 }
+
+/**
+ * One ratchet session with a peer. `pendingIm` is set while WE initiated the
+ * session and the peer has not yet proven it holds it (no inbound ciphertext has
+ * decrypted under it): until then the X3DH init rides on EVERY outgoing message,
+ * so a dropped or rejected first message cannot wedge the DM direction.
+ */
+interface SessionEntry { rs: RatchetState; pendingIm?: SealInitWire }
+
+/**
+ * Sessions kept per peer: the current one plus one archived predecessor, so a
+ * crossed first-contact (both sides initiate simultaneously) or a rejected
+ * handshake converges on one shared session instead of wedging forever.
+ */
+const MAX_SESSIONS_PER_PEER = 2;
 
 export class SealSessions {
   private bundle: PrekeyBundle;
@@ -162,7 +193,8 @@ export class SealSessions {
   private readonly selfPeerId: string;
   private readonly edSeed: Uint8Array;
   private readonly edPub: Uint8Array;
-  private readonly sessions = new Map<string, RatchetState>();
+  /** Per-peer session list, current first (see SessionEntry / MAX_SESSIONS_PER_PEER). */
+  private readonly sessions = new Map<string, SessionEntry[]>();
   private consumedOpks: Set<number>;
   // Just-retired bundles (privates) kept for a grace window across a rotation.
   private retired: RetainedBundle[] = [];
@@ -186,7 +218,16 @@ export class SealSessions {
         opkPrivs: opts.persisted.priv.opkPrivs.map(unb64),
         mlkemSk: unb64(opts.persisted.priv.mlkemSk),
       };
-      for (const [pid, sr] of opts.persisted.sessions) this.sessions.set(pid, deserializeRatchet(sr));
+      // A repeated peer id lists archived sessions after the current one — order preserved.
+      for (const [pid, sr] of opts.persisted.sessions) {
+        const list = this.sessions.get(pid) ?? [];
+        list.push({ rs: deserializeRatchet(sr) });
+        this.sessions.set(pid, list);
+      }
+      for (const [pid, im] of opts.persisted.pendingInit ?? []) {
+        const current = this.sessions.get(pid)?.[0];
+        if (current) current.pendingIm = im;
+      }
       this.retired = (opts.persisted.retired ?? []).map(r => ({
         bundle: r.bundle,
         priv: deserializePrekeyPrivate(r.priv),
@@ -204,8 +245,8 @@ export class SealSessions {
     return {
       bundle: this.bundle,
       priv: serializePrekeyPrivate(this.priv),
-      sessions: [...this.sessions.entries()].map(
-        ([pid, rs]) => [pid, serializeRatchet(rs)] as [string, SerializedRatchet],
+      sessions: [...this.sessions.entries()].flatMap(
+        ([pid, list]) => list.map(e => [pid, serializeRatchet(e.rs)] as [string, SerializedRatchet]),
       ),
       consumedOpks: [...this.consumedOpks],
       retired: this.retired.map(r => ({
@@ -213,6 +254,9 @@ export class SealSessions {
         priv: serializePrekeyPrivate(r.priv),
         consumedOpks: [...r.consumedOpks],
       })),
+      pendingInit: [...this.sessions.entries()]
+        .filter(([, list]) => list[0]?.pendingIm)
+        .map(([pid, list]) => [pid, list[0].pendingIm!] as [string, SealInitWire]),
     };
   }
 
@@ -273,7 +317,7 @@ export class SealSessions {
 
   /** True once a ratchet session exists for this peer. */
   hasSession(peerId: string): boolean {
-    return this.sessions.has(peerId);
+    return (this.sessions.get(peerId)?.length ?? 0) > 0;
   }
 
   /**
@@ -281,11 +325,16 @@ export class SealSessions {
    * first contact (requires the peer reachable for the very first message).
    * Throws if a session cannot be established — the caller MUST NOT fall back to
    * plaintext.
+   *
+   * UNCONFIRMED-SESSION HANDLING: a session WE initiated is only provisional until
+   * the peer sends a ciphertext that decrypts under it. Until then the X3DH init
+   * rides on every outgoing message — if the first message is dropped (mailbox
+   * loss) the peer can still bootstrap from any later one, instead of the DM
+   * direction wedging forever on 'no session and no X3DH init message'.
    */
   async encrypt(peerId: string, plaintext: Uint8Array, fetchBundle: FetchBundle): Promise<SealWire> {
-    let rs = this.sessions.get(peerId);
-    let im: InitialMessage | undefined;
-    if (!rs) {
+    let current = this.sessions.get(peerId)?.[0];
+    if (!current) {
       const bundle = await fetchBundle(peerId);
       if (!bundle || !verifyBundle(bundle)) {
         throw new Error('seal: cannot establish session (missing/invalid prekey bundle)');
@@ -303,50 +352,84 @@ export class SealSessions {
         identityKeyBlob(new Uint8Array(bundle.identity_key_ed25519), new Uint8Array(bundle.identity_key_ml_dsa_65)),
       );
       const init = x3dhInitiate(this.edSeed, bundle);
-      rs = init.rs;
-      im = init.im;
-      this.sessions.set(peerId, rs);
+      current = { rs: init.rs, pendingIm: this.initToWire(init.im) };
+      this.sessions.set(peerId, [current]);
     }
-    const [header, ct] = ratchetEncrypt(rs, plaintext);
+    const [header, ct] = ratchetEncrypt(current.rs, plaintext);
     const wire: SealWire = { ik: b64(this.edPub), header: b64(header), ct: b64(ct) };
-    if (im) {
-      wire.im = {
-        ek: b64(im.ekPub),
-        ct: b64(im.ctMlkem),
-        opk: im.opkIndex,
-        ...(im.opkPub ? { opkPub: b64(im.opkPub) } : {}),
-        // Carry our ML-DSA-65 identity key so the responder can pin our FULL hybrid
-        // identity (they never fetch our bundle on the inbound path).
-        dsa: b64(this.signingKey.mldsaPublic),
-      };
-    }
+    if (current.pendingIm) wire.im = current.pendingIm;
     this.persist();
     return wire;
+  }
+
+  /** Wire form of an X3DH init, built once and re-attached until the session is confirmed. */
+  private initToWire(im: InitialMessage): SealInitWire {
+    return {
+      ek: b64(im.ekPub),
+      ct: b64(im.ctMlkem),
+      opk: im.opkIndex,
+      ...(im.opkPub ? { opkPub: b64(im.opkPub) } : {}),
+      // Carry our ML-DSA-65 identity key so the responder can pin our FULL hybrid
+      // identity (they never fetch our bundle on the inbound path).
+      dsa: b64(this.signingKey.mldsaPublic),
+    };
   }
 
   /**
    * Decrypt an inbound DM from `peerId`. On first contact, the X3DH `im` in the
    * envelope bootstraps the responder ratchet. Throws on auth/decrypt failure.
+   *
+   * Tries every retained session for the peer (current first, then the archived
+   * predecessor); ratchetDecrypt is transactional, so a failed attempt cannot
+   * corrupt a session. If none decrypts and the wire carries its own X3DH init,
+   * the init is used to bootstrap a REPLACEMENT session — this is the recovery
+   * path for a crossed first-contact (both sides initiated) or a handshake the
+   * responder rejected (e.g. consumed one-time prekey): the peer re-initiates
+   * and we converge on their session instead of both directions wedging forever.
+   * Adoption over a live session requires the init to consume a one-time prekey,
+   * so a recorded first-contact wire cannot be replayed later to reset a session.
    */
   decrypt(peerId: string, wire: SealWire): Uint8Array {
-    const rs = this.sessions.get(peerId);
-    if (rs) {
-      const pt = ratchetDecrypt(rs, unb64(wire.header), unb64(wire.ct));
+    const entries = this.sessions.get(peerId) ?? [];
+    let lastErr: unknown;
+    for (const entry of entries) {
+      let pt: Uint8Array;
+      try {
+        pt = ratchetDecrypt(entry.rs, unb64(wire.header), unb64(wire.ct));
+      } catch (e) { lastErr = e; continue; }
+      // The peer sent a ciphertext that decrypts under this session — it is
+      // confirmed; stop attaching the X3DH init and make it the current session.
+      entry.pendingIm = undefined;
+      const i = entries.indexOf(entry);
+      if (i > 0) { entries.splice(i, 1); entries.unshift(entry); }
       this.persist();
       return pt;
     }
 
-    // First contact: bootstrap a responder ratchet from the X3DH init message.
-    if (!wire.im) throw new Error('seal: no session and no X3DH init message');
+    if (!wire.im) {
+      if (entries.length > 0) throw lastErr instanceof Error ? lastErr : new Error('seal: decrypt failed');
+      throw new Error('seal: no session and no X3DH init message');
+    }
+    // SESSION-RESET SAFETY: never let an init that consumed NO one-time prekey
+    // replace an existing session — without the OPK single-use check a recorded
+    // first-contact wire would remain replayable forever.
+    if (entries.length > 0 && wire.im.opk < 0) {
+      throw lastErr instanceof Error ? lastErr : new Error('seal: decrypt failed');
+    }
+    return this.bootstrapFromInit(peerId, wire, wire.im);
+  }
+
+  /** Bootstrap a responder ratchet from the X3DH init message `imWire` carried by `wire`. */
+  private bootstrapFromInit(peerId: string, wire: SealWire, imWire: SealInitWire): Uint8Array {
     const theirEdPub = unb64(wire.ik);
     // IDENTITY BINDING: the initiator's claimed identity key must belong to the
     // Noise-authenticated sender — otherwise a relay could relabel a bundle.
     assertWireIdentityBinding(peerId, theirEdPub);
     const im: InitialMessage = {
-      ekPub: unb64(wire.im.ek),
-      ctMlkem: unb64(wire.im.ct),
-      opkIndex: wire.im.opk,
-      ...(wire.im.opkPub ? { opkPub: unb64(wire.im.opkPub) } : {}),
+      ekPub: unb64(imWire.ek),
+      ctMlkem: unb64(imWire.ct),
+      opkIndex: imWire.opk,
+      ...(imWire.opkPub ? { opkPub: unb64(imWire.opkPub) } : {}),
     };
     // Try the CURRENT bundle first, then any retained (recently-retired) bundle. An init
     // built against a since-rotated bundle references that bundle's SPK/OPK/ML-KEM key, so
@@ -384,13 +467,18 @@ export class SealSessions {
       try { pt = ratchetDecrypt(candidateRs, unb64(wire.header), unb64(wire.ct)); }
       catch (e) { lastErr = e; continue; }
 
-      this.sessions.set(peerId, candidateRs);
+      // Adopt the peer-initiated session as CURRENT; archive our previous one(s)
+      // (bounded) so in-flight messages under a superseded session can still be
+      // tried. An archived session's pending init is dropped — it will never ride
+      // again because outgoing traffic now uses the adopted session.
+      const previous = (this.sessions.get(peerId) ?? []).map(e => ({ rs: e.rs }));
+      this.sessions.set(peerId, [{ rs: candidateRs }, ...previous].slice(0, MAX_SESSIONS_PER_PEER));
       if (im.opkIndex >= 0) this.consumeOpkIn(cand, im.opkIndex);
       // TOFU-pin the initiator's full hybrid identity (Ed25519 bound to the sender + the
       // ML-DSA half they carried) so the responder can show a safety number and detect
       // identity changes for a relationship where the peer messaged first.
-      if (wire.im.dsa) {
-        this.onPeerIdentity?.(peerId, identityKeyBlob(theirEdPub, unb64(wire.im.dsa)));
+      if (imWire.dsa) {
+        this.onPeerIdentity?.(peerId, identityKeyBlob(theirEdPub, unb64(imWire.dsa)));
       }
       this.maybeRotateBundle();
       this.persist();

@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { ArrowRight, Shield, KeyRound, Lock, Eye, EyeOff, AlertTriangle, Loader2 } from 'lucide-react';
 import { useNativeEngine } from '@/native/engine/provider';
 import { useEnginePassphrase, resetLocalIdentity } from '@/lib/xoreinClientProvider';
-import { hasValidSession } from '@/native/identity/storage';
+import { hasValidSession, isRememberMeEnabled, setRememberMeEnabled } from '@/native/identity/storage';
 import { SecurityNote } from '@/components/SecurityNote';
 import { useEscapeKey } from '@/hooks/useEscapeKey';
 
@@ -29,6 +29,10 @@ export const UnlockScreen: React.FC = () => {
   // without any password. `forceManual` lets the user fall back to typing it.
   const [sessionAtMount] = useState(() => { try { return hasValidSession(); } catch { return false; } });
   const [forceManual, setForceManual] = useState(false);
+  // Remember-me is OPT-IN (default off): while a session is active, the keys on
+  // this device are readable without the password, so the user must choose it.
+  // Prefill with the previously-recorded device preference.
+  const [rememberMe, setRememberMe] = useState(() => { try { return isRememberMeEnabled(); } catch { return false; } });
 
   const engineWorking = state === 'starting' || state === 'connecting';
   // Auto-unlock in flight: a session existed, the engine is busy starting itself,
@@ -46,6 +50,10 @@ export const UnlockScreen: React.FC = () => {
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!password) return;
+    // Record the remember-me choice BEFORE the engine unlocks — the engine only
+    // persists an unlock session when this opt-in is set; unchecking it also
+    // destroys any previously-saved session.
+    try { setRememberMeEnabled(rememberMe); } catch { /* best effort */ }
     setSubmitted(true);
     setPassphrase(password);
   };
@@ -138,6 +146,23 @@ export const UnlockScreen: React.FC = () => {
                 </button>
               </div>
             </div>
+
+            <label className="flex items-start gap-3 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={rememberMe}
+                onChange={(e) => setRememberMe(e.target.checked)}
+                disabled={busy}
+                className="mt-0.5 h-4 w-4 shrink-0 accent-primary"
+                aria-label="Keep me signed in on this device"
+              />
+              <span className="text-caption text-text-secondary leading-relaxed">
+                <span className="font-semibold text-text-primary">Keep me signed in on this device.</span>{' '}
+                Skips the password for up to 30 days — but while it's active, your keys are stored on this
+                device in a form that someone with access to its files could read <em>without</em> your
+                password. Leave this off on shared or unencrypted devices.
+              </span>
+            </label>
 
             <button
               type="submit"

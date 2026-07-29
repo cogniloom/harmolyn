@@ -458,7 +458,9 @@ export class VoiceSession {
     if (this.localStream) this.activity.addStream(this.localPeerId, this.localStream);
 
     // 4) Best-effort mesh: discover who is already here and dial them.
+    const tTurn = Date.now();
     this.iceServers = await fetchTurnCredentials().catch(() => [] as RTCIceServer[]);
+    console.debug(`[voice] turn-credentials fetch took ${Date.now() - tTurn}ms`);
     // Surface an honest warning when no TURN relay is available: on restrictive or
     // symmetric NATs a STUN-only mesh may never connect, and the user deserves to
     // know rather than watch a call spin forever.
@@ -484,7 +486,10 @@ export class VoiceSession {
       screen_sharing: false,
       ...selfProfile(),
     };
+    const tAnnounce = Date.now();
+    console.debug(`[voice] presence fan-out to ${members.length} member(s)`);
     const responses = await peerSync.requestScope<VoicePresenceResponse>(members, PROTOCOLS.voice, VOICE_OPS.presence, req);
+    console.debug(`[voice] presence responses after ${Date.now() - tAnnounce}ms: ${JSON.stringify(responses.map(r => ({ p: r.peerId.slice(-6), in: r.response?.in_channel })))}`);
 
     const present = responses.filter(r => r.response?.in_channel);
     for (const { peerId, response } of present) {
@@ -492,6 +497,12 @@ export class VoiceSession {
       setVoiceParticipant(this.channelId, peerId, {
         muted: !!response.muted, video: !!response.video, screen_sharing: !!response.screen_sharing,
       });
+      // Learn the responder's profile from the handshake REPLY, mirroring how the
+      // responder learns ours from the join REQUEST (handlePresence 'join'). The
+      // reply already carries display_name/avatar; dropping it left the newcomer's
+      // roster showing bare peer ids until the next periodic presence broadcast
+      // (~25s) delivered names — the measured 15s+ newcomer-side join asymmetry.
+      this.learnPeerProfile(peerId, response.display_name, response.avatar);
     }
     setVoiceConnectionState(this.channelId, 'connected');
     publishNativeSnapshot();
@@ -710,6 +721,20 @@ export class VoiceSession {
       this.learnPeerProfile(remotePeerId, req.display_name, req.avatar);
       publishNativeSnapshot();
       // The newcomer will dial us — we wait for their offer (no glare).
+    } else if (req.action === 'query') {
+      // A live state update from an in-channel peer (mute/camera/screen toggles are
+      // broadcast as 'query' via broadcastPresenceUpdate). Apply it only for peers
+      // already in the roster — a 'query' must never ADD a participant (join/offer
+      // do that) — so remote mute/video indicators track the sender's real state.
+      const inRoster = getState().voice_sessions
+        .find(v => v.channel_id === this.channelId)?.participants[remotePeerId] != null;
+      if (inRoster) {
+        setVoiceParticipant(this.channelId, remotePeerId, {
+          muted: !!req.muted, video: !!req.video, screen_sharing: !!req.screen_sharing,
+        });
+        this.learnPeerProfile(remotePeerId, req.display_name, req.avatar);
+        publishNativeSnapshot();
+      }
     }
     const self = getState().voice_sessions.find(v => v.channel_id === this.channelId)?.participants[this.localPeerId];
     return {

@@ -32,7 +32,7 @@ import { ChannelCrypto } from '../crowd/channel.js';
 import { registerScopeCrypto, resetScopeCrypto, applyCrowdRoot } from '../sync/secureEnvelope.js';
 import { registerOfflineIdentity, resetOfflineIdentity, drainOfflineChat } from '../delivery/offline.js';
 import { PROTOCOLS, RECOVERY_OPS } from '../families/families.js';
-import { unframeMessage, frameMessage, decodePeerStreamRequest, encodePeerStreamResponse } from '../families/peerstream.js';
+import { readFramedMessage, frameMessage, decodePeerStreamRequest, encodePeerStreamResponse } from '../families/peerstream.js';
 import { VOICE_OPS, type VoicePresenceRequest, type VoiceOfferRequest, type VoiceIceRequest } from '../voice/signaling.js';
 import {
   handleRecoveryStore, handleRecoveryRequest, handleRecoveryDeliver,
@@ -160,6 +160,12 @@ function isMembershipRejection(error: string | undefined): boolean {
   return error === 'invalid_invite';
 }
 
+// The engine instance that currently owns the native snapshot keys and the
+// module-level E2EE/offline registrations. The provider stops a superseded
+// engine WITHOUT awaiting when it restarts (e.g. an unlock retry); that stale
+// stop() must never release ownership a newer start() has already claimed.
+let _activeEngine: XoreinNativeEngine | null = null;
+
 export class XoreinNativeEngine {
   private readonly opts: NativeEngineOptions;
   private _identity: XoreinIdentity | null = null;
@@ -167,6 +173,15 @@ export class XoreinNativeEngine {
   private _started = false;
   private _wiredNode: Libp2pNode | null = null;
   private _presenceTimer: ReturnType<typeof setInterval> | null = null;
+  // Whether the CURRENT identity is an ephemeral guest. Starts true and is
+  // resolved by bootstrapLocalState(); register() flips it to false in-session
+  // (guest → registered promotion happens WITHOUT an engine restart). Checked
+  // dynamically by the seal persistence hook so ratchet state written after a
+  // promotion is persisted even though the engine booted in guest mode.
+  private _guestMode = true;
+  // The live Seal session manager (X3DH + Double Ratchet), kept so register()
+  // can snapshot its state to encrypted storage at promotion time.
+  private _seal: SealSessions | null = null;
   readonly peerSync: PeerSync;
 
   constructor(opts: NativeEngineOptions) {
@@ -192,24 +207,34 @@ export class XoreinNativeEngine {
   get isStarted(): boolean { return this._started; }
 
   /**
-   * Load or generate identity, then connect to the relay.
-   * Idempotent — safe to call multiple times.
+   * Resolve the local identity, configure the store's storage backend for the
+   * resolved mode, and load + publish the persisted state. Extracted from
+   * start() so the identity/state bootstrap can be tested without a transport.
+   *
+   * Identity modes:
+   *  • a persisted (registered) identity unlocks via the 5-day session, else
+   *    requires the user passphrase to decrypt;
+   *  • a passphrase with no persisted identity means we are registering now;
+   *  • no passphrase + nothing persisted means a guest (ephemeral).
+   *
+   * ORDER MATTERS: configureNativeStore() must run AFTER identity resolution
+   * and IMMEDIATELY before initStore(), with no awaits in between. Configuring
+   * the store to localStorage any earlier opens an async window in which a
+   * stray UI mutation (e.g. a setActiveScope effect firing while the identity
+   * is still locked) persists the EMPTY pre-init state to localStorage as
+   * plaintext — permanently destroying the registered user's encrypted state
+   * blob before it was ever loaded (the reload-wipes-account P0).
    */
-  async start(): Promise<void> {
-    if (this._started) return;
-    this.emitActivity('starting', 'Starting up…');
-
-    // Resolve the identity by mode:
-    //  • a persisted (registered) identity requires the user passphrase to decrypt;
-    //  • a passphrase with no persisted identity means we are registering now;
-    //  • no passphrase + nothing persisted means a guest (ephemeral, sessionStorage).
+  async bootstrapLocalState(): Promise<{ guestMode: boolean }> {
     const stored = await loadEncryptedIdentity();
     const guestMode = !stored && !this.opts.passphrase;
-    // Guests keep their app state in per-tab sessionStorage; registered/registering
-    // identities use localStorage. Configure this BEFORE initStore() loads/persists.
-    configureNativeStore({ guest: guestMode });
+    this._guestMode = guestMode;
     // Mark the native engine as the live owner of the runtime snapshot keys for
     // this tab so HTTP support calls never overwrite them (see publishSnapshot).
+    // Registering the instance in a module-scoped singleton is the point here —
+    // this is not the `const self = this` closure workaround the rule targets.
+    // eslint-disable-next-line @typescript-eslint/no-this-alias
+    _activeEngine = this;
     if (typeof window !== 'undefined') {
       (window as unknown as Record<string, unknown>).__HARMOLYN_NATIVE_ACTIVE__ = true;
     }
@@ -229,13 +254,21 @@ export class XoreinNativeEngine {
         void saveSessionIdentity(this._identity).catch(() => {});
       }
     } else if (this.opts.passphrase) {
+      // Registering right now: persist the encrypted identity AND establish the
+      // remember-me session so a reload right after registration stays signed
+      // in instead of demanding the brand-new password again.
       this._identity = await generateIdentity();
       await saveEncryptedIdentity(encryptIdentity(this._identity, this.opts.passphrase));
+      await saveSessionIdentity(this._identity).catch(() => {});
       clearGuestIdentity();
     } else {
       this._identity = await loadOrCreateGuestIdentity();
     }
 
+    // Guests keep their app state in per-tab sessionStorage; registered
+    // identities use localStorage. Configured AFTER identity resolution and
+    // IMMEDIATELY before initStore() — no awaits in between (see docstring).
+    configureNativeStore({ guest: guestMode });
     // Install the at-rest state-encryption key (derived from the unlocked identity
     // seed) BEFORE initStore() so it can decrypt an existing encrypted blob and so
     // every subsequent persist() writes ciphertext — crowd roots, invite secrets and
@@ -268,31 +301,57 @@ export class XoreinNativeEngine {
     // and merge in the servers/DMs/profile so the account looks the same here.
     restorePendingSyncState(this._identity);
     publishNativeSnapshot();
+    return { guestMode };
+  }
+
+  /**
+   * Wire E2EE: our Seal prekey bundle + per-server Crowd channel keys. The
+   * fetchBundle closure dials a peer's `seal.bundle` op over the relay circuit.
+   * Called from start() BEFORE transport start so the seal.bundle inbound handler
+   * can serve our bundle as soon as the data plane is wired. Extracted so the
+   * promotion path (guest boot → register → reload) is testable sans transport.
+   *
+   * Registered identities persist their ratchet sessions (encrypted at rest) so
+   * a reload keeps decrypting in-flight DMs; guests stay ephemeral. The persist
+   * hook checks `_guestMode` at CALL time, not boot time: a guest who registers
+   * mid-session (promotion — no engine restart) must have every subsequent
+   * ratchet step persisted, or a reload silently loses all Seal sessions and
+   * inbound DMs become undecryptable (post-reload delivery P0). While still a
+   * guest it stays a no-op so ephemeral key material never touches localStorage.
+   */
+  private wireScopeCrypto(guestMode: boolean): void {
+    const identity = this.identity;
+    const persistedSeal = guestMode ? null : loadSealState(identity);
+    const seal = new SealSessions(identity.peerId, identitySigningKey(identity), {
+      persisted: persistedSeal,
+      onChange: (state) => { if (!this._guestMode) saveSealState(identity, state); },
+      // TOFU-pin each contact's verified hybrid identity so the UI can show a
+      // safety number and warn if it ever changes (relay swap / re-key).
+      onPeerIdentity: (peerId, identityKeyB64) => pinPeerIdentity(peerId, identityKeyB64),
+    });
+    this._seal = seal;
+    const channels = new ChannelCrypto();
+    registerScopeCrypto({ seal, channels, fetchBundle: (peerId) => this.peerSync.fetchBundle(peerId) });
+    // Offline store-and-forward identity (zero-knowledge mailbox deposits/drains).
+    registerOfflineIdentity(identity);
+  }
+
+  /**
+   * Load or generate identity, then connect to the relay.
+   * Idempotent — safe to call multiple times.
+   */
+  async start(): Promise<void> {
+    if (this._started) return;
+    this.emitActivity('starting', 'Starting up…');
+
+    const { guestMode } = await this.bootstrapLocalState();
 
     // Keep recovery guardians' copies of the account state fresh: when servers/DMs
     // change, re-distribute the encrypted snapshot (debounced) so recovering on a
     // new device reflects recent state.
     registerStateSyncHandler(() => this.scheduleRecoveryResync());
 
-    // Wire E2EE: our Seal prekey bundle + per-server Crowd channel keys. The
-    // fetchBundle closure dials a peer's `seal.bundle` op over the relay circuit.
-    // Registering BEFORE transport.start() so the seal.bundle inbound handler can
-    // serve our bundle as soon as the data plane is wired.
-    // Registered identities persist their ratchet sessions (encrypted at rest)
-    // so a reload keeps decrypting in-flight DMs; guests stay ephemeral.
-    const identity = this._identity;
-    const persistedSeal = guestMode ? null : loadSealState(identity);
-    const seal = new SealSessions(identity.peerId, identitySigningKey(identity), {
-      persisted: persistedSeal,
-      onChange: guestMode ? undefined : (state) => saveSealState(identity, state),
-      // TOFU-pin each contact's verified hybrid identity so the UI can show a
-      // safety number and warn if it ever changes (relay swap / re-key).
-      onPeerIdentity: (peerId, identityKeyB64) => pinPeerIdentity(peerId, identityKeyB64),
-    });
-    const channels = new ChannelCrypto();
-    registerScopeCrypto({ seal, channels, fetchBundle: (peerId) => this.peerSync.fetchBundle(peerId) });
-    // Offline store-and-forward identity (zero-knowledge mailbox deposits/drains).
-    registerOfflineIdentity(this._identity);
+    this.wireScopeCrypto(guestMode);
 
     // Signal local readiness: identity is loaded, E2EE managers are wired, and
     // local mutations (createServer, sendMessage, etc.) are safe to call. We emit
@@ -410,13 +469,7 @@ export class XoreinNativeEngine {
             const remotePeerId = connection.remotePeer.toString();
             const remoteAddr = connection.remoteAddr?.toString();
             if (remoteAddr?.includes('p2p-circuit')) this.peerSync.registerPeer(remotePeerId, remoteAddr);
-            const chunks: Uint8Array[] = [];
-            for await (const chunk of stream) {
-              chunks.push(chunk instanceof Uint8Array ? chunk : chunk.subarray());
-            }
-            const total = new Uint8Array(chunks.reduce((s, c) => s + c.length, 0));
-            let off = 0; for (const c of chunks) { total.set(c, off); off += c.length; }
-            const msg = unframeMessage(total);
+            const msg = await readFramedMessage(stream);
             if (!msg) { reply({ ok: false, error: 'bad_frame' }); await stream.close().catch(() => undefined); return; }
             const req = decodePeerStreamRequest(msg);
             const payload = req.payload ? (JSON.parse(new TextDecoder().decode(req.payload)) as Record<string, unknown>) : {};
@@ -459,11 +512,7 @@ export class XoreinNativeEngine {
           };
           try {
             const remotePeerId = connection.remotePeer.toString();
-            const chunks: Uint8Array[] = [];
-            for await (const chunk of stream) chunks.push(chunk instanceof Uint8Array ? chunk : chunk.subarray());
-            const total = new Uint8Array(chunks.reduce((s, c) => s + c.length, 0));
-            let off = 0; for (const c of chunks) { total.set(c, off); off += c.length; }
-            const msg = unframeMessage(total);
+            const msg = await readFramedMessage(stream);
             if (!msg) { reply({ ok: false, error: 'bad_frame' }); await stream.close().catch(() => undefined); return; }
             const req = decodePeerStreamRequest(msg);
             const payload = req.payload ? (JSON.parse(new TextDecoder().decode(req.payload)) as Record<string, unknown>) : {};
@@ -577,11 +626,17 @@ export class XoreinNativeEngine {
     this._wiredNode = null;
     // Release native snapshot ownership + E2EE managers so a re-init starts clean
     // and HTTP support calls aren't permanently suppressed after teardown (bug-3).
-    if (typeof window !== 'undefined') {
-      (window as unknown as Record<string, unknown>).__HARMOLYN_NATIVE_ACTIVE__ = false;
+    // ONLY if a newer engine hasn't already claimed ownership: the provider stops
+    // a superseded engine without awaiting when it restarts (e.g. unlock retry),
+    // and that late teardown must not wipe the replacement's registrations.
+    if (_activeEngine === this) {
+      _activeEngine = null;
+      if (typeof window !== 'undefined') {
+        (window as unknown as Record<string, unknown>).__HARMOLYN_NATIVE_ACTIVE__ = false;
+      }
+      resetScopeCrypto();
+      resetOfflineIdentity();
     }
-    resetScopeCrypto();
-    resetOfflineIdentity();
     this._started = false;
   }
 
@@ -595,7 +650,19 @@ export class XoreinNativeEngine {
     if (!this._identity) throw new Error('engine: not started');
     if (!passphrase) throw new Error('engine: a passphrase is required to register');
     await saveEncryptedIdentity(encryptIdentity(this._identity, passphrase));
+    // Establish the remember-me session at REGISTRATION time, not only on a later
+    // manual unlock: without this, the very first reload after creating an account
+    // dumps the user on the password screen (Discord-class apps stay signed in).
+    await saveSessionIdentity(this._identity).catch(() => {});
     clearGuestIdentity();
+    // Promotion: this identity is registered from here on. Flip BEFORE the seal
+    // snapshot below so the dynamic guest check in the seal onChange hook starts
+    // persisting, then snapshot the CURRENT seal state (published prekey bundle +
+    // any ratchets already established as a guest) to encrypted storage right now —
+    // otherwise nothing is saved until the next ratchet step, and a reload in
+    // between regenerates the bundle/drops the sessions, breaking in-flight DMs.
+    this._guestMode = false;
+    if (this._seal) saveSealState(this._identity, this._seal.serialize());
     // Promote app-state storage from per-session guest storage (sessionStorage)
     // to persistent localStorage now that this is a registered identity. The next
     // updateState/persist writes the full in-memory state (identity + any servers

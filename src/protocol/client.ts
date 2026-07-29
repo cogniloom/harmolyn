@@ -1,3 +1,4 @@
+import { gcm } from "@noble/ciphers/aes.js";
 import { FEATURES } from "../config/featureFlags.js";
 import {
   validFeatureFlagName,
@@ -338,16 +339,218 @@ export class XoreinControlTransport implements XoreinTransport {
   }
 }
 
+// ── Chat-scope persistence ──────────────────────────────────────────────────
+// Persisted chat-scope state contains DECRYPTED message plaintext (channel and
+// Seal DM bodies, thread replies). It must therefore NEVER be written to browser
+// storage in cleartext — doing so would defeat the encrypted-at-rest native
+// store entirely (a device thief or any local reader could recover history
+// without the account password).
+//
+// Modes, selected via configureChatScopePersistence():
+//   • encrypted   — registered identity: blobs are AES-256-GCM encrypted under a
+//                   key derived from the unlocked identity seed and namespaced
+//                   per peer_id, so two accounts on one browser can never read
+//                   or merge each other's scope state.
+//   • ephemeral   — guest identity: in-memory only for this JS context. Guests
+//                   must not leave chat plaintext (or ciphertext) behind at all.
+//   • unconfigured (default, e.g. no native identity resolved) — in-memory only;
+//                   reads fall back to any pre-existing LEGACY plaintext blob for
+//                   migration compatibility, but nothing is ever written back to
+//                   storage in this mode.
+// Legacy plaintext blobs (written by older builds) are purged from localStorage
+// as soon as an identity configures persistence.
+
+interface ChatScopeEncryptedEnvelope {
+  v: 2;
+  n: string;  // base64 12-byte AES-GCM nonce
+  ct: string; // base64 AES-256-GCM ciphertext of the scope-state JSON
+}
+
+type ChatScopePersistenceMode =
+  | { kind: "unconfigured" }
+  | { kind: "ephemeral" }
+  | { kind: "encrypted"; key: Uint8Array; namespace: string };
+
+let chatScopeMode: ChatScopePersistenceMode = { kind: "unconfigured" };
+// In-memory scope state for the ephemeral/unconfigured modes — keeps in-session
+// UX (nicknames, thread replies, local echoes) working without touching storage.
+const chatScopeMemory = new Map<string, string>();
+
+/**
+ * Install the persistence mode for chat-scope state. Called by the native
+ * identity layer whenever an identity is resolved:
+ *   • `{ key, namespace }` — registered: 32-byte AES-256-GCM key derived from
+ *     the unlocked identity seed; `namespace` is the local peer id.
+ *   • `{ ephemeral: true }` — guest: memory-only, nothing touches storage.
+ *   • `null` — locked/unknown: memory-only writes (fail closed — never plaintext).
+ * Always clears the in-memory cache so scope state can never leak across an
+ * identity switch within one JS context.
+ */
+export function configureChatScopePersistence(
+  config: { key: Uint8Array; namespace: string } | { ephemeral: true } | null,
+): void {
+  chatScopeMemory.clear();
+  if (!config) {
+    chatScopeMode = { kind: "unconfigured" };
+    return;
+  }
+  if ("ephemeral" in config) {
+    chatScopeMode = { kind: "ephemeral" };
+    purgeLegacyPlaintextChatScopeState();
+    return;
+  }
+  const namespace = config.namespace.trim();
+  if (!(config.key instanceof Uint8Array) || config.key.length !== 32 || !namespace) {
+    // Refuse a weak/incomplete cipher config: fail closed to memory-only.
+    chatScopeMode = { kind: "unconfigured" };
+    return;
+  }
+  chatScopeMode = { kind: "encrypted", key: config.key, namespace };
+  purgeLegacyPlaintextChatScopeState();
+}
+
+/**
+ * Remove every chat-scope blob that is NOT an encrypted v2 envelope. Legacy
+ * builds persisted decrypted plaintext under these keys; the moment any identity
+ * activates persistence, that plaintext must stop existing on disk.
+ */
+function purgeLegacyPlaintextChatScopeState(): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+  try {
+    const store = window.localStorage;
+    const doomed: string[] = [];
+    for (let i = 0; i < store.length; i++) {
+      const key = store.key(i);
+      if (!key || !key.startsWith(CHAT_SCOPE_STATE_STORAGE_PREFIX)) {
+        continue;
+      }
+      if (!isChatScopeEncryptedEnvelope(store.getItem(key))) {
+        doomed.push(key);
+      }
+    }
+    for (const key of doomed) {
+      store.removeItem(key);
+    }
+  } catch {
+    // Storage unavailable (SSR/private browsing) — nothing persisted to purge.
+  }
+}
+
+/** Remove ALL chat-scope blobs (encrypted and legacy). For logout/identity reset. */
+export function purgeAllPersistedChatScopeState(): void {
+  chatScopeMemory.clear();
+  if (typeof window === "undefined") {
+    return;
+  }
+  for (const storage of [() => window.localStorage, () => window.sessionStorage]) {
+    try {
+      const store = storage();
+      const doomed: string[] = [];
+      for (let i = 0; i < store.length; i++) {
+        const key = store.key(i);
+        if (key && key.startsWith(CHAT_SCOPE_STATE_STORAGE_PREFIX)) {
+          doomed.push(key);
+        }
+      }
+      for (const key of doomed) {
+        store.removeItem(key);
+      }
+    } catch {
+      // best effort
+    }
+  }
+}
+
+function isChatScopeEncryptedEnvelope(raw: string | null): boolean {
+  if (!raw) {
+    return false;
+  }
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return isPlainObject(parsed)
+      && (parsed as Partial<ChatScopeEncryptedEnvelope>).v === 2
+      && typeof (parsed as Partial<ChatScopeEncryptedEnvelope>).n === "string"
+      && typeof (parsed as Partial<ChatScopeEncryptedEnvelope>).ct === "string";
+  } catch {
+    return false;
+  }
+}
+
+function chatScopeBytesToBase64(bytes: Uint8Array): string {
+  let bin = "";
+  for (let i = 0; i < bytes.length; i++) {
+    bin += String.fromCharCode(bytes[i]);
+  }
+  return btoa(bin);
+}
+
+function chatScopeBase64ToBytes(value: string): Uint8Array {
+  const bin = atob(value);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) {
+    out[i] = bin.charCodeAt(i);
+  }
+  return out;
+}
+
+/** AAD binds each blob to its account AND scope so blobs can't be swapped around. */
+function chatScopeAad(namespace: string, scopeId: string): Uint8Array {
+  return new TextEncoder().encode(`${namespace.length}:${namespace}:${scopeId}`);
+}
+
 export function readPersistedChatScopeState(scopeId: string): PersistedChatScopeState {
   if (typeof window === "undefined" || !scopeId.trim()) {
     return createEmptyPersistedChatScopeState();
   }
+  const trimmedScopeId = scopeId.trim();
 
-  const raw = safeStorageGet(() => window.localStorage, buildChatScopeStorageKey(scopeId));
-  if (!raw) {
+  if (chatScopeMode.kind === "encrypted") {
+    const raw = safeStorageGet(
+      () => window.localStorage,
+      buildChatScopeStorageKey(trimmedScopeId, chatScopeMode.namespace),
+    );
+    if (!raw) {
+      return createEmptyPersistedChatScopeState();
+    }
+    try {
+      const parsed = JSON.parse(raw) as unknown;
+      if (!isChatScopeEncryptedEnvelope(raw) || !isPlainObject(parsed)) {
+        return createEmptyPersistedChatScopeState();
+      }
+      const envelope = parsed as unknown as ChatScopeEncryptedEnvelope;
+      const aead = gcm(
+        chatScopeMode.key,
+        chatScopeBase64ToBytes(envelope.n),
+        chatScopeAad(chatScopeMode.namespace, trimmedScopeId),
+      );
+      const plaintext = aead.decrypt(chatScopeBase64ToBytes(envelope.ct));
+      return parsePersistedChatScopeState(new TextDecoder().decode(plaintext));
+    } catch {
+      // Wrong key / tampered / corrupt — start empty rather than surface garbage.
+      return createEmptyPersistedChatScopeState();
+    }
+  }
+
+  const memory = chatScopeMemory.get(trimmedScopeId);
+  if (memory) {
+    return parsePersistedChatScopeState(memory);
+  }
+  if (chatScopeMode.kind === "ephemeral") {
+    // Guests never read storage: residual blobs (any account's) are off limits.
     return createEmptyPersistedChatScopeState();
   }
 
+  // Unconfigured: migration read of a LEGACY plaintext blob. Never written back.
+  const raw = safeStorageGet(() => window.localStorage, buildChatScopeStorageKey(trimmedScopeId));
+  if (!raw || isChatScopeEncryptedEnvelope(raw)) {
+    return createEmptyPersistedChatScopeState();
+  }
+  return parsePersistedChatScopeState(raw);
+}
+
+function parsePersistedChatScopeState(raw: string): PersistedChatScopeState {
   try {
     const parsed = JSON.parse(raw) as unknown;
     if (!isPlainObject(parsed)) {
@@ -372,17 +575,43 @@ export function writePersistedChatScopeState(scopeId: string, state: PersistedCh
   if (typeof window === "undefined" || !scopeId.trim()) {
     return;
   }
+  const trimmedScopeId = scopeId.trim();
 
   const nickname = typeof state.nickname === "string" ? state.nickname.trim() : "";
-  safeStorageSet(() => window.localStorage, buildChatScopeStorageKey(scopeId), JSON.stringify({
+  const serialized = JSON.stringify({
     version: 1,
-      nickname,
-      mutedUserIds: normalizeStoredStringList(state.mutedUserIds).sort(),
-      inboxReadIds: normalizeStoredStringList(state.inboxReadIds).sort(),
-      deletedMessageIds: normalizeStoredStringList(state.deletedMessageIds).sort(),
-      messages: normalizeStoredMessages(state.messages),
-      threads: normalizeStoredThreads(state.threads),
-    } satisfies PersistedChatScopeState));
+    nickname,
+    mutedUserIds: normalizeStoredStringList(state.mutedUserIds).sort(),
+    inboxReadIds: normalizeStoredStringList(state.inboxReadIds).sort(),
+    deletedMessageIds: normalizeStoredStringList(state.deletedMessageIds).sort(),
+    messages: normalizeStoredMessages(state.messages),
+    threads: normalizeStoredThreads(state.threads),
+  } satisfies PersistedChatScopeState);
+
+  if (chatScopeMode.kind === "encrypted") {
+    try {
+      const nonce = crypto.getRandomValues(new Uint8Array(12));
+      const aead = gcm(chatScopeMode.key, nonce, chatScopeAad(chatScopeMode.namespace, trimmedScopeId));
+      const ciphertext = aead.encrypt(new TextEncoder().encode(serialized));
+      const envelope: ChatScopeEncryptedEnvelope = {
+        v: 2,
+        n: chatScopeBytesToBase64(nonce),
+        ct: chatScopeBytesToBase64(ciphertext),
+      };
+      safeStorageSet(
+        () => window.localStorage,
+        buildChatScopeStorageKey(trimmedScopeId, chatScopeMode.namespace),
+        JSON.stringify(envelope),
+      );
+    } catch {
+      // Encryption/storage failure: drop the write. NEVER fall back to plaintext.
+    }
+    return;
+  }
+
+  // Ephemeral (guest) and unconfigured modes: memory only. Decrypted chat
+  // content must never reach browser storage without the at-rest cipher.
+  chatScopeMemory.set(trimmedScopeId, serialized);
 }
 
 export function readBrowserChatActionSupport(): BrowserChatActionSupport {
@@ -392,6 +621,18 @@ export function readBrowserChatActionSupport(): BrowserChatActionSupport {
       canPersistLocally: false,
       canAttemptAttachments: false,
       detail: "Chat actions require a browser session.",
+    };
+  }
+
+  // When the in-app native engine is active it performs chat mutations over the
+  // P2P network itself — support must not depend on control-endpoint
+  // reachability (the support node is bootstrap/blob storage only).
+  if ((window as unknown as Record<string, unknown>).__HARMOLYN_NATIVE_ACTIVE__ === true) {
+    return {
+      mode: "connected",
+      canPersistLocally: true,
+      canAttemptAttachments: true,
+      detail: "Native engine active — chat mutations are handled by the in-app xorein peer.",
     };
   }
 
@@ -918,8 +1159,16 @@ function extractErrorCode(error: unknown): string {
   return typeof code === "string" ? code.trim().toLowerCase() : "";
 }
 
-function buildChatScopeStorageKey(scopeId: string): string {
-  return `${CHAT_SCOPE_STATE_STORAGE_PREFIX}${scopeId.trim()}`;
+/**
+ * Storage key for a chat scope. Encrypted blobs are namespaced by the local
+ * peer id (`prefix<namespace>:<scopeId>`) so accounts sharing a browser can
+ * never read or merge each other's scope state; the un-namespaced form
+ * (`prefix<scopeId>`) exists only to read/purge LEGACY plaintext blobs.
+ */
+function buildChatScopeStorageKey(scopeId: string, namespace?: string): string {
+  return namespace
+    ? `${CHAT_SCOPE_STATE_STORAGE_PREFIX}${namespace}:${scopeId.trim()}`
+    : `${CHAT_SCOPE_STATE_STORAGE_PREFIX}${scopeId.trim()}`;
 }
 
 function createEmptyPersistedChatScopeState(): PersistedChatScopeState {

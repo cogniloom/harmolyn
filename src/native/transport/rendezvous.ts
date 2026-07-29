@@ -7,6 +7,7 @@
 // The browser client registers/discovers via the relay node's control HTTP API.
 import { hmac } from '@noble/hashes/hmac.js';
 import { sha256 } from '@noble/hashes/sha2.js';
+import { supportNodeApiBase } from '../nodeOrigin.js';
 
 // Must match Go oracle const rendezvousLabel = "xorein/server/rendezvous".
 const RENDEZVOUS_LABEL = 'xorein/server/rendezvous';
@@ -30,8 +31,6 @@ export interface RendezvousPeer {
   ttl_remaining_seconds: number;
 }
 
-const CONTROL_BASE = 'https://node.xorein.com/v1';
-
 /**
  * Register this peer in a rendezvous namespace via the relay control API.
  * Namespace is typically the server's rendezvous CID.
@@ -42,7 +41,7 @@ export async function rendezvousRegister(
   addrs: string[],
   ttlSeconds = 7200,
 ): Promise<void> {
-  const res = await fetch(`${CONTROL_BASE}/rendezvous/register`, {
+  const res = await fetch(`${supportNodeApiBase()}/rendezvous/register`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ namespace, peer_id: peerId, addrs, ttl_seconds: ttlSeconds }),
@@ -54,9 +53,13 @@ export async function rendezvousRegister(
  * Discover peers registered in a rendezvous namespace.
  */
 export async function rendezvousDiscover(namespace: string, limit = 50): Promise<RendezvousPeer[]> {
-  const res = await fetch(
-    `${CONTROL_BASE}/rendezvous/discover?namespace=${encodeURIComponent(namespace)}&limit=${limit}`,
-  );
+  // POST with a JSON body per the Go oracle (pkg/v0_1/control/handlers_rendezvous.go);
+  // the control API has no GET variant of this endpoint.
+  const res = await fetch(`${supportNodeApiBase()}/rendezvous/discover`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ namespace, limit }),
+  });
   if (!res.ok) throw new Error(`rendezvous discover: ${res.status}`);
   const data = await res.json() as { peers: RendezvousPeer[] };
   return data.peers ?? [];

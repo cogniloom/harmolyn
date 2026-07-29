@@ -3,7 +3,7 @@
 import type { Libp2p } from 'libp2p';
 import type { XoreinRuntimeServer, XoreinRuntimeMessage } from '../../types.js';
 import {
-  frameMessage, unframeMessage,
+  frameMessage, readFramedMessage,
   decodePeerStreamRequest, encodePeerStreamResponse,
 } from '../families/peerstream.js';
 import { PROTOCOLS } from '../families/families.js';
@@ -61,8 +61,10 @@ function bufferFutureEpochChannelMessage(payload: Record<string, unknown>, remot
 /**
  * Enforce a member's join-history boundary: messages strictly older than when they joined
  * are withheld beyond the `joinWindow` (join_history_messages) allowance. A member with no
- * recorded boundary (owner, or a member from before boundaries were tracked) sees the set
- * unchanged. `msgs` must already be sorted oldest→newest.
+ * recorded boundary sees the set unchanged — the caller (handleSyncRequest) only takes
+ * that lenient path when THIS peer is the owner (whose member_since map is authoritative,
+ * so a missing entry genuinely means a pre-tracking member); non-owner responders fail
+ * closed instead. `msgs` must already be sorted oldest→newest.
  */
 function applyJoinBoundary(
   msgs: XoreinRuntimeMessage[],
@@ -159,19 +161,6 @@ function okResponse(requestId?: string): Uint8Array {
   return frameMessage(resp);
 }
 
-async function readStream(stream: AsyncIterable<Uint8Array | { subarray(): Uint8Array }>): Promise<Uint8Array> {
-  const chunks: Uint8Array[] = [];
-  for await (const chunk of stream) {
-    chunks.push(chunk instanceof Uint8Array ? chunk : chunk.subarray());
-  }
-  if (chunks.length === 0) return new Uint8Array(0);
-  if (chunks.length === 1) return chunks[0];
-  const total = new Uint8Array(chunks.reduce((s, c) => s + c.length, 0));
-  let off = 0;
-  for (const c of chunks) { total.set(c, off); off += c.length; }
-  return total;
-}
-
 /**
  * The encryption mode every message in a given scope MUST carry: DMs are Seal
  * (X3DH + Double Ratchet), channels are Crowd (sender-key broadcast). This is the
@@ -251,6 +240,10 @@ function handleChatSend(payload: Record<string, unknown>, remotePeerId: string):
     sender_peer_id: senderId,
     body,
     ...(media && media.length ? { media } : {}),
+    // Carry the sender's reply reference so the quoted context renders here too.
+    ...(typeof payload.reply_to === 'string' && payload.reply_to.trim()
+      ? { reply_to: payload.reply_to.trim() }
+      : {}),
     // A message only reaches this point after successful decryption (requiredEnc
     // rejects anything unencrypted), so it is genuinely E2EE — stamp the real mode.
     ...(mode ? { security_mode: mode, encrypted: true } : {}),
@@ -357,6 +350,37 @@ function circuitAddrsFromPayload(payload: Record<string, unknown>): string[] {
     : [];
 }
 
+/**
+ * Reconcile a LOST friends.accept from presence: a peer only broadcasts presence
+ * to its server co-members and ACCEPTED friends. So when presence arrives from a
+ * peer we hold an outgoing pending request to, and we share NO server with them,
+ * the only way we can be in their presence-target set is that they accepted our
+ * request — flip our outgoing pending to an accepted friend. This converges the
+ * requester even if the one-shot friends.accept (and all its outbox retries)
+ * never landed. Exported for tests.
+ */
+export function reconcileFriendAcceptFromPresence(peerId: string): boolean {
+  const state = getState();
+  const me = state.identity?.peer_id ?? '';
+  if (!me || !peerId || peerId === me) return false;
+  const outgoing = state.friend_requests.find(r =>
+    r.status === 'pending'
+    && r.from_peer_id === me
+    && (r.to_peer_id ?? r.to_peer_addr) === peerId,
+  );
+  if (!outgoing) return false;
+  // Shared server membership is the other legitimate reason they'd send us
+  // presence — in that case their broadcast proves nothing about the request.
+  const sharesServer = Object.values(state.servers).some(s => {
+    const members = s.members ?? [];
+    return members.includes(me) && members.includes(peerId);
+  });
+  if (sharesServer) return false;
+  acceptFriendByPeer(peerId);
+  emitNotify({ kind: 'friend', title: 'Friend request accepted', body: `${peerDisplayName(peerId)} accepted your friend request` });
+  return true;
+}
+
 function handlePresenceUpdate(payload: Record<string, unknown>, remotePeerId: string, _operation?: string): void {
   // SECURITY: a peer may only update ITS OWN presence — bind exclusively to the
   // Noise-authenticated connection peer; never fall back to the self-asserted
@@ -386,6 +410,9 @@ function handlePresenceUpdate(payload: Record<string, unknown>, remotePeerId: st
       last_seen_at: new Date().toISOString(),
     });
   }
+  // Presence from a peer we friend-requested (and share no server with) implies
+  // they accepted — recover from a lost friends.accept so the requester converges.
+  reconcileFriendAcceptFromPresence(peerId);
   publishNativeSnapshot();
 }
 
@@ -533,6 +560,13 @@ export function handleSyncRequest(operation: string, payload: Record<string, unk
         ...(applyCrowd ? { crowd_root: nextRoot, crowd_epoch: nextEpoch } : {}),
         ...(Array.isArray(incoming.roles) ? { roles: incoming.roles } : {}),
         ...(incoming.member_roles && typeof incoming.member_roles === 'object' ? { member_roles: incoming.member_roles } : {}),
+        // Persist the owner-authoritative join boundaries (member_since). Every member
+        // answers sync.pull for this server, so every member needs the boundary map to
+        // enforce the pre-join history policy — it is join-time metadata (who joined
+        // when), not capability material like invite_secret.
+        ...(incoming.member_since && typeof incoming.member_since === 'object' && !Array.isArray(incoming.member_since)
+          ? { member_since: incoming.member_since as Record<string, string> }
+          : {}),
         ...(incomingRev !== undefined ? { server_rev: incomingRev } : {}),
       });
       // Install the (possibly rotated) root into the live crypto so the new epoch
@@ -592,10 +626,21 @@ export function handleSyncRequest(operation: string, payload: Record<string, unk
   }
 
   // Learn the joiner's reachable circuit addresses so we can deliver back across
-  // relays (keyed to the authenticated peer).
+  // relays (keyed to the authenticated peer) — and their self-declared profile, so
+  // the member list shows their name immediately instead of waiting for the next
+  // presence heartbeat (~25s).
   const joinerAddrs = circuitAddrsFromPayload(payload);
-  if (remotePeerId && joinerAddrs.length) {
-    upsertPeer({ peer_id: remotePeerId, role: 'peer', addresses: joinerAddrs, last_seen_at: new Date().toISOString() });
+  const joinerName = typeof payload.display_name === 'string' && payload.display_name.trim()
+    ? payload.display_name.trim()
+    : undefined;
+  if (remotePeerId && (joinerAddrs.length || joinerName)) {
+    upsertPeer({
+      peer_id: remotePeerId,
+      role: 'peer',
+      ...(joinerAddrs.length ? { addresses: joinerAddrs } : {}),
+      ...(joinerName ? { display_name: joinerName } : {}),
+      last_seen_at: new Date().toISOString(),
+    });
   }
 
   // Only the owner mutates membership; any member can still serve a read copy.
@@ -638,7 +683,25 @@ export function handleSyncRequest(operation: string, payload: Record<string, unk
   // `alreadyMember` from later paging into the pre-join window.
   const joinWindow = current.manifest?.join_history_messages ?? 0;
   const memberSince = remotePeerId ? current.member_since?.[remotePeerId] : undefined;
-  const boundaried = applyJoinBoundary(allMessages, memberSince, joinWindow);
+  // SECURITY (pre-join boundary on EVERY responder, not just the owner): member_since
+  // is owner-authoritative and distributed with the server record, but a non-owner
+  // responder may hold no entry for the requester (e.g. a stale copy from before the
+  // requester joined). In that case FAIL CLOSED — serve only the join_history_messages
+  // allowance — instead of treating "no boundary recorded" as "entitled to everything",
+  // which let any co-member hand a new joiner the full pre-join history. Two peers are
+  // exempt from fail-closed: the requesting OWNER (the history authority is never
+  // clamped by its own members) and, on the owner's side, a legacy member from before
+  // boundaries were tracked (the owner's map is authoritative, so a missing entry
+  // there genuinely means "no boundary").
+  const requesterIsOwner = !!remotePeerId && remotePeerId === current.owner_peer_id;
+  let boundaried: XoreinRuntimeMessage[];
+  if (requesterIsOwner) {
+    boundaried = allMessages;
+  } else if (!memberSince && !isOwner) {
+    boundaried = joinWindow > 0 ? allMessages.slice(-joinWindow) : [];
+  } else {
+    boundaried = applyJoinBoundary(allMessages, memberSince, joinWindow);
+  }
 
   // Cursor pagination (`sync.pull` with `before`): serve the page of messages that
   // precede the cursor, so a member can lazily scroll further back than the initial
@@ -686,7 +749,10 @@ export function handleSyncRequest(operation: string, payload: Record<string, unk
   // that grants invite-minting authority. crowd_root/crowd_epoch ARE distributed to
   // joining members so they can decrypt channel messages at the current epoch; the
   // root is rotated on join above so a joiner never learns a prior epoch's key.
-  const { invite_secret: _omit, member_since: _omitSince, ...serverForJoiner } = current;
+  // member_since is deliberately INCLUDED: it is the owner-authoritative join-boundary
+  // map every member needs to enforce the pre-join history policy when they serve
+  // sync.pull themselves (join-time metadata, not secret capability material).
+  const { invite_secret: _omit, ...serverForJoiner } = current;
   return { ok: true, server: serverForJoiner, messages, addresses, has_more: hasMore };
 }
 
@@ -698,6 +764,16 @@ export function handleSyncRequest(operation: string, payload: Record<string, unk
  */
 export function ingestMailboxChat(envelope: Record<string, unknown>, fromPeerId: string): void {
   handleChatSend(envelope, fromPeerId);
+}
+
+/**
+ * Run the authenticated inbound notify.push path (reaction / pin / poll_vote /
+ * report) with `fromPeerId` as the connection-authenticated sender. Exported so
+ * tests can exercise the per-kind authorization rules (e.g. a pin is applied only
+ * when the sender really holds MANAGE_MESSAGES) without a live libp2p stream.
+ */
+export function ingestNotifyPush(payload: Record<string, unknown>, fromPeerId: string): void {
+  handleNotifyPush(payload, fromPeerId);
 }
 
 // ── Seal prekey-bundle service ───────────────────────────────────────────────
@@ -754,6 +830,12 @@ function handleFriendOp(payload: Record<string, unknown>, remotePeerId: string, 
   }
 
   if (kind === 'accept') {
+    // Learn the accepter's display name from the accept payload so the requester's
+    // friends list / DM header shows a real name immediately (not a raw peer id
+    // until the next presence heartbeat).
+    if (typeof payload.display_name === 'string' && payload.display_name.trim()) {
+      upsertPeer({ peer_id: remotePeerId, role: 'peer', display_name: payload.display_name.trim(), last_seen_at: new Date().toISOString() });
+    }
     acceptFriendByPeer(remotePeerId);
     emitNotify({ kind: 'friend', title: 'Friend request accepted', body: `${peerDisplayName(remotePeerId)} accepted your friend request` });
     publishNativeSnapshot();
@@ -780,8 +862,7 @@ function makeRequestHandler(
       const remoteAddr = connection.remoteAddr.toString();
       peerSync.registerPeer(remotePeerId, remoteAddr.includes('p2p-circuit') ? remoteAddr : undefined);
 
-      const raw = await readStream(stream);
-      const msg = unframeMessage(raw);
+      const msg = await readFramedMessage(stream);
       if (!msg) return;
       const req = decodePeerStreamRequest(msg);
       let payload: Record<string, unknown> = {};
@@ -813,8 +894,7 @@ function makeHandler(
       // Register the peer's addr so outbound can reach them.
       peerSync.registerPeer(remotePeerId, remoteAddr.includes('p2p-circuit') ? remoteAddr : undefined);
 
-      const raw = await readStream(stream);
-      const msg = unframeMessage(raw);
+      const msg = await readFramedMessage(stream);
       if (!msg) return;
 
       const req = decodePeerStreamRequest(msg);

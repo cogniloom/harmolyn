@@ -9,6 +9,8 @@ import { argon2id } from '@noble/hashes/argon2.js';
 import { gcm } from '@noble/ciphers/aes.js';
 import type { XoreinIdentity } from './identity.js';
 import { identityFromStored, generateIdentity } from './identity.js';
+import { deriveKey as hkdfDeriveKey } from '../seal/kdf.js';
+import { configureChatScopePersistence } from '../../protocol/client.js';
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
@@ -69,6 +71,35 @@ function serializeIdentity(id: XoreinIdentity): Uint8Array {
     mldsa65_priv: Array.from(id.mldsaPriv), // 4032 bytes, matches Go stored.MLDSA65Priv
   });
   return new TextEncoder().encode(payload);
+}
+
+// ── Chat-scope persistence activation ──────────────────────────────────────
+// Chat-scope state (ChatArea's persisted copy of decrypted messages, thread
+// replies, nicknames) is persisted by src/protocol/client.ts. It must never be
+// stored in plaintext, so whenever an identity becomes the ACTIVE identity we
+// hand the protocol layer an at-rest cipher config derived from that identity:
+//   • registered → AES-256-GCM key from the identity seed, namespaced by peer id;
+//   • guest      → ephemeral (memory-only; guests leave no chat data behind).
+// Every path that resolves the active identity funnels through this module
+// (loadSessionIdentity, saveSessionIdentity, loadOrCreateGuestIdentity /
+// saveGuestIdentity), so hooking here covers all engine bootstrap modes.
+
+const CHAT_SCOPE_KEY_LABEL = 'xorein/chat-scope/v1/at-rest';
+
+function activateChatScopePersistence(id: XoreinIdentity, opts: { ephemeral: boolean }): void {
+  try {
+    if (opts.ephemeral) {
+      configureChatScopePersistence({ ephemeral: true });
+    } else {
+      configureChatScopePersistence({
+        key: hkdfDeriveKey(id.edSeed, null, CHAT_SCOPE_KEY_LABEL, 32),
+        namespace: id.peerId,
+      });
+    }
+  } catch {
+    // Persistence is best-effort and fails closed (memory-only) — never block
+    // identity resolution on it.
+  }
 }
 
 export interface Argon2Params { m: number; t: number; p: number }
@@ -192,11 +223,23 @@ let _guestIdentityCache: XoreinIdentity | null = null;
 /** Store the guest identity in memory for the lifetime of this JS context. */
 export function saveGuestIdentity(id: XoreinIdentity): void {
   _guestIdentityCache = id;
+  // Guests get memory-only chat-scope persistence: no plaintext (or even
+  // ciphertext) chat state may outlive the throwaway session.
+  activateChatScopePersistence(id, { ephemeral: true });
 }
 
 /** Clear the in-memory guest identity (e.g. after promotion to registered). */
 export function clearGuestIdentity(): void {
   _guestIdentityCache = null;
+}
+
+/**
+ * Whether the ACTIVE identity in this JS context is a throwaway guest. Used by
+ * persistence layers (e.g. the runtime-snapshot mirror) to keep guest data out
+ * of durable localStorage.
+ */
+export function isGuestIdentityActive(): boolean {
+  return _guestIdentityCache !== null;
 }
 
 /**
@@ -309,28 +352,70 @@ export async function importToVault(blobJson: string, passphrase: string): Promi
 }
 
 // ── Session unlock (remember-me) ──────────────────────────────────────────
-// After a successful passphrase unlock we re-encrypt the decrypted identity under
-// a NON-EXTRACTABLE WebCrypto AES-GCM key and store both the ciphertext and the
-// CryptoKey handle in IndexedDB. localStorage holds only an expiry timestamp — no
-// key material. The wrapping key's raw bytes are never exposed to JS (the browser
-// keeps them opaque), so an attacker with disk/localStorage/IDB-dump access cannot
-// recover the identity without executing in the page's origin. On subsequent loads
-// we skip the expensive Argon2 KDF.
+// OPT-IN ONLY (`setRememberMeEnabled`). After a successful passphrase unlock we
+// re-encrypt the decrypted identity under a WebCrypto AES-GCM key and store both
+// the ciphertext and the CryptoKey handle in IndexedDB; localStorage holds only
+// the expiry/created timestamps.
+//
+// HONEST THREAT MODEL: `extractable: false` restricts only the JavaScript API.
+// When the CryptoKey handle is structured-cloned into IndexedDB, the BROWSER
+// SERIALIZES THE RAW KEY BYTES into the IDB backing store on disk (Chromium
+// LevelDB / Firefox SQLite). On platforms without OS-level profile encryption
+// (e.g. a default Linux install), anyone who can read the browser profile can
+// therefore recover BOTH the wrapping key and the wrapped identity ciphertext
+// and decrypt the identity offline — WITHOUT the account password. Because the
+// at-rest state key is derived from the identity seed, that also unlocks the
+// encrypted native state and ratchet blobs. Remember-me thus trades the
+// "a stolen device yields nothing readable without the password" guarantee for
+// convenience, which is why it is opt-in with explicit UI disclosure and why
+// its lifetime is HARD-CAPPED from the initial password unlock (the sliding
+// TTL refresh can never extend a session past SESSION_MAX_LIFETIME_MS).
 
 const SESSION_KEY_LS_KEY = 'harmolyn:session-unlock';
 const SESSION_BLOB_IDB_KEY = 'session';
 const SESSION_WRAPKEY_IDB_KEY = 'session-wrapkey';
+const REMEMBER_ME_LS_KEY = 'harmolyn:remember-me';
+/** Sliding inactivity window: an unused session expires after this long. */
 export const SESSION_TTL_MS = 5 * 24 * 60 * 60 * 1000;
+/**
+ * Hard cap measured from the INITIAL password unlock. Activity refreshes the
+ * sliding TTL but can never push the expiry past `createdAt + this` — after the
+ * cap the password is always required again (no indefinitely-refreshed session).
+ */
+export const SESSION_MAX_LIFETIME_MS = 30 * 24 * 60 * 60 * 1000;
 
 interface SessionEntry {
-  expiresAt: number; // ms timestamp — the ONLY thing in localStorage (no key bytes)
-  /**
-   * LEGACY (pre-A5) field: a raw AES-256 key in hex. Present only in remember-me sessions
-   * created by the previous release, which stored the key in localStorage. On first load it
-   * is used once to decrypt the legacy blob, which is then re-wrapped under the new
-   * non-extractable key and this field dropped. New sessions never write it.
-   */
-  key?: string;
+  /** Expiry (ms timestamp). Always ≤ createdAt + SESSION_MAX_LIFETIME_MS. */
+  expiresAt: number;
+  /** When the session was established by a REAL password unlock (ms timestamp). */
+  createdAt: number;
+}
+
+/**
+ * Whether the user has explicitly opted in to remember-me on this device.
+ * Defaults to OFF: without opt-in, every reload requires the account password
+ * and no identity key material is recoverable from disk without it.
+ */
+export function isRememberMeEnabled(): boolean {
+  try {
+    return typeof localStorage !== 'undefined' && localStorage.getItem(REMEMBER_ME_LS_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Record the user's remember-me choice. Disabling it also destroys any existing
+ * persisted session so previously-saved key material stops being recoverable.
+ */
+export function setRememberMeEnabled(enabled: boolean): void {
+  try {
+    if (typeof localStorage !== 'undefined') {
+      if (enabled) localStorage.setItem(REMEMBER_ME_LS_KEY, '1');
+      else localStorage.removeItem(REMEMBER_ME_LS_KEY);
+    }
+  } catch { /* best effort */ }
+  if (!enabled) clearSessionIdentity();
 }
 
 interface SessionBlob {
@@ -338,14 +423,19 @@ interface SessionBlob {
   ciphertext: string; // base64 AES-256-GCM(identity JSON) under the non-extractable key
 }
 
-/** Returns true if a non-expired session entry exists in localStorage. Synchronous. */
+/** Returns true if a non-expired opt-in session entry exists in localStorage. Synchronous. */
 export function hasValidSession(): boolean {
   try {
     if (typeof localStorage === 'undefined') return false;
+    if (!isRememberMeEnabled()) return false;
     const raw = localStorage.getItem(SESSION_KEY_LS_KEY);
     if (!raw) return false;
-    const entry = JSON.parse(raw) as SessionEntry;
-    return typeof entry.expiresAt === 'number' && entry.expiresAt > Date.now();
+    const entry = JSON.parse(raw) as Partial<SessionEntry>;
+    const now = Date.now();
+    return typeof entry.expiresAt === 'number'
+      && typeof entry.createdAt === 'number'
+      && entry.expiresAt > now
+      && now < entry.createdAt + SESSION_MAX_LIFETIME_MS;
   } catch {
     return false;
   }
@@ -395,10 +485,13 @@ async function loadSessionBlob(): Promise<SessionBlob | null> {
 }
 
 /**
- * Get (or lazily create) the non-extractable AES-GCM wrapping key, persisted as a
- * CryptoKey handle in IndexedDB. `extractable: false` means its raw bytes can never
- * be read back out — this is the whole point: the remember-me secret is not a value
- * an attacker can copy off disk.
+ * Get (or lazily create) the AES-GCM wrapping key, persisted as a CryptoKey
+ * handle in IndexedDB. `extractable: false` only stops JS in this origin from
+ * reading the raw bytes back out — it is NOT at-rest protection: the browser
+ * writes the key bytes into the IndexedDB backing store on disk when the handle
+ * is structured-cloned, so a disk-level attacker can recover it (see the honest
+ * threat model at the top of this section). It still raises the bar against
+ * same-machine attackers limited to copying localStorage values.
  */
 async function getOrCreateSessionWrapKey(): Promise<CryptoKey> {
   const existing = await idbGet<CryptoKey>(SESSION_WRAPKEY_IDB_KEY);
@@ -409,10 +502,21 @@ async function getOrCreateSessionWrapKey(): Promise<CryptoKey> {
 }
 
 /**
- * Re-encrypt the identity under the non-extractable wrapping key and persist for
- * SESSION_TTL_MS. localStorage stores only the expiry — never key material.
+ * Persist a remember-me session for the identity — ONLY if the user opted in
+ * via setRememberMeEnabled (default OFF; see the threat model above). Without
+ * opt-in this clears any stale session and stores nothing. The engine calls
+ * this on every password unlock / registration, so it also doubles as the
+ * "registered identity is now active" hook that activates encrypted chat-scope
+ * persistence regardless of the remember-me choice.
  */
 export async function saveSessionIdentity(id: XoreinIdentity): Promise<void> {
+  // The active registered identity is known here — install the at-rest cipher
+  // for chat-scope persistence unconditionally (independent of remember-me).
+  activateChatScopePersistence(id, { ephemeral: false });
+  if (!isRememberMeEnabled()) {
+    clearSessionIdentity();
+    return;
+  }
   const wrapKey = await getOrCreateSessionWrapKey();
   const nonce = crypto.getRandomValues(new Uint8Array(12));
   const plaintext = serializeIdentity(id);
@@ -420,41 +524,42 @@ export async function saveSessionIdentity(id: XoreinIdentity): Promise<void> {
     await crypto.subtle.encrypt({ name: 'AES-GCM', iv: nonce as BufferSource }, wrapKey, plaintext as BufferSource),
   );
   await saveSessionBlob({ nonce: toHex(nonce), ciphertext: toBase64(ciphertext) });
-  const entry: SessionEntry = { expiresAt: Date.now() + SESSION_TTL_MS };
+  // A fresh save is always backed by a real password unlock (or registration),
+  // so the hard-cap clock restarts here — and only here.
+  const now = Date.now();
+  const entry: SessionEntry = {
+    createdAt: now,
+    expiresAt: Math.min(now + SESSION_TTL_MS, now + SESSION_MAX_LIFETIME_MS),
+  };
   localStorage.setItem(SESSION_KEY_LS_KEY, JSON.stringify(entry));
 }
 
 /**
- * Attempt to load the session identity. Refreshes the TTL on success.
- * Returns null and clears the session on expiry or any error.
+ * Attempt to load the session identity. Requires the remember-me opt-in and a
+ * session inside BOTH the sliding TTL and the hard lifetime cap. On success the
+ * sliding TTL is refreshed, but never past `createdAt + SESSION_MAX_LIFETIME_MS`
+ * — an active user is still forced back to the password once the cap is hit.
+ * Returns null and clears the session on opt-out, expiry, or any error.
+ * Sessions from builds that predate the opt-in/hard-cap scheme (including the
+ * pre-A5 raw-key-in-localStorage format) are cleared, never migrated.
  */
 export async function loadSessionIdentity(): Promise<XoreinIdentity | null> {
   try {
     if (typeof localStorage === 'undefined') return null;
     const raw = localStorage.getItem(SESSION_KEY_LS_KEY);
     if (!raw) return null;
-    const entry = JSON.parse(raw) as SessionEntry;
-    if (entry.expiresAt <= Date.now()) { clearSessionIdentity(); return null; }
-    const [blob, wrapKey] = await Promise.all([loadSessionBlob(), idbGet<CryptoKey>(SESSION_WRAPKEY_IDB_KEY)]);
-    if (!blob) { clearSessionIdentity(); return null; }
-    if (!wrapKey) {
-      // MIGRATION: a legacy (pre-A5) remember-me session stored its AES key raw in
-      // localStorage (entry.key) and had no non-extractable wrap key. Rather than dropping
-      // the still-valid session and forcing the password screen, decrypt the legacy blob
-      // once with that key and re-save under the new wrapped scheme (which also removes the
-      // raw key). If there's no legacy key either, it's genuinely unreadable — clear it.
-      if (typeof entry.key === 'string' && entry.key) {
-        try {
-          const legacyPlaintext = gcm(fromHex(entry.key), fromHex(blob.nonce)).decrypt(fromBase64(blob.ciphertext));
-          const legacy = JSON.parse(new TextDecoder().decode(legacyPlaintext)) as { ed25519_priv: number[]; mldsa65_priv: number[] };
-          const migrated = await identityFromStored(new Uint8Array(legacy.ed25519_priv), new Uint8Array(legacy.mldsa65_priv));
-          await saveSessionIdentity(migrated); // rewraps under the new non-extractable key; entry loses `key`
-          return migrated;
-        } catch { clearSessionIdentity(); return null; }
-      }
+    if (!isRememberMeEnabled()) { clearSessionIdentity(); return null; }
+    const entry = JSON.parse(raw) as Partial<SessionEntry>;
+    const now = Date.now();
+    if (typeof entry.expiresAt !== 'number' || typeof entry.createdAt !== 'number') {
+      // Legacy entry (no hard-cap clock, possibly raw key material) — destroy it.
       clearSessionIdentity();
       return null;
     }
+    const capAt = entry.createdAt + SESSION_MAX_LIFETIME_MS;
+    if (entry.expiresAt <= now || now >= capAt) { clearSessionIdentity(); return null; }
+    const [blob, wrapKey] = await Promise.all([loadSessionBlob(), idbGet<CryptoKey>(SESSION_WRAPKEY_IDB_KEY)]);
+    if (!blob || !wrapKey) { clearSessionIdentity(); return null; }
     const plaintext = new Uint8Array(
       await crypto.subtle.decrypt({ name: 'AES-GCM', iv: fromHex(blob.nonce) as BufferSource }, wrapKey, fromBase64(blob.ciphertext) as BufferSource),
     );
@@ -462,10 +567,14 @@ export async function loadSessionIdentity(): Promise<XoreinIdentity | null> {
       ed25519_priv: number[];
       mldsa65_priv: number[];
     };
-    // Refresh TTL on each successful load so active users stay logged in.
-    entry.expiresAt = Date.now() + SESSION_TTL_MS;
+    // Refresh the sliding TTL, hard-capped from the initial password unlock.
+    entry.expiresAt = Math.min(now + SESSION_TTL_MS, capAt);
     localStorage.setItem(SESSION_KEY_LS_KEY, JSON.stringify(entry));
-    return identityFromStored(new Uint8Array(stored.ed25519_priv), new Uint8Array(stored.mldsa65_priv));
+    const identity = await identityFromStored(new Uint8Array(stored.ed25519_priv), new Uint8Array(stored.mldsa65_priv));
+    // Session unlock resolved the ACTIVE registered identity — activate the
+    // encrypted chat-scope persistence for it.
+    activateChatScopePersistence(identity, { ephemeral: false });
+    return identity;
   } catch {
     clearSessionIdentity();
     return null;

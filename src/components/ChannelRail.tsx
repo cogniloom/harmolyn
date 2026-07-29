@@ -1,7 +1,7 @@
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Channel, ConnectionState, DirectMessageChannel, Server, User, UserStatus } from '@/types';
-import { ChevronDown, ChevronRight, Hash, Volume2, Mic, MicOff, Video, MonitorUp, Headphones, Settings, X, LogOut, Radio, PanelLeftClose, ArrowUpDown, FileText, Heart, Plus, Check, Pencil, Trash2, Copy, BellOff } from 'lucide-react';
+import { ChevronDown, ChevronRight, Hash, Megaphone, Volume2, Mic, MicOff, Video, MonitorUp, Headphones, HeadphoneOff, Settings, X, LogOut, Radio, PanelLeftClose, ArrowUpDown, FileText, Heart, Plus, Check, Pencil, Trash2, Copy, BellOff } from 'lucide-react';
 import { StatusPicker } from '@/components/StatusPicker';
 import { AccountSwitcher } from '@/components/AccountSwitcher';
 import { ConnectionActivityPill } from '@/components/ConnectionActivityPill';
@@ -11,6 +11,7 @@ import { useFeature } from '@/hooks/useFeature';
 import { resolveAvatarSrc } from '@/lib/avatar';
 import { shortFingerprint } from '@/lib/peerLabel';
 import { useCreateChannel, useUpdateChannel, useDeleteChannel, useUpdatePresence } from '@/hooks/runtime/mutations';
+import { useRuntimeMutations } from '@/hooks/runtime/useRuntimeMutations';
 import { ChannelSettingsModal, type ChannelEditValues } from '@/components/ChannelSettingsModal';
 import { usePiiBlurClass } from '@/components/streamer/StreamerMode';
 import { useRuntimeSnapshot } from '@/lib/xoreinRuntimeContext';
@@ -199,8 +200,10 @@ export const ChannelRail: React.FC<ChannelRailProps> = ({
   const createChannelMutation = useCreateChannel();
   const updateChannelMutation = useUpdateChannel();
   const deleteChannelMutation = useDeleteChannel();
+  const runtimeMutations = useRuntimeMutations();
+  const hasAnnouncementChannels = useFeature('announcementChannels');
   const [editingChannel, setEditingChannel] = useState<Channel | null>(null);
-  const [newChannel, setNewChannel] = useState<{ categoryId: string; name: string; voice: boolean } | null>(null);
+  const [newChannel, setNewChannel] = useState<{ categoryId: string; name: string; voice: boolean; announcement: boolean } | null>(null);
   const [collapsedCategories, setCollapsedCategories] = useState<Record<string, boolean>>({});
   const newChannelInputRef = useRef<HTMLInputElement>(null);
   const { showMenu } = useContextMenu();
@@ -311,19 +314,26 @@ export const ChannelRail: React.FC<ChannelRailProps> = ({
   };
 
   const openNewChannel = (categoryId: string) => {
-    setNewChannel({ categoryId, name: '', voice: false });
+    setNewChannel({ categoryId, name: '', voice: false, announcement: false });
     setTimeout(() => newChannelInputRef.current?.focus(), 50);
   };
 
   const openNewVoiceChannel = (categoryId: string) => {
-    setNewChannel({ categoryId, name: '', voice: true });
+    setNewChannel({ categoryId, name: '', voice: true, announcement: false });
     setTimeout(() => newChannelInputRef.current?.focus(), 50);
   };
 
   const submitNewChannel = async () => {
     if (!newChannel || !server || !newChannel.name.trim() || !isOwner) return;
     try {
-      await createChannelMutation.mutateAsync({ serverId: server.id, name: newChannel.name.trim(), voice: newChannel.voice });
+      const created = await createChannelMutation.mutateAsync({ serverId: server.id, name: newChannel.name.trim(), voice: newChannel.voice });
+      // Announce at creation: stamp the synced kind onto the fresh channel record
+      // via the mutation facade (the RQ hook only carries name/voice). The kind is
+      // owner-authoritative server structure, so it broadcasts like a rename.
+      const createdId = created && typeof created === 'object' && 'id' in created ? String((created as { id?: unknown }).id ?? '') : '';
+      if (!newChannel.voice && newChannel.announcement && createdId) {
+        await runtimeMutations.updateChannel?.(server.id, createdId, { kind: 'announcement' });
+      }
     } finally {
       setNewChannel(null);
     }
@@ -474,9 +484,12 @@ export const ChannelRail: React.FC<ChannelRailProps> = ({
                         </button>
                         <div className="flex items-center gap-1">
                           {isOwner && (
+                            /* Persistent but subdued: always visible (discoverable
+                               without hover-hunting), brightening on hover/focus to
+                               match the rail's quiet-until-engaged design language. */
                             <button
                               onClick={() => openNewChannel(cat.id)}
-                              className="opacity-0 group-hover/cat:opacity-100 transition-opacity p-0.5 hover:text-primary rounded focus-ring"
+                              className="opacity-50 hover:opacity-100 focus-visible:opacity-100 group-hover/cat:opacity-80 transition-opacity p-0.5 hover:text-primary rounded focus-ring"
                               aria-label="Add channel"
                               title="Add channel"
                             >
@@ -524,21 +537,33 @@ export const ChannelRail: React.FC<ChannelRailProps> = ({
                         {newChannel?.categoryId === cat.id && (
                           <div className="mt-1 px-1">
                             <div className="glass-card rounded-r2 p-2 border border-primary/20 space-y-2">
-                              <div className="flex gap-1 mb-1">
+                              <div className="flex gap-1 mb-1" role="group" aria-label="New channel type">
                                 <button
                                   type="button"
-                                  onClick={() => setNewChannel(c => c ? { ...c, voice: false } : c)}
-                                  className={`flex-1 flex items-center justify-center gap-1 py-1 rounded text-[10px] font-bold transition-all ${!newChannel.voice ? 'bg-primary/15 text-primary' : 'text-white/40 hover:bg-white/5'}`}
+                                  onClick={() => setNewChannel(c => c ? { ...c, voice: false, announcement: false } : c)}
+                                  aria-pressed={!newChannel.voice && !newChannel.announcement}
+                                  className={`flex-1 flex items-center justify-center gap-1 py-1 rounded text-[10px] font-bold transition-all ${!newChannel.voice && !newChannel.announcement ? 'bg-primary/15 text-primary' : 'text-white/40 hover:bg-white/5'}`}
                                 >
                                   <Hash size={10} /> Text
                                 </button>
                                 <button
                                   type="button"
-                                  onClick={() => setNewChannel(c => c ? { ...c, voice: true } : c)}
+                                  onClick={() => setNewChannel(c => c ? { ...c, voice: true, announcement: false } : c)}
+                                  aria-pressed={newChannel.voice}
                                   className={`flex-1 flex items-center justify-center gap-1 py-1 rounded text-[10px] font-bold transition-all ${newChannel.voice ? 'bg-primary/15 text-primary' : 'text-white/40 hover:bg-white/5'}`}
                                 >
                                   <Volume2 size={10} /> Voice
                                 </button>
+                                {hasAnnouncementChannels && (
+                                  <button
+                                    type="button"
+                                    onClick={() => setNewChannel(c => c ? { ...c, voice: false, announcement: true } : c)}
+                                    aria-pressed={!newChannel.voice && newChannel.announcement}
+                                    className={`flex-1 flex items-center justify-center gap-1 py-1 rounded text-[10px] font-bold transition-all ${!newChannel.voice && newChannel.announcement ? 'bg-primary/15 text-primary' : 'text-white/40 hover:bg-white/5'}`}
+                                  >
+                                    <Megaphone size={10} /> Announce
+                                  </button>
+                                )}
                               </div>
                               <input
                                 ref={newChannelInputRef}
@@ -834,7 +859,7 @@ const UserFooter: React.FC<{
           aria-keyshortcuts="Control+M"
           aria-label={voiceControlState?.muted ? 'Unmute Microphone' : 'Mute Microphone'}
           className={`p-1 transition-colors btn-press disabled:opacity-40 disabled:cursor-not-allowed ${voiceControlState?.muted ? 'text-accent-danger hover:text-accent-danger' : 'text-white/40 hover:text-primary'}`}
-        ><Mic size={14} /></button>
+        >{voiceControlState?.muted ? <MicOff size={14} /> : <Mic size={14} />}</button>
         <button
           disabled={!canUseVoiceFooterControls}
           onClick={onToggleVoiceDeafen}
@@ -842,7 +867,7 @@ const UserFooter: React.FC<{
           aria-keyshortcuts="Control+D"
           aria-label={voiceControlState?.deafened ? 'Undeafen Audio' : 'Deafen Audio'}
           className={`p-1 transition-colors btn-press disabled:opacity-40 disabled:cursor-not-allowed ${voiceControlState?.deafened ? 'text-accent-danger hover:text-accent-danger' : 'text-white/40 hover:text-primary'}`}
-        ><Headphones size={14} /></button>
+        >{voiceControlState?.deafened ? <HeadphoneOff size={14} /> : <Headphones size={14} />}</button>
         <button onClick={onOpenSettings} aria-label="Open Settings" className="p-1 text-white/40 hover:text-primary transition-colors btn-press"><Settings size={14} /></button>
       </div>
       </div>

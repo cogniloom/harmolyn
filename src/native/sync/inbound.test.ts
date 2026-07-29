@@ -8,12 +8,12 @@
 //   • a genuinely Crowd-encrypted message is stored carrying the real mode so the
 //     UI badge reflects encryption that actually happened.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { initStore, getState, setNativeIdentity, addServer, updateServer } from '../state/store.js';
+import { initStore, getState, setNativeIdentity, addServer, updateServer, addFriendRequest } from '../state/store.js';
 import { ChannelCrypto } from '../crowd/channel.js';
 import { SealSessions } from '../seal/session.js';
 import { generateSigningIdentity } from '../crypto/hybrid.js';
 import { registerScopeCrypto, resetScopeCrypto, encryptChannelEnvelope, applyCrowdRoot } from './secureEnvelope.js';
-import { ingestMailboxChat, classifyChannelNotification, handleSyncRequest } from './inbound.js';
+import { ingestMailboxChat, classifyChannelNotification, handleSyncRequest, reconcileFriendAcceptFromPresence } from './inbound.js';
 
 const ME = 'me';
 const ALICE = 'alice';
@@ -246,5 +246,65 @@ describe('inbound — fail-closed encryption policy (A1)', () => {
     expect(stored!.body).toBe('real ciphertext body');
     expect(stored!.security_mode).toBe('crowd');
     expect(stored!.encrypted).toBe(true);
+  });
+});
+
+describe('reconcileFriendAcceptFromPresence (lost friends.accept recovery)', () => {
+  beforeEach(() => {
+    localStorage.clear();
+    initStore();
+    setNativeIdentity({ id: ME, peer_id: ME });
+  });
+
+  const outgoingRequest = () => addFriendRequest({
+    id: 'out-1',
+    from_peer_id: ME,
+    to_peer_id: ALICE,
+    status: 'pending',
+    created_at: new Date().toISOString(),
+  });
+
+  it('flips an outgoing pending request to accepted when presence arrives from a non-co-member', () => {
+    // A peer only broadcasts presence to co-members and ACCEPTED friends. We share no
+    // server with ALICE, so her presence proves she accepted our request even if the
+    // friends.accept itself was lost.
+    outgoingRequest();
+
+    expect(reconcileFriendAcceptFromPresence(ALICE)).toBe(true);
+
+    expect(getState().friend_requests.length).toBe(0);
+    const friend = getState().friends.find(f => f.id === 'out-1');
+    expect(friend?.status).toBe('accepted');
+  });
+
+  it('does NOT flip when we share a server with the peer (presence proves nothing)', () => {
+    outgoingRequest();
+    addServer({ id: SRV, name: 'S', owner_peer_id: ALICE, members: [ALICE, ME], channels: {} });
+
+    expect(reconcileFriendAcceptFromPresence(ALICE)).toBe(false);
+
+    expect(getState().friend_requests.find(r => r.id === 'out-1')?.status).toBe('pending');
+    expect(getState().friends.length).toBe(0);
+  });
+
+  it('does NOT auto-accept an INCOMING request (only the user may accept)', () => {
+    addFriendRequest({
+      id: 'in-1',
+      from_peer_id: ALICE,
+      to_peer_id: ME,
+      status: 'pending',
+      created_at: new Date().toISOString(),
+    });
+
+    expect(reconcileFriendAcceptFromPresence(ALICE)).toBe(false);
+
+    expect(getState().friend_requests.find(r => r.id === 'in-1')?.status).toBe('pending');
+    expect(getState().friends.length).toBe(0);
+  });
+
+  it('is a no-op for peers with no pending request (and for self)', () => {
+    expect(reconcileFriendAcceptFromPresence(ALICE)).toBe(false);
+    expect(reconcileFriendAcceptFromPresence(ME)).toBe(false);
+    expect(getState().friends.length).toBe(0);
   });
 });

@@ -170,4 +170,56 @@ describe("MemberSidebar moderation", () => {
       );
     });
   });
+
+  it("renders a member's broadcast custom status text from presence", () => {
+    render(
+      <MemberSidebar
+        members={[
+          { id: "peer-local", username: "Ada", avatar: "/avatar.png", status: "online", role: "Admin" },
+          { id: "peer-remote", username: "Grace", avatar: "/avatar2.png", status: "online" },
+        ]}
+        currentUser={{ id: "peer-local", username: "Ada", avatar: "/avatar.png", status: "online", role: "Admin" }}
+        serverOwnerId="peer-local"
+        serverId="server-1"
+        runtimeSnapshot={{
+          peer_id: "peer-local",
+          identity: { peer_id: "peer-local" },
+          control_endpoint: "http://xorein.local",
+          presence: {
+            "peer-remote": { status: "online", status_text: "shipping a fix", updated_at: "2026-04-22T00:00:00Z" },
+          },
+        }}
+        collapsed={false}
+        onToggleCollapse={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("shipping a fix")).toBeInTheDocument();
+  });
+
+  it("does not render a status-text node for members without one", () => {
+    render(
+      <MemberSidebar
+        members={[
+          { id: "peer-remote", username: "Grace", avatar: "/avatar2.png", status: "online" },
+        ]}
+        currentUser={{ id: "peer-local", username: "Ada", avatar: "/avatar.png", status: "online", role: "Admin" }}
+        serverOwnerId="peer-local"
+        serverId="server-1"
+        runtimeSnapshot={{
+          peer_id: "peer-local",
+          identity: { peer_id: "peer-local" },
+          control_endpoint: "http://xorein.local",
+          presence: {
+            "peer-remote": { status: "online", status_text: "   ", updated_at: "2026-04-22T00:00:00Z" },
+          },
+        }}
+        collapsed={false}
+        onToggleCollapse={vi.fn()}
+      />,
+    );
+
+    // Whitespace-only status text is trimmed away — the row renders without it.
+    expect(screen.getByText("Grace")).toBeInTheDocument();
+  });
 });

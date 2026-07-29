@@ -43,8 +43,7 @@ import {
 } from '@/lib/xoreinControl';
 import { consumePendingNativeDeepLinks } from '@/lib/xoreinControl';
 import { useRuntimeMutations } from '@/hooks/runtime/useRuntimeMutations';
-import { parseJoinDeepLink, buildJoinDeepLink } from '@/protocol/deeplink';
-import { computeInviteToken } from '@/native/sync/invite';
+import { parseJoinDeepLink } from '@/protocol/deeplink';
 import { copyTextToClipboardSafely } from '@/components/contextMenuUtils';
 import { useToast } from '@/lib/toastBus';
 import { handleNativeDeepLink } from '@/protocol/nativeDeepLink';
@@ -256,18 +255,13 @@ export const Layout: React.FC = () => {
   const normalizedUsers = normalizeLayoutUsers(users);
 
   const [bgSeed, setBgSeed] = usePersistentState<string>('harmolyn:settings:bg-seed', 'nexus-default');
-  const [channelKinds, setChannelKinds] = useState<Record<string, ChannelKind>>({});
-  const setChannelKind = useCallback((channelId: string, kind: ChannelKind) => {
-    setChannelKinds((prev) => {
-      const next = { ...prev };
-      if (kind === 'text') {
-        delete next[channelId];
-      } else {
-        next[channelId] = kind;
-      }
-      return next;
-    });
-  }, [setChannelKinds]);
+  // Channel kind (text/forum/announcement) is SERVER STRUCTURE, not per-client view
+  // state: it lives on the channel record in the native store, so it persists across
+  // reloads and propagates to every member exactly like a rename. Absent kind = text
+  // (backward compatible with channels created before the field existed).
+  const setChannelKind = useCallback((serverId: string, channelId: string, kind: ChannelKind) => {
+    void runtimeMutations.updateChannel?.(serverId, channelId, { kind });
+  }, [runtimeMutations]);
   const [themeStyle, setThemeStyle] = useState<React.CSSProperties>({});
 
   useEffect(() => {
@@ -568,13 +562,16 @@ export const Layout: React.FC = () => {
 
   const handleCopyInvite = useCallback(async () => {
     const serverId = state.activeServerId;
-    const rs = shellData.runtimeSnapshot?.servers?.find((s) => s.id === serverId);
-    if (!rs) { toast.error('No server selected.'); return; }
-    const token = rs.invite_secret ? computeInviteToken(rs.invite_secret, rs.id) : undefined;
-    const link = rs.owner_peer_id ? buildJoinDeepLink(rs.id, rs.owner_peer_id, rs.name, token) : '';
-    if (link && await copyTextToClipboardSafely(link)) toast.success('Invite link copied to clipboard.', 'Invite');
-    else toast.error('Could not copy the invite link.');
-  }, [state.activeServerId, shellData.runtimeSnapshot, toast]);
+    if (!serverId || serverId === 'home' || serverId === 'explore') { toast.error('No server selected.'); return; }
+    // Mint from the live native store — the runtime snapshot strips invite_secret,
+    // so a snapshot-derived link would carry no capability token and be rejected.
+    const link = runtimeMutations.inviteLink?.(serverId) ?? '';
+    if (link && await copyTextToClipboardSafely(link)) {
+      toast.success('Invite link copied to clipboard.', 'Invite');
+    } else {
+      toast.error('Only the server owner can mint invite links (or invites are revoked).');
+    }
+  }, [state.activeServerId, runtimeMutations, toast]);
 
   const handleLeaveServer = useCallback(async () => {
     const serverId = state.activeServerId;
@@ -1155,7 +1152,13 @@ export const Layout: React.FC = () => {
                       />
                     );
                   }
-                  const rawKind = channelKinds[activeChannel.id] ?? activeChannel.type;
+                  // The synced kind lives on the runtime channel record (owner-set,
+                  // P2P-propagated, persisted). Fall back to the mapped channel type
+                  // for records that don't carry a kind.
+                  const runtimeServer = shellData.runtimeSnapshot?.servers?.find((srv) => srv.id === state.activeServerId);
+                  const rawKind = (!isDM
+                    ? runtimeServer?.channels?.[activeChannel.id]?.kind
+                    : undefined) ?? activeChannel.type;
                   const channelKind: ChannelKind =
                     (!isDM && rawKind === 'forum' && hasForumChannels) ? 'forum'
                     : (!isDM && rawKind === 'announcement' && hasAnnouncementChannels) ? 'announcement'
@@ -1165,8 +1168,13 @@ export const Layout: React.FC = () => {
                     ...(hasForumChannels ? (['forum'] as ChannelKind[]) : []),
                     ...(hasAnnouncementChannels ? (['announcement'] as ChannelKind[]) : []),
                   ];
-                  const kindSwitcher = !isDM
-                    ? <ChannelKindSwitcher value={channelKind} available={availableKinds} onChange={(k) => setChannelKind(activeChannel.id, k)} />
+                  // Channel type is owner-authoritative server structure (like a
+                  // rename): only the owner gets the switcher — a member's local
+                  // change would never sync and would be reverted by the next
+                  // owner broadcast.
+                  const isServerOwner = Boolean(currentPeerId) && runtimeServer?.owner_peer_id === currentPeerId;
+                  const kindSwitcher = !isDM && isServerOwner && activeServer
+                    ? <ChannelKindSwitcher value={channelKind} available={availableKinds} onChange={(k) => setChannelKind(activeServer.id, activeChannel.id, k)} />
                     : null;
 
                   if (channelKind === 'forum') {

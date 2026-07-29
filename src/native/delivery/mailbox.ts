@@ -2,6 +2,7 @@
 // Byte-compatible with Go oracle: pkg/v0_1/nat/store_forward.go.
 import { hmac } from '@noble/hashes/hmac.js';
 import { sha256 } from '@noble/hashes/sha2.js';
+import { supportNodeApiBase } from '../nodeOrigin.js';
 
 // ── Constants (must match Go oracle) ──────────────────────────────────────
 
@@ -12,8 +13,6 @@ const MIN_MAILBOX_SECRET = 16;
 
 // Relay frame magic: 4 ASCII + 1 version byte = "xrn1\x01".
 const RELAY_FRAME_MAGIC = new Uint8Array([0x78, 0x72, 0x6e, 0x31, 0x01]);
-
-const CONTROL_BASE = 'https://node.xorein.com/v1';
 
 // ── Token derivation ───────────────────────────────────────────────────────
 
@@ -83,7 +82,7 @@ export function unwrapRelayBody(framed: Uint8Array): Uint8Array {
 export async function mailboxStore(token: string, ciphertext: Uint8Array): Promise<void> {
   const framed = wrapRelayBody(ciphertext);
   const body_b64 = base64urlNoPad(framed);
-  const res = await fetch(`${CONTROL_BASE}/mailbox/store`, {
+  const res = await fetch(`${supportNodeApiBase()}/mailbox/store`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ token, body: body_b64 }),
@@ -97,7 +96,7 @@ export async function mailboxStore(token: string, ciphertext: Uint8Array): Promi
  */
 export async function mailboxDrain(tokens: string[]): Promise<Uint8Array[]> {
   if (tokens.length === 0) return [];
-  const res = await fetch(`${CONTROL_BASE}/mailbox/drain`, {
+  const res = await fetch(`${supportNodeApiBase()}/mailbox/drain`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ tokens }),

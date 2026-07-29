@@ -15,19 +15,40 @@ export class DeeplinkValidationError extends Error {
         this.name = "DeeplinkValidationError";
     }
 }
+const MAX_INVITE_SEEDS = 8;
+const PEER_ID_PATTERN = /^[A-Za-z0-9]{20,120}$/;
 /**
  * Build a shareable join deeplink that carries the owner's peer id so a joiner
  * can dial the owner directly over the relay circuit (P2P) and pull the server.
- *   aether://join/<serverId>?invite=<base64url({v,owner,name})>
+ *   xorein://join/<serverId>?invite=<base64url({v,owner,name})>
  */
-export function buildJoinDeepLink(serverId, ownerPeerId, serverName, inviteToken) {
+export function buildJoinDeepLink(serverId, ownerPeerId, serverName, inviteToken, seeds) {
+    const cleanSeeds = sanitizeSeeds(seeds, ownerPeerId);
     const payload = JSON.stringify({
         v: 1,
         owner: ownerPeerId,
         ...(serverName ? { name: serverName } : {}),
         ...(inviteToken ? { tok: inviteToken } : {}),
+        ...(cleanSeeds.length ? { seeds: cleanSeeds } : {}),
     });
-    return `aether://join/${serverId}?invite=${encodeBase64Url(payload)}`;
+    return `xorein://join/${serverId}?invite=${encodeBase64Url(payload)}`;
+}
+/** Normalize a seed list: valid distinct peer-ids, excluding the owner, capped. */
+function sanitizeSeeds(seeds, ownerPeerId) {
+    if (!Array.isArray(seeds))
+        return [];
+    const out = [];
+    const seen = new Set(ownerPeerId ? [ownerPeerId] : []);
+    for (const raw of seeds) {
+        const s = trimString(raw);
+        if (!s || seen.has(s) || !PEER_ID_PATTERN.test(s))
+            continue;
+        seen.add(s);
+        out.push(s);
+        if (out.length >= MAX_INVITE_SEEDS)
+            break;
+    }
+    return out;
 }
 /**
  * Parse an invite (aether or xorein) and surface the owner peer id + server name
@@ -40,6 +61,7 @@ export function parseInviteMetadata(raw) {
     let ownerPeerId;
     let serverName;
     let inviteToken;
+    let seeds = [];
     if (invite) {
         try {
             const decoded = JSON.parse(decodeBase64Url(invite));
@@ -48,6 +70,7 @@ export function parseInviteMetadata(raw) {
                 const manifest = isRecord(decoded.manifest) ? decoded.manifest : undefined;
                 serverName = trimString(decoded.name) || (manifest ? trimString(manifest.name) : '') || undefined;
                 inviteToken = trimString(decoded.tok) || trimString(decoded.invite_token) || undefined;
+                seeds = sanitizeSeeds(Array.isArray(decoded.seeds) ? decoded.seeds : undefined, ownerPeerId);
             }
         }
         catch { /* opaque/legacy invite — owner unknown, caller falls back */ }
@@ -57,6 +80,7 @@ export function parseInviteMetadata(raw) {
         ...(ownerPeerId ? { ownerPeerId } : {}),
         ...(serverName ? { serverName } : {}),
         ...(inviteToken ? { inviteToken } : {}),
+        ...(seeds.length ? { seeds } : {}),
     };
 }
 export function parseJoinDeepLink(raw) {
@@ -74,9 +98,12 @@ export function parseJoinDeepLink(raw) {
         case "aether:":
             return parseAetherJoinDeepLink(parsed);
         case "xorein:":
+            // xorein://join/<id>?invite=... is the canonical modern format
+            if (parsed.hostname.toLowerCase() === "join")
+                return parseAetherJoinDeepLink(parsed);
             return parseXoreinInviteDeepLink(parsed);
         default:
-            throw new DeeplinkValidationError("invalid scheme, expected aether or xorein");
+            throw new DeeplinkValidationError("invalid scheme, expected xorein or aether");
     }
 }
 function parseAetherJoinDeepLink(parsed) {
