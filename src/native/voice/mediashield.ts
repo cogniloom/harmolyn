@@ -15,18 +15,60 @@ export const SFRAME_HEADER_SIZE = KID_SIZE + 8; // 16 bytes
 const LABEL_MEDIASHIELD       = 'xorein/mediashield/v1';
 const LABEL_MEDIASHIELD_NONCE = LABEL_MEDIASHIELD + '/nonce';
 
+/**
+ * Bits of the 48-bit frame counter reserved for a per-sender SLOT (top bits),
+ * leaving the low CTR_BITS for that sender's own counter. One `key` can be
+ * handed to several INDEPENDENT encrypting senders at once (one Worker per
+ * RTCRtpSender: one per local track × one per mesh peer connection, for a
+ * Crowd channel-wide key shared across the whole mesh). Each Worker keeps its
+ * own in-worker PeerKey — structured-clone gives it a COPY of `key`, not a
+ * live-shared counter — so without a disjoint range every sender would
+ * restart its counter at 0 under the SAME key, producing colliding
+ * (key, nonce) pairs the moment a call has more than one active sender (e.g.
+ * mic + camera to the same peer, or 3+ participants). AES-GCM nonce reuse
+ * under a fixed key is the "forbidden attack": it leaks the XOR of the
+ * colliding plaintexts and the GHASH authentication subkey, letting an
+ * observer of any two colliding frames forge future MediaShield frames.
+ * Callers that don't need a disjoint range (decrypt-side keys never allocate
+ * counters; the encodedStreams fallback path shares one live PeerKey object
+ * across all its senders in-process) just use the default slot 0.
+ * 2^8 slots is far more than any realistic session's (track × mesh-peer)
+ * count; 2^40 counters per slot is far more than any session could send.
+ */
+const SLOT_BITS = 12n;
+const CTR_BITS = 48n - SLOT_BITS;
+export const MAX_SENDER_SLOTS = 1 << Number(SLOT_BITS); // 4096
+
 // ── PeerKey ────────────────────────────────────────────────────────────────
 
 export interface PeerKey {
   peerId: string;
   key: Uint8Array;          // 32 B; AES-128 uses first 16
   frameCounter: bigint;     // next frame counter for encrypt
+  maxFrameCounter: bigint;  // last counter value this instance may use (slot ceiling)
   maxDecryptedCounter: bigint;
   hasDecrypted: boolean;
 }
 
-export function newPeerKey(peerId: string, key: Uint8Array): PeerKey {
-  return { peerId, key: new Uint8Array(key), frameCounter: 0n, maxDecryptedCounter: 0n, hasDecrypted: false };
+/**
+ * `counterSlot` (0..MAX_SENDER_SLOTS-1) partitions the frame-counter space so
+ * multiple independently-counting PeerKey instances can safely encrypt under
+ * the SAME `key` concurrently — see SLOT_BITS above. Every caller that spawns
+ * more than one concurrent ENCRYPTING PeerKey for the same key MUST give each
+ * a distinct slot. Decrypt-only instances never allocate counters, so they
+ * can always use the default.
+ */
+export function newPeerKey(peerId: string, key: Uint8Array, counterSlot = 0): PeerKey {
+  if (counterSlot < 0 || counterSlot >= MAX_SENDER_SLOTS) {
+    throw new Error(`mediashield: counterSlot out of range: ${counterSlot}`);
+  }
+  const start = BigInt(counterSlot) << CTR_BITS;
+  return {
+    peerId, key: new Uint8Array(key),
+    frameCounter: start,
+    maxFrameCounter: start + ((1n << CTR_BITS) - 1n),
+    maxDecryptedCounter: 0n, hasDecrypted: false,
+  };
 }
 
 // ── KID + nonce ────────────────────────────────────────────────────────────
@@ -61,7 +103,7 @@ export function encryptFrame(
   rtpHeader: Uint8Array,
   plaintext: Uint8Array,
 ): [Uint8Array, Uint8Array] {
-  if (pk.frameCounter > MAX_FRAME_COUNTER) throw new Error('mediashield: frame counter overflow');
+  if (pk.frameCounter > pk.maxFrameCounter) throw new Error('mediashield: frame counter overflow');
   const nonce = deriveNonce(pk.key, pk.frameCounter);
   const sframeHeader = buildSFrameHeader(pk.peerId, pk.frameCounter);
   const aad = concat(sframeHeader, rtpHeader);

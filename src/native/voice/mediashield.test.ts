@@ -76,3 +76,76 @@ describe('MediaShield SFrame E2EE', () => {
     expect(() => decryptFrame(receiver, rtp, hdr, ct)).toThrow('replay');
   });
 });
+
+describe('MediaShield — per-sender counter slots (nonce-reuse regression)', () => {
+  // Regression for a critical bug: every scriptTransform Worker builds its OWN
+  // in-worker PeerKey from cloned key bytes (structured clone, not a live
+  // reference), so multiple concurrent senders under the SAME key (mic + camera
+  // to one peer, or one Crowd sender key shared across a mesh) each restarted
+  // their frame counter at 0 — producing colliding (key, nonce) AES-GCM inputs,
+  // the "forbidden attack" that leaks the authentication key and breaks both
+  // confidentiality and integrity. newPeerKey's counterSlot partitions the
+  // 48-bit counter space so independently-counting instances under the same key
+  // can never collide.
+
+  it('different slots under the SAME key start at disjoint, non-colliding counters', () => {
+    const key = new Uint8Array(32).fill(0x11);
+    const mic = newPeerKey('me', key, 0);
+    const camera = newPeerKey('me', key, 1);
+    expect(mic.frameCounter).not.toBe(camera.frameCounter);
+    expect(mic.frameCounter).toBeLessThan(camera.frameCounter);
+  });
+
+  it('the same nonce/frame-counter is never reused across two senders under the same key', () => {
+    const key = new Uint8Array(32).fill(0x22);
+    const mic = newPeerKey('me', key, 0);
+    const camera = newPeerKey('me', key, 1);
+
+    // Simulate a real session: several frames from each independently-counting
+    // sender, interleaved, exactly as would happen with two live Workers.
+    const seen = new Set<string>();
+    for (let i = 0; i < 5; i++) {
+      const [micHdr] = encryptFrame(mic, rtp, new Uint8Array([1]));
+      const [camHdr] = encryptFrame(camera, rtp, new Uint8Array([2]));
+      const micNonce = deriveNonce(key, readCounter(micHdr));
+      const camNonce = deriveNonce(key, readCounter(camHdr));
+      const micKey = `${[...micNonce]}`;
+      const camKey = `${[...camNonce]}`;
+      expect(seen.has(micKey)).toBe(false);
+      expect(seen.has(camKey)).toBe(false);
+      seen.add(micKey);
+      seen.add(camKey);
+    }
+  });
+
+  it('a slotted sender still round-trips normally with a receiver decrypting its stream', () => {
+    const key = new Uint8Array(32).fill(0x33);
+    const camera = newPeerKey('me', key, 7);
+    const receiver = newPeerKey('me', key); // receiver just tracks whatever counters arrive
+
+    const [h1, c1] = encryptFrame(camera, rtp, new TextEncoder().encode('frame one'));
+    expect(new TextDecoder().decode(decryptFrame(receiver, rtp, h1, c1))).toBe('frame one');
+    const [h2, c2] = encryptFrame(camera, rtp, new TextEncoder().encode('frame two'));
+    expect(new TextDecoder().decode(decryptFrame(receiver, rtp, h2, c2))).toBe('frame two');
+  });
+
+  it('a slot cannot overflow into the next slot\'s counter range', () => {
+    const key = new Uint8Array(32).fill(0x44);
+    const pk = newPeerKey('me', key, 2);
+    // Push right up to this slot's ceiling.
+    pk.frameCounter = pk.maxFrameCounter;
+    encryptFrame(pk, rtp, new Uint8Array([1])); // consumes the last valid counter
+    expect(pk.frameCounter).toBe(pk.maxFrameCounter + 1n);
+    expect(() => encryptFrame(pk, rtp, new Uint8Array([1]))).toThrow('overflow');
+  });
+
+  it('rejects an out-of-range counterSlot', () => {
+    const key = new Uint8Array(32);
+    expect(() => newPeerKey('me', key, -1)).toThrow();
+  });
+});
+
+function readCounter(sframeHeader: Uint8Array): bigint {
+  const view = new DataView(sframeHeader.buffer, sframeHeader.byteOffset + 8, 8);
+  return (BigInt(view.getUint32(0, false)) << 32n) | BigInt(view.getUint32(4, false));
+}

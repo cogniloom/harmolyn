@@ -605,7 +605,9 @@ export class XoreinNativeEngine {
         }
         if (data?.ok && data.server) {
           const nextServer = data.server as XoreinRuntimeServer;
-          applyJoinedServer(nextServer, (data.messages ?? []) as XoreinRuntimeMessage[]);
+          if (!applyJoinedServer(s.id, nextServer, (data.messages ?? []) as XoreinRuntimeMessage[])) {
+            continue; // owner answered for a different server — ignore
+          }
           changed = true;
           // If the re-pulled snapshot advanced the Crowd epoch while we were offline (a
           // rotation we missed — e.g. a member was kicked), install the new root into the
@@ -740,7 +742,9 @@ export class XoreinNativeEngine {
         );
         if (data?.ok && data.server) {
           const server = data.server as XoreinRuntimeServer;
-          applyJoinedServer(server, (data.messages ?? []) as XoreinRuntimeMessage[]);
+          if (!applyJoinedServer(meta.serverId, server, (data.messages ?? []) as XoreinRuntimeMessage[])) {
+            throw new Error('join: owner returned a different server than the invite');
+          }
           // Record the owner as a reachable known peer (with the circuit addresses
           // it advertised) so future delivery works even across different relays.
           upsertPeer({
@@ -782,7 +786,9 @@ export class XoreinNativeEngine {
         );
         if (data?.ok && data.server) {
           const server = data.server as XoreinRuntimeServer;
-          applyJoinedServer(server, (data.messages ?? []) as XoreinRuntimeMessage[]);
+          if (!applyJoinedServer(meta.serverId, server, (data.messages ?? []) as XoreinRuntimeMessage[])) {
+            continue; // seed answered for a different server — try the next one
+          }
           upsertPeer({
             peer_id: seed,
             role: 'peer',

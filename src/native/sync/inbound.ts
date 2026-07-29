@@ -213,7 +213,14 @@ function handleChatSend(payload: Record<string, unknown>, remotePeerId: string):
       ensureDm(scopeId, [me, senderId]);
       dm = getState().dms[scopeId];
     }
-    if (!dm || !(dm.participants ?? []).includes(me)) return;
+    // Both ends must belong to the thread. Checking only `me` is not enough: the
+    // scope id is derived deterministically from the two peer ids, so ANY peer can
+    // compute the id of a conversation between two other people, open a normal Seal
+    // session with us, and label its message with that scope — landing a message
+    // inside a private thread it is not part of. (The server branch below already
+    // gates on sender membership for the same reason.)
+    const participants = dm?.participants ?? [];
+    if (!dm || !participants.includes(me) || !participants.includes(senderId)) return;
   } else {
     const server = Object.values(state.servers).find(s =>
       Object.keys(s.channels ?? {}).includes(scopeId),

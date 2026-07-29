@@ -21,15 +21,31 @@ function varint(n: number): Uint8Array {
   return new Uint8Array(buf);
 }
 
+/** Returned as the value when a varint is truncated, overlong, or out of safe range. */
+const VARINT_INVALID = -1;
+
+/**
+ * Read a protobuf varint. Returns [value, nextOffset], or [VARINT_INVALID,
+ * buf.length] for any malformed encoding so the caller's `off < buf.length`
+ * loop terminates immediately (fail-closed).
+ *
+ * Accumulation is unsigned on purpose: `<<` is a 32-bit SIGNED operation in JS,
+ * so `(b & 0x7f) << 28` can go negative. A negative length flows into
+ * `off += len` and moves the read offset BACKWARDS, spinning the decode loop
+ * forever — a remote peer could hang the tab with one crafted frame.
+ */
 function readVarint(buf: Uint8Array, off: number): [number, number] {
   let result = 0, shift = 0;
   while (off < buf.length) {
     const b = buf[off++];
-    result |= (b & 0x7f) << shift;
-    if (!(b & 0x80)) break;
+    result += (b & 0x7f) * 2 ** shift;
+    if (!(b & 0x80)) {
+      return Number.isSafeInteger(result) ? [result, off] : [VARINT_INVALID, buf.length];
+    }
     shift += 7;
+    if (shift > 63) return [VARINT_INVALID, buf.length]; // overlong varint
   }
-  return [result, off];
+  return [VARINT_INVALID, buf.length]; // truncated: no terminating byte
 }
 
 const enc = new TextEncoder();
@@ -89,14 +105,16 @@ export function decodePeerStreamRequest(buf: Uint8Array): PeerStreamRequest {
     if (wireType === 2) {
       let len: number;
       [len, off] = readVarint(buf, off);
+      if (len < 0 || off + len > buf.length) break; // malformed or truncated field
       const value = buf.subarray(off, off + len);
       off += len;
       if (fieldNum === 1) req.operation = dec.decode(value);
       else if (fieldNum === 2) req.payload = value;
       else if (fieldNum === 7) req.requestId = dec.decode(value);
     } else if (wireType === 0) {
-      let _v: number;
-      [_v, off] = readVarint(buf, off);
+      let v: number;
+      [v, off] = readVarint(buf, off);
+      if (v < 0) break;
     } else {
       break;
     }
@@ -141,14 +159,16 @@ export function decodePeerStreamResponse(buf: Uint8Array): PeerStreamResponse {
     if (wireType === 2) {
       let len: number;
       [len, off] = readVarint(buf, off);
+      if (len < 0 || off + len > buf.length) break; // malformed or truncated field
       const value = buf.subarray(off, off + len);
       off += len;
       if (fieldNum === 4) resp.payload = value;
       else if (fieldNum === 5) resp.error = decodeError(value);
       else if (fieldNum === 6) resp.requestId = dec.decode(value);
     } else if (wireType === 0) {
-      let _: number;
-      [_, off] = readVarint(buf, off);
+      let v: number;
+      [v, off] = readVarint(buf, off);
+      if (v < 0) break;
     } else {
       break; // unsupported wire type, stop
     }
@@ -166,10 +186,12 @@ function decodeError(buf: Uint8Array): PeerStreamError {
     if (wireType === 0) {
       let val: number;
       [val, off] = readVarint(buf, off);
+      if (val < 0) break;
       if (fieldNum === 1) code = val;
     } else if (wireType === 2) {
       let len: number;
       [len, off] = readVarint(buf, off);
+      if (len < 0 || off + len > buf.length) break; // malformed or truncated field
       const value = buf.subarray(off, off + len);
       off += len;
       if (fieldNum === 2) message = dec.decode(value);

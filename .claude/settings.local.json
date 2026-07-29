@@ -1,5 +1,5 @@
 {
-  "model": "opusplan",
+  "model": "claude-fable-5[1m]",
   "effortLevel": "high",
   "permissions": {
     "defaultMode": "bypassPermissions"

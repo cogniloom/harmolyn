@@ -6,6 +6,7 @@ import { ratchetEncrypt, ratchetDecrypt, pruneSkipList, HEADER_SIZE, SKIPPED_KEY
 import { generateX25519Keypair } from './curve';
 import { deriveKey } from './kdf';
 import { x25519 } from '@noble/curves/ed25519.js';
+import { chacha20poly1305 } from '@noble/ciphers/chacha.js';
 
 const enc = (s: string) => new TextEncoder().encode(s);
 const dec = (b: Uint8Array) => new TextDecoder().decode(b);
@@ -25,11 +26,18 @@ async function establishedPair() {
  * root/send chain). The JS implementation only performs DH steps on receive, so
  * tests use this to act as a stepping remote implementation and drive the
  * receive-side dhRatchetStep branch.
+ *
+ * Both `baseRootKey` and `remotePub` must be the RECEIVER's (the other party's)
+ * CURRENT values, not `s`'s own — `s.rootKey`/`s.remoteRatchetPub` are this party's
+ * possibly-stale record of them. In particular, since the responder's send-chain
+ * bootstrap fix, a fresh responder's root and pub move past the shared X3DH root
+ * and its SPK from the moment its session is constructed, before it has sent
+ * anything the other side could have learned those from.
  */
-function forceSenderDhStep(s: RatchetState): void {
+function forceSenderDhStep(s: RatchetState, baseRootKey: Uint8Array, remotePub: Uint8Array): void {
   const { priv, pub } = generateX25519Keypair();
-  const dhOut = x25519.getSharedSecret(priv, s.remoteRatchetPub);
-  const okm = deriveKey(s.rootKey, dhOut, 'xorein/seal/v1/ratchet-step', 64);
+  const dhOut = x25519.getSharedSecret(priv, remotePub);
+  const okm = deriveKey(baseRootKey, dhOut, 'xorein/seal/v1/ratchet-step', 64);
   s.prevSendChainLen = s.sendCounter;
   s.sendCounter = 0;
   s.rootKey = okm.slice(0, 32);
@@ -75,7 +83,7 @@ describe('PrekeyBundle', () => {
 });
 
 describe('X3DH key agreement', () => {
-  it('initiator and responder derive the same root + chain keys', async () => {
+  it('initiator send chain = responder recv chain', async () => {
     const aliceId = await generateIdentity();
     const bobId   = await generateIdentity();
 
@@ -88,10 +96,84 @@ describe('X3DH key agreement', () => {
     // Bob responds.
     const bobRs = x3dhRespond(im, bobPriv, bundle, bobId.edSeed, aliceId.edPub);
 
-    // Root keys must match.
-    expect([...aliceRs.rootKey]).toEqual([...bobRs.rootKey]);
-    // Initiator's send chain = responder's recv chain.
+    // Initiator's send chain = responder's recv chain (the "for free" chain X3DH's
+    // root-key HKDF splits out — shared verbatim since both sides derive it from the
+    // same hybrid_master).
     expect([...aliceRs.sendChainKey]).toEqual([...bobRs.recvChainKey]);
+    // The responder's root has ALREADY moved past the initiator's: it bootstraps its
+    // own send chain immediately (see the zero-chain-key regression tests below), a
+    // ratchet step the initiator has not yet performed on her side.
+    expect([...aliceRs.rootKey]).not.toEqual([...bobRs.rootKey]);
+  });
+});
+
+describe('Double Ratchet — responder send-chain bootstrap (zero-chain-key fix)', () => {
+  it('the responder never has an all-zero send chain, even before it decrypts anything', async () => {
+    const aliceId = await generateIdentity();
+    const bobId   = await generateIdentity();
+    const { bundle, priv: bobPriv } = buildBundle(bobId.peerId, identitySigningKey(bobId));
+    const { im } = x3dhInitiate(aliceId.edSeed, bundle);
+    const bobRs = x3dhRespond(im, bobPriv, bundle, bobId.edSeed, aliceId.edPub);
+
+    expect(bobRs.sendChainKey.every(b => b === 0)).toBe(false);
+  });
+
+  it('a passive observer holding only the public all-zero key cannot read the responder first reply', async () => {
+    const aliceId = await generateIdentity();
+    const bobId   = await generateIdentity();
+    const { bundle, priv: bobPriv } = buildBundle(bobId.peerId, identitySigningKey(bobId));
+    const { im, rs: aliceRs } = x3dhInitiate(aliceId.edSeed, bundle);
+    const bobRs = x3dhRespond(im, bobPriv, bundle, bobId.edSeed, aliceId.edPub);
+
+    // Bob replies FIRST, before ever decrypting anything from Alice.
+    const [header, ct] = ratchetEncrypt(bobRs, enc('top secret reply'));
+
+    // Attacker tries the well-known all-zero chain key — the entire pre-fix exploit.
+    const okm = deriveKey(new Uint8Array(32), new Uint8Array([0x01]), 'xorein/seal/v1/message-key', 64);
+    const mk = okm.slice(0, 32);
+    const nonce = header.slice(41, 53);
+    expect(() => chacha20poly1305(mk, nonce, header).decrypt(ct)).toThrow();
+
+    // The legitimate initiator can still read it once she processes the rotation.
+    expect(dec(ratchetDecrypt(aliceRs, header, ct))).toBe('top secret reply');
+  });
+
+  it('responder can reply before ever receiving anything, and the initiator can still decrypt', async () => {
+    const aliceId = await generateIdentity();
+    const bobId   = await generateIdentity();
+    const { bundle, priv: bobPriv } = buildBundle(bobId.peerId, identitySigningKey(bobId));
+    const { im, rs: aliceRs } = x3dhInitiate(aliceId.edSeed, bundle);
+    const bobRs = x3dhRespond(im, bobPriv, bundle, bobId.edSeed, aliceId.edPub);
+
+    const [h, ct] = ratchetEncrypt(bobRs, enc('hi alice, bob here'));
+    expect(dec(ratchetDecrypt(aliceRs, h, ct))).toBe('hi alice, bob here');
+
+    // The session still works normally in both directions afterwards.
+    const [h2, ct2] = ratchetEncrypt(aliceRs, enc('hi bob'));
+    expect(dec(ratchetDecrypt(bobRs, h2, ct2))).toBe('hi bob');
+  });
+
+  it('survives two independent DH ratchet steps on each side (root-chaining regression)', async () => {
+    // Every reply here rotates the sender's ratchet keypair — the responder via
+    // this fix's bootstrap, the initiator via her first receive-triggered step —
+    // so by the 4th message BOTH sides have independently run dhRatchetStep. A
+    // root update that only carries the first (recv) KDF_RK call forward and
+    // drops the second (send) call's output desyncs the two sides exactly here:
+    // this reproduces the "invalid tag" regression the fix above resolved.
+    const aliceId = await generateIdentity();
+    const bobId   = await generateIdentity();
+    const { bundle, priv: bobPriv } = buildBundle(bobId.peerId, identitySigningKey(bobId));
+    const { im, rs: aliceRs } = x3dhInitiate(aliceId.edSeed, bundle);
+    const bobRs = x3dhRespond(im, bobPriv, bundle, bobId.edSeed, aliceId.edPub);
+
+    const [h1, c1] = ratchetEncrypt(aliceRs, enc('w1'));            // alice's original chain
+    expect(dec(ratchetDecrypt(bobRs, h1, c1))).toBe('w1');
+    const [h2, c2] = ratchetEncrypt(bobRs, enc('w2'));               // bob's bootstrap chain
+    expect(dec(ratchetDecrypt(aliceRs, h2, c2))).toBe('w2');         // alice's 1st DH step
+    const [h3, c3] = ratchetEncrypt(aliceRs, enc('w3'));             // alice's rotated chain
+    expect(dec(ratchetDecrypt(bobRs, h3, c3))).toBe('w3');           // bob's 1st DH step
+    const [h4, c4] = ratchetEncrypt(bobRs, enc('w4'));               // bob's rotated chain
+    expect(dec(ratchetDecrypt(aliceRs, h4, c4))).toBe('w4');         // alice's 2nd DH step — the regression
   });
 });
 
@@ -238,7 +320,7 @@ describe('Double Ratchet — skipped-key retention bounds', () => {
     // Alice DH-steps (the JS impl only steps on receive, so emulate a stepping
     // remote sender); bob's receive-side step keeps ONLY the immediately-previous
     // chain's skipped keys.
-    forceSenderDhStep(aliceRs);
+    forceSenderDhStep(aliceRs, bobRs.rootKey, bobRs.sendRatchetPub);
     const [h3, c3] = ratchetEncrypt(aliceRs, enc('m3'));
     expect(dec(ratchetDecrypt(bobRs, h3, c3))).toBe('m3');
     expect(bobRs.skipList.size).toBe(1); // ancient-chain residue purged…

@@ -8,11 +8,11 @@
 //   • a genuinely Crowd-encrypted message is stored carrying the real mode so the
 //     UI badge reflects encryption that actually happened.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { initStore, getState, setNativeIdentity, addServer, updateServer, addFriendRequest } from '../state/store.js';
+import { initStore, getState, setNativeIdentity, addServer, updateServer, addFriendRequest, ensureDm } from '../state/store.js';
 import { ChannelCrypto } from '../crowd/channel.js';
 import { SealSessions } from '../seal/session.js';
 import { generateSigningIdentity } from '../crypto/hybrid.js';
-import { registerScopeCrypto, resetScopeCrypto, encryptChannelEnvelope, applyCrowdRoot } from './secureEnvelope.js';
+import { registerScopeCrypto, resetScopeCrypto, encryptChannelEnvelope, encryptDmEnvelope, applyCrowdRoot } from './secureEnvelope.js';
 import { ingestMailboxChat, classifyChannelNotification, handleSyncRequest, reconcileFriendAcceptFromPresence } from './inbound.js';
 
 const ME = 'me';
@@ -246,6 +246,66 @@ describe('inbound — fail-closed encryption policy (A1)', () => {
     expect(stored!.body).toBe('real ciphertext body');
     expect(stored!.security_mode).toBe('crowd');
     expect(stored!.encrypted).toBe(true);
+  });
+});
+
+describe('inbound DM — scope cross-labeling (both participants must belong to the thread)', () => {
+  const BOB = 'bob';
+  const MALLORY = 'mallory';
+  const DM_ID = 'dm-me-bob'; // deterministically derived from (ME, BOB) in real code
+
+  let meSeal: SealSessions;
+
+  beforeEach(async () => {
+    localStorage.clear();
+    initStore();
+    setNativeIdentity({ id: ME, peer_id: ME });
+    meSeal = new SealSessions(ME, generateSigningIdentity());
+    // An existing 1:1 conversation between ME and BOB — the target Mallory will
+    // try to inject a message into by reusing its scope id.
+    ensureDm(DM_ID, [ME, BOB]);
+  });
+  afterEach(() => resetScopeCrypto());
+
+  it('drops a message from a non-participant who labels it with someone else\'s DM scope id', async () => {
+    // Mallory is a real, unrelated contact of ME's (a normal Seal session — DMing
+    // ME is not gated on anything) but has never spoken with Bob and is not part
+    // of DM_ID. The DM scope id is derived deterministically from the two peer
+    // ids, so Mallory CAN compute DM_ID even though she isn't a participant.
+    const mallorySeal = new SealSessions(MALLORY, generateSigningIdentity());
+    registerScopeCrypto({ seal: mallorySeal, channels: new ChannelCrypto(), fetchBundle: async () => meSeal.serveBundle() });
+    const envelope = await encryptDmEnvelope(
+      ME,
+      { message_id: 'm-spoof', scope_id: DM_ID, scope_type: 'dm', sender_id: MALLORY },
+      'mallory injecting into me+bob\'s conversation',
+    );
+    expect(envelope).toBeTruthy();
+
+    // ME's device receives it, authenticated (Noise-bound) as Mallory.
+    registerScopeCrypto({ seal: meSeal, channels: new ChannelCrypto(), fetchBundle: async () => null });
+    ingestMailboxChat(envelope!, MALLORY);
+
+    expect(getState().messages.some(m => m.id === 'm-spoof')).toBe(false);
+    // The existing me+bob thread's participant list must be untouched.
+    expect(getState().dms[DM_ID]?.participants).toEqual([ME, BOB]);
+  });
+
+  it('accepts a genuine message from an actual participant of the DM', async () => {
+    const bobSeal = new SealSessions(BOB, generateSigningIdentity());
+    registerScopeCrypto({ seal: bobSeal, channels: new ChannelCrypto(), fetchBundle: async () => meSeal.serveBundle() });
+    const envelope = await encryptDmEnvelope(
+      ME,
+      { message_id: 'm-legit', scope_id: DM_ID, scope_type: 'dm', sender_id: BOB },
+      'hey it\'s really bob',
+    );
+    expect(envelope).toBeTruthy();
+
+    registerScopeCrypto({ seal: meSeal, channels: new ChannelCrypto(), fetchBundle: async () => null });
+    ingestMailboxChat(envelope!, BOB);
+
+    const stored = getState().messages.find(m => m.id === 'm-legit');
+    expect(stored).toBeTruthy();
+    expect(stored!.body).toBe('hey it\'s really bob');
   });
 });
 

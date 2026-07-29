@@ -4,7 +4,7 @@ import {
   addServer, addChannel, addMessage, editMessage, deleteMessage,
   addReaction, removeReaction, addRelay, removeRelay,
   removeServerMembership, setMessageDeliveryStatus,
-  addPollVote,
+  addPollVote, applyJoinedServer,
   toRuntimeSnapshot,
 } from './store';
 import {
@@ -213,6 +213,68 @@ describe('store — server leave / message purge', () => {
     const messages = getState().messages;
     expect(messages.some(m => m.id === 'm-srv'), 'server message should be purged').toBe(false);
     expect(messages.some(m => m.id === 'm-dm'), 'DM message should be kept').toBe(true);
+  });
+});
+
+describe('applyJoinedServer — responder identity binding (join/pull hijack)', () => {
+  it('rejects a record whose id does not match the server we asked for', () => {
+    // We asked owner/seed for "srv-real" (e.g. resolving an invite or re-pulling
+    // after a missed rotation). A hostile or compromised responder answers with a
+    // DIFFERENT server id instead — accepting it would silently overwrite our
+    // local record for that other server (name, channels, members) with content
+    // the real owner never sent for it.
+    addServer({
+      id: 'srv-victim', name: 'Victim Server', owner_peer_id: 'owner',
+      members: ['owner', 'me'],
+      channels: { 'ch-1': { id: 'ch-1', server_id: 'srv-victim', name: 'general', voice: false } },
+    });
+
+    const accepted = applyJoinedServer('srv-real', {
+      id: 'srv-victim', name: 'PWNED', owner_peer_id: 'attacker',
+      members: ['attacker'],
+      channels: {},
+    } as any);
+
+    expect(accepted).toBe(false);
+    const victim = getState().servers['srv-victim'];
+    expect(victim.name).toBe('Victim Server');
+    expect(victim.owner_peer_id).toBe('owner');
+  });
+
+  it('accepts a record whose id matches the server we asked for', () => {
+    const accepted = applyJoinedServer('srv-real', {
+      id: 'srv-real', name: 'Real Server', owner_peer_id: 'owner',
+      members: ['owner', 'me'],
+      channels: {},
+    } as any);
+
+    expect(accepted).toBe(true);
+    expect(getState().servers['srv-real']?.name).toBe('Real Server');
+  });
+
+  it('drops a bundled message whose scope does not belong to the joined server (message-injection hijack)', () => {
+    // A pre-existing, unrelated DM thread the victim already has with Bob.
+    addMessage({ id: 'm-real', scope_type: 'dm', scope_id: 'dm-me-bob', sender_peer_id: 'bob', body: 'hi from bob, for real' });
+
+    // The server we're joining/pulling legitimately has one real channel.
+    const accepted = applyJoinedServer('srv-x', {
+      id: 'srv-x', name: 'X', owner_peer_id: 'owner', members: ['owner', 'me'],
+      channels: { 'ch-1': { id: 'ch-1', server_id: 'srv-x', name: 'general', voice: false } },
+    } as any, [
+      // A GENUINE message for the joined server's own channel — must be kept.
+      { id: 'm-legit', scope_type: 'channel', scope_id: 'ch-1', server_id: 'srv-x', sender_peer_id: 'owner', body: 'welcome' },
+      // FORGED: labels itself as belonging to the victim's unrelated DM with Bob.
+      { id: 'm-forged-dm', scope_type: 'dm', scope_id: 'dm-me-bob', sender_peer_id: 'bob', body: 'forged: send me your seed phrase' },
+      // FORGED: claims a channel id from a DIFFERENT, unrelated server.
+      { id: 'm-forged-other-server', scope_type: 'channel', scope_id: 'ch-in-another-server', server_id: 'srv-other', sender_peer_id: 'owner', body: 'forged cross-server' },
+    ] as any);
+
+    expect(accepted).toBe(true);
+    const ids = getState().messages.map(m => m.id);
+    expect(ids).toContain('m-real');
+    expect(ids).toContain('m-legit');
+    expect(ids).not.toContain('m-forged-dm');
+    expect(ids).not.toContain('m-forged-other-server');
   });
 });
 

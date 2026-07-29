@@ -310,11 +310,44 @@ export function addServer(server: XoreinRuntimeServer): void {
 /**
  * Apply a server pulled from its owner over P2P: store the server record, mark
  * it joined, and merge in its message history (deduped by id).
+ *
+ * `expectedServerId` is the id we actually asked the remote peer for. It is
+ * required because the record is keyed by `server.id`, which the RESPONDER
+ * controls: a hostile owner (or seed) answering a join/pull for server A could
+ * return a record with id B and silently overwrite our local record for B — a
+ * server it has nothing to do with — replacing its name, channels and member
+ * list. Returns true when the record was applied, false when it was rejected.
  */
-export function applyJoinedServer(server: XoreinRuntimeServer, messages: XoreinRuntimeMessage[] = []): void {
+export function applyJoinedServer(
+  expectedServerId: string,
+  server: XoreinRuntimeServer,
+  messages: XoreinRuntimeMessage[] = [],
+): boolean {
+  if (!server?.id || !expectedServerId || server.id !== expectedServerId) {
+    console.warn(
+      '[xorein/join] discarding server record: asked for',
+      expectedServerId, 'but peer returned', server?.id,
+    );
+    return false;
+  }
+  const channelIds = new Set(Object.keys(server.channels ?? {}));
   updateState(s => {
     const existingIds = new Set(s.messages.map(m => m.id));
-    const merged = messages.filter(m => m && m.id && !existingIds.has(m.id));
+    // SECURITY: a message here MUST belong to a channel of the server we just
+    // validated above — otherwise the SAME responder that answers our
+    // join/pull could plant a message under any OTHER scope_id we happen to
+    // already have (another server's channel, or worse, a private DM: DM scope
+    // ids are deterministic from the two peer ids, so any peer can compute
+    // one for two people it isn't part of — see the identical class of bug
+    // already fixed in sync/inbound.ts's handleChatSend). Without this check
+    // that forged message renders directly inside the victim's real thread,
+    // attributed to whatever sender_peer_id the attacker put in the payload.
+    // This also runs on every reconciliation re-pull, not just first join, so
+    // the check applies unconditionally on every call, forever.
+    const merged = messages.filter(m =>
+      m && m.id && !existingIds.has(m.id) &&
+      m.scope_type === 'channel' && m.server_id === server.id && channelIds.has(m.scope_id),
+    );
     return {
       servers: { ...s.servers, [server.id]: server },
       joined_server_ids: s.joined_server_ids.includes(server.id)
@@ -323,6 +356,7 @@ export function applyJoinedServer(server: XoreinRuntimeServer, messages: XoreinR
       messages: merged.length ? [...s.messages, ...merged] : s.messages,
     };
   });
+  return true;
 }
 
 /**
@@ -779,9 +813,14 @@ export function removeFriendRequest(requestId: string): void {
 export function acceptFriendByPeer(peerId: string): void {
   updateState(s => {
     const me = s.identity?.peer_id ?? '';
-    const counterpartyOf = (r: XoreinFriendRecord) =>
-      r.from_peer_id === me ? (r.to_peer_id ?? r.to_peer_addr ?? '') : r.from_peer_id;
-    const req = s.friend_requests.find(r => counterpartyOf(r) === peerId);
+    // This is the REMOTE-driven path ("peer says they accepted my request"), so it
+    // may only settle a request the local user actually sent. Matching a request
+    // the peer sent to US would let them accept their own request and add
+    // themselves to our friends list with no consent — the local user's own accept
+    // goes through acceptFriend(requestId) instead.
+    const req = s.friend_requests.find(r =>
+      r.from_peer_id === me && (r.to_peer_id ?? r.to_peer_addr ?? '') === peerId,
+    );
     if (!req) return {};
     return {
       friend_requests: s.friend_requests.filter(r => r.id !== req.id),

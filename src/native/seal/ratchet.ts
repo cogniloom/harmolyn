@@ -45,7 +45,13 @@ function hex(b: Uint8Array): string {
   return Array.from(b).map(x => x.toString(16).padStart(2, '0')).join('');
 }
 
-/** Initialise a RatchetState from the hybrid master secret. Matches Go initRatchetFromMaster. */
+/**
+ * Initialise a RatchetState from the hybrid master secret. Matches Go initRatchetFromMaster.
+ *
+ * isInitiator=true → sendChainKey=chainKey. isInitiator=false → recvChainKey=chainKey, and the
+ * responder additionally bootstraps its own send chain (see below) since X3DH only ever splits
+ * ONE root/chain pair — nothing analogous exists for the responder's sending direction.
+ */
 export function initRatchetFromMaster(
   hybridMaster: Uint8Array,
   localRatchetPriv: Uint8Array,
@@ -59,8 +65,8 @@ export function initRatchetFromMaster(
 
   const rs: RatchetState = {
     rootKey:          new Uint8Array(rootKey),
-    sendChainKey:     new Uint8Array(isInitiator ? chainKey : new Uint8Array(32)),
-    recvChainKey:     new Uint8Array(isInitiator ? new Uint8Array(32) : chainKey),
+    sendChainKey:     new Uint8Array(32),
+    recvChainKey:     new Uint8Array(32),
     sendCounter:      0,
     recvCounter:      0,
     prevSendChainLen: 0,
@@ -69,6 +75,42 @@ export function initRatchetFromMaster(
     remoteRatchetPub: new Uint8Array(remoteRatchetPub),
     skipList:         new Map(),
   };
+
+  if (isInitiator) {
+    rs.sendChainKey = new Uint8Array(chainKey);
+    return rs;
+  }
+  rs.recvChainKey = new Uint8Array(chainKey);
+
+  // SECURITY: without this, sendChainKey stays all zero — a constant known to every
+  // observer, not a secret — until the responder happens to receive a message with a
+  // new ratchet key. That never arrives on its own: the initiator's first message
+  // reuses the SAME ratchet key (EK) already stored as remoteRatchetPub, so
+  // remoteRatchetPub never changes and dhRatchetStep is never triggered. The
+  // responder's first reply would be encrypted with that public, all-zero key and be
+  // readable by anyone.
+  //
+  // Bootstrap a real send chain the same way a later DH ratchet step would: mint a
+  // fresh key pair and derive (root, chain) from DH(newPriv, remoteRatchetPub).
+  // remoteRatchetPub is the initiator's X3DH ephemeral (EK); this DH output is NOT
+  // part of hybridMaster (only the responder will ever know newPriv), so it is
+  // fresh, secret keying material — symmetric with what the initiator will
+  // independently derive via its own dhRatchetStep the first time it sees this new
+  // ratchet public key in a reply (DH(EK_priv, newPub) == DH(newPriv, EK_pub) by
+  // ECDH commutativity, against the same starting rootKey both sides already share).
+  //
+  // This deliberately mirrors only the SEND half of dhRatchetStep: it must NOT touch
+  // recvChainKey/recvCounter (just set correctly above) or it would clobber them
+  // with a redundant, already-spent DH output — X25519(SPK, EK), the very value
+  // already folded into hybridMaster — desyncing the responder from the
+  // initiator's not-yet-rotated chain.
+  const { priv: newSendPriv, pub: newSendPub } = generateX25519Keypair();
+  const dhOut = x25519.getSharedSecret(newSendPriv, remoteRatchetPub);
+  const okm2 = deriveKey(rootKey, dhOut, LABEL_RATCHET_STEP, 64);
+  rs.rootKey = new Uint8Array(okm2.slice(0, 32));
+  rs.sendChainKey = new Uint8Array(okm2.slice(32));
+  rs.sendRatchetPriv = newSendPriv;
+  rs.sendRatchetPub = newSendPub;
   return rs;
 }
 
@@ -220,17 +262,23 @@ function dhRatchetStep(s: RatchetState, newRemotePub: Uint8Array): void {
 
   const dhOut = x25519.getSharedSecret(s.sendRatchetPriv, newRemotePub);
   const okm1 = deriveKey(s.rootKey, dhOut, LABEL_RATCHET_STEP, 64);
-  const newRoot = okm1.slice(0, 32);
+  const tempRoot = okm1.slice(0, 32);
   s.recvChainKey = okm1.slice(32);
   s.recvCounter = 0;
 
   const { priv: newSendPriv, pub: newSendPub } = generateX25519Keypair();
   const dhOut2 = x25519.getSharedSecret(newSendPriv, newRemotePub);
-  const okm2 = deriveKey(newRoot, dhOut2, LABEL_RATCHET_STEP, 64);
+  const okm2 = deriveKey(tempRoot, dhOut2, LABEL_RATCHET_STEP, 64);
 
   s.prevSendChainLen = s.sendCounter;
   s.sendCounter = 0;
-  s.rootKey = newRoot;
+  // CHAINING: root must carry forward through BOTH KDF_RK calls (recv-half then
+  // send-half), not just the first. Storing only tempRoot here (the pre-fix
+  // behavior) desyncs the two peers' root keys the moment BOTH sides have each
+  // independently run a dhRatchetStep at least once: the next step on either side
+  // would derive from a root missing the other side's most recent send-half
+  // mixing, permanently breaking decryption from that point on.
+  s.rootKey = okm2.slice(0, 32);
   s.sendChainKey = okm2.slice(32);
   s.sendRatchetPriv = newSendPriv;
   s.sendRatchetPub = newSendPub;

@@ -16,13 +16,22 @@ interface TransformOptions {
   peerId: string;
   /** 32-byte key as a regular number array (serialisable across the Worker message boundary). */
   keyBytes: number[];
+  /**
+   * Disjoint frame-counter slot for THIS worker's PeerKey (see mediashield.ts
+   * SLOT_BITS doc). Structured-clone gives this worker its own copy of keyBytes,
+   * not a live-shared counter with any other sender using the same key, so an
+   * 'encrypt' worker MUST get a slot distinct from every other concurrently
+   * active encrypting sender under that key or their nonces will collide.
+   * Unused ('decrypt' never allocates counters) — defaults to 0.
+   */
+  counterSlot?: number;
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (self as any).onrtctransform = (event: { transformer: { options: TransformOptions; readable: ReadableStream; writable: WritableStream } }) => {
-  const { op, peerId, keyBytes } = event.transformer.options;
+  const { op, peerId, keyBytes, counterSlot } = event.transformer.options;
   const key = new Uint8Array(keyBytes);
-  const pk = newPeerKey(peerId, key);
+  const pk = newPeerKey(peerId, key, counterSlot ?? 0);
 
   const transformFn = op === 'encrypt' ? createEncryptTransform(pk) : createDecryptTransform(pk);
   const ts = new TransformStream({ transform: transformFn });

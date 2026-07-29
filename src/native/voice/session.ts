@@ -25,7 +25,7 @@ import {
 import { publishNativeSnapshot } from '../state/snapshot.js';
 import { getPeerSync } from '../sync/registry.js';
 import { deriveVoicePeerKey, voiceSecurityMode } from './keys.js';
-import { createEncryptTransform, createDecryptTransform, type PeerKey } from './mediashield.js';
+import { createEncryptTransform, createDecryptTransform, MAX_SENDER_SLOTS, type PeerKey } from './mediashield.js';
 import {
   fetchTurnCredentials, VOICE_OPS,
   type VoicePresenceRequest, type VoicePresenceResponse,
@@ -54,11 +54,18 @@ function insertableStreamsCapability(): InsertableCap {
 // Returns true only if the SFrame transform was actually installed. A false return
 // means media falls back to DTLS-only, so the caller must NOT keep claiming Crowd
 // protection (badge honesty — never overclaim encryption the pipeline didn't apply).
-function attachSenderTransform(sender: RTCRtpSender, pk: PeerKey, cap: Exclude<InsertableCap, 'none'>): boolean {
+//
+// `counterSlot` MUST be unique per concurrently-active ENCRYPTING sender that
+// shares `pk`'s key (see mediashield.ts SLOT_BITS doc) — it only matters for the
+// scriptTransform/Worker path: the worker builds its own in-worker PeerKey from
+// cloned key bytes rather than sharing this process's live one. The
+// encodedStreams fallback path reuses `pk` itself (a live, in-process object), so
+// its frameCounter is already correctly shared across every sender that uses it.
+function attachSenderTransform(sender: RTCRtpSender, pk: PeerKey, cap: Exclude<InsertableCap, 'none'>, counterSlot: number): boolean {
   try {
     if (cap === 'scriptTransform') {
       const worker = new Worker(new URL('./mediashield-worker.ts', import.meta.url), { type: 'module' });
-      const xf = new RTCRtpScriptTransform(worker, { op: 'encrypt', peerId: pk.peerId, keyBytes: Array.from(pk.key) });
+      const xf = new RTCRtpScriptTransform(worker, { op: 'encrypt', peerId: pk.peerId, keyBytes: Array.from(pk.key), counterSlot });
       (sender as RTCRtpSender & { transform: RTCRtpScriptTransform }).transform = xf;
     } else {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -372,6 +379,13 @@ export class VoiceSession {
   private cap: InsertableCap = 'none';
   private useSframe = false;
   private localKey: PeerKey | null = null;
+  // Every attachSenderTransform(scriptTransform) call spawns a Worker that builds
+  // its OWN in-worker PeerKey from cloned key bytes — it does not share this
+  // process's live frameCounter. Each such sender (one per local track × one per
+  // mesh peer connection, since Crowd's key is shared channel-wide) must get a
+  // disjoint counter slot or independent senders under the same key would restart
+  // their nonce counters at 0 and collide (see mediashield.ts SLOT_BITS doc).
+  private nextSenderSlot = 0;
   private securityMode: 'crowd' | 'clear' = 'clear';
   private iceServers: RTCIceServer[] = [];
 
@@ -1023,7 +1037,13 @@ export class VoiceSession {
     const transceiver = entry.pc.getTransceivers().find(t => t.sender === sender);
     if (transceiver?.mid) entry.localKinds[transceiver.mid] = kind;
     if (this.useSframe && this.localKey) {
-      const ok = attachSenderTransform(sender, this.localKey, this.cap as Exclude<InsertableCap, 'none'>);
+      // See nextSenderSlot's doc: a fresh slot per sender keeps this new Worker's
+      // independent in-worker counter from colliding with every OTHER sender
+      // already encrypting under the same key (other tracks, other mesh peers).
+      // Falling back to DTLS (never reusing a slot) is the fail-closed choice if
+      // the space is ever exhausted — see MAX_SENDER_SLOTS in mediashield.ts.
+      const ok = this.nextSenderSlot < MAX_SENDER_SLOTS
+        && attachSenderTransform(sender, this.localKey, this.cap as Exclude<InsertableCap, 'none'>, this.nextSenderSlot++);
       if (!ok) this.downgradeSframe();
     }
   }

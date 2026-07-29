@@ -9,6 +9,7 @@ import {
   encodePeerStreamRequest,
   encodePeerStreamResponse,
   decodePeerStreamResponse,
+  decodePeerStreamRequest,
   unframeMessage,
   MAX_FRAME_BYTES,
   type PeerStreamRequest,
@@ -233,5 +234,55 @@ describe('serveFamilyStream', () => {
     stream.pushChunk(reqFrame('op', 'r1'));
     stream.fail(new Error('stream reset'));
     await expect(serving).resolves.toBeUndefined();
+  });
+});
+
+// A hostile peer controls every byte of a frame's protobuf body. These cover the
+// decoders' behaviour on bodies that are malformed rather than merely unknown:
+// the loops must always terminate and never read outside the buffer.
+describe('protobuf decoder hardening (malformed frames)', () => {
+  // Field 2 (payload), wire type 2, then a 5-byte varint length whose top group
+  // sets bit 31. Accumulated with the 32-bit signed `<<`, that length decodes to
+  // -2147483648, so `off += len` walks the cursor billions of bytes BACKWARDS and
+  // the decode loop never terminates — one frame hangs the tab.
+  const negativeLengthBody = new Uint8Array([0x12, 0x80, 0x80, 0x80, 0x80, 0x08]);
+
+  it('terminates on a length varint that decodes negative', () => {
+    const start = Date.now();
+    const req = decodePeerStreamRequest(negativeLengthBody);
+    expect(Date.now() - start).toBeLessThan(1000);
+    expect(req.payload).toBeUndefined();
+  });
+
+  it('terminates on a negative length in a response frame', () => {
+    const start = Date.now();
+    const resp = decodePeerStreamResponse(new Uint8Array([0x22, 0x80, 0x80, 0x80, 0x80, 0x08]));
+    expect(Date.now() - start).toBeLessThan(1000);
+    expect(resp.payload).toBeUndefined();
+  });
+
+  it('rejects a field whose length runs past the end of the buffer', () => {
+    // Field 1 (operation), wire type 2, length 200, but only 3 bytes follow.
+    const req = decodePeerStreamRequest(new Uint8Array([0x0a, 0xc8, 0x01, 1, 2, 3]));
+    expect(req.operation).toBe('');
+  });
+
+  it('terminates on a truncated varint with no terminating byte', () => {
+    const start = Date.now();
+    const req = decodePeerStreamRequest(new Uint8Array([0x0a, 0x80, 0x80, 0x80]));
+    expect(Date.now() - start).toBeLessThan(1000);
+    expect(req.operation).toBe('');
+  });
+
+  it('still round-trips well-formed frames unchanged', () => {
+    const encoded = encodePeerStreamRequest({
+      operation: 'chat.send',
+      requestId: 'r-42',
+      payload: enc.encode('{"a":1}'),
+    });
+    const req = decodePeerStreamRequest(encoded);
+    expect(req.operation).toBe('chat.send');
+    expect(req.requestId).toBe('r-42');
+    expect(dec.decode(req.payload)).toBe('{"a":1}');
   });
 });
