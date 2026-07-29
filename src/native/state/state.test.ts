@@ -1,11 +1,12 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import type { XoreinRuntimeMessage, XoreinRuntimeServer } from '../../types';
 import {
   initStore, getState, updateState, setNativeIdentity,
   addServer, addChannel, addMessage, editMessage, deleteMessage,
   addReaction, removeReaction, addRelay, removeRelay,
   removeServerMembership, setMessageDeliveryStatus,
   addPollVote, applyJoinedServer,
-  toRuntimeSnapshot,
+  toRuntimeSnapshot, setStateEncryptionKey,
 } from './store';
 import {
   nativeSendChannelMessage, nativeCreateServer, nativeCreateChannel,
@@ -15,13 +16,17 @@ import {
   nativeCastPollVote, nativeRemoveMember,
   nativeSearchMessages,
 } from './mutations';
+const TEST_STATE_KEY = new Uint8Array(32).fill(7);
 
 // Reset store state before each test.
 beforeEach(() => {
   // Wipe localStorage in jsdom environment.
   localStorage.clear();
+  setStateEncryptionKey(TEST_STATE_KEY);
   initStore();
 });
+
+afterEach(() => setStateEncryptionKey(null));
 
 describe('store', () => {
   it('initialises empty', () => {
@@ -233,7 +238,7 @@ describe('applyJoinedServer — responder identity binding (join/pull hijack)', 
       id: 'srv-victim', name: 'PWNED', owner_peer_id: 'attacker',
       members: ['attacker'],
       channels: {},
-    } as any);
+    } satisfies XoreinRuntimeServer);
 
     expect(accepted).toBe(false);
     const victim = getState().servers['srv-victim'];
@@ -246,7 +251,7 @@ describe('applyJoinedServer — responder identity binding (join/pull hijack)', 
       id: 'srv-real', name: 'Real Server', owner_peer_id: 'owner',
       members: ['owner', 'me'],
       channels: {},
-    } as any);
+    } satisfies XoreinRuntimeServer);
 
     expect(accepted).toBe(true);
     expect(getState().servers['srv-real']?.name).toBe('Real Server');
@@ -260,14 +265,14 @@ describe('applyJoinedServer — responder identity binding (join/pull hijack)', 
     const accepted = applyJoinedServer('srv-x', {
       id: 'srv-x', name: 'X', owner_peer_id: 'owner', members: ['owner', 'me'],
       channels: { 'ch-1': { id: 'ch-1', server_id: 'srv-x', name: 'general', voice: false } },
-    } as any, [
+    } satisfies XoreinRuntimeServer, [
       // A GENUINE message for the joined server's own channel — must be kept.
       { id: 'm-legit', scope_type: 'channel', scope_id: 'ch-1', server_id: 'srv-x', sender_peer_id: 'owner', body: 'welcome' },
       // FORGED: labels itself as belonging to the victim's unrelated DM with Bob.
       { id: 'm-forged-dm', scope_type: 'dm', scope_id: 'dm-me-bob', sender_peer_id: 'bob', body: 'forged: send me your seed phrase' },
       // FORGED: claims a channel id from a DIFFERENT, unrelated server.
       { id: 'm-forged-other-server', scope_type: 'channel', scope_id: 'ch-in-another-server', server_id: 'srv-other', sender_peer_id: 'owner', body: 'forged cross-server' },
-    ] as any);
+    ] satisfies XoreinRuntimeMessage[]);
 
     expect(accepted).toBe(true);
     const ids = getState().messages.map(m => m.id);

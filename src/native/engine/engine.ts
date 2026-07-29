@@ -32,7 +32,7 @@ import { ChannelCrypto } from '../crowd/channel.js';
 import { registerScopeCrypto, resetScopeCrypto, applyCrowdRoot } from '../sync/secureEnvelope.js';
 import { registerOfflineIdentity, resetOfflineIdentity, drainOfflineChat } from '../delivery/offline.js';
 import { PROTOCOLS, RECOVERY_OPS } from '../families/families.js';
-import { frameMessage, encodePeerStreamResponse, serveFamilyStream, isDirectAddr, type InboundFamilyStream, type PeerStreamRequest } from '../families/peerstream.js';
+import { frameMessage, encodePeerStreamResponse, serveFamilyStream, type InboundFamilyStream, type PeerStreamRequest } from '../families/peerstream.js';
 import { VOICE_OPS, type VoicePresenceRequest, type VoiceOfferRequest, type VoiceIceRequest } from '../voice/signaling.js';
 import {
   handleRecoveryStore, handleRecoveryRequest, handleRecoveryDeliver,
@@ -43,6 +43,7 @@ import { getRecoveryContacts } from '../recovery/custody.js';
 import { VoiceSession } from '../voice/session.js';
 import { registerVoiceSession, getVoiceSession, clearVoiceSession, rekeyVoiceForServer } from '../voice/registry.js';
 import { resolveFeatureFlag } from '../../config/featureFlags.js';
+import { decodeBase64Strict } from '../security/limits.js';
 import {
   nativeSendChannelMessage,
   nativeSendDmMessage,
@@ -52,7 +53,6 @@ import {
   nativeRemoveReaction,
   nativeCreateServer,
   nativeCreateChannel,
-  nativeJoinServer,
   nativeAddFriendRequest,
   nativeAcceptFriend,
   nativeDeclineFriend,
@@ -66,6 +66,31 @@ import {
   nativeEnsureDirectMessage,
   nativeDrainOutbox,
 } from '../state/mutations.js';
+
+function isAuthoritativeJoinRecord(
+  value: unknown,
+  expectedServerId: string,
+  expectedOwnerPeerId: string,
+  localPeerId: string,
+): value is XoreinRuntimeServer {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const server = value as Partial<XoreinRuntimeServer>;
+  if (server.id !== expectedServerId || server.owner_peer_id !== expectedOwnerPeerId) return false;
+  if (server.invite_secret !== undefined
+    || !Array.isArray(server.members)
+    || !server.members.includes(localPeerId)
+    || !server.members.includes(expectedOwnerPeerId)
+    || !server.channels
+    || typeof server.channels !== 'object'
+    || Array.isArray(server.channels)) return false;
+  if (typeof server.crowd_root !== 'string' || decodeBase64Strict(server.crowd_root, 32)?.length !== 32) return false;
+  if (server.crowd_epoch !== undefined
+    && (!Number.isSafeInteger(server.crowd_epoch) || server.crowd_epoch < 0 || server.crowd_epoch > 0xffffffff)) return false;
+  for (const [channelId, channel] of Object.entries(server.channels)) {
+    if (!channel || channel.id !== channelId || channel.server_id !== expectedServerId) return false;
+  }
+  return true;
+}
 
 // Re-export all primitives for use by consumers.
 export {
@@ -447,36 +472,6 @@ export class XoreinNativeEngine {
     if (!node || this._wiredNode === node || !this._identity) return;
     this._wiredNode = node;
     this.peerSync.setNode(node);
-    // Read-only transport diagnostics for E2E/debugging: which peers we're
-    // connected to and whether each connection is a relayed circuit or a
-    // direct (e.g. WebRTC) link. Same-origin scripts could already reach the
-    // store; this exposes no capability material.
-    if (typeof window !== 'undefined') {
-      (window as unknown as Record<string, unknown>).__HARMOLYN_P2P_DEBUG__ = {
-        connections: () => node.getConnections().map(c => ({
-          peer: c.remotePeer.toString(),
-          addr: c.remoteAddr?.toString() ?? '',
-          status: c.status,
-          direct: isDirectAddr(c.remoteAddr?.toString()),
-        })),
-        // Our own listen/announce addrs — what peers learn via presence.
-        addrs: () => node.getMultiaddrs().map(m => m.toString()),
-        // Learned peer addr book (advertised addresses in the store).
-        peerAddrs: () => {
-          const peers = getState().peers ?? {};
-          return Object.fromEntries(Object.entries(peers).map(([id, p]) => [id.slice(-8), p.addresses ?? []]));
-        },
-        // Raw transport RTT via the libp2p ping service — isolates the wire
-        // from the peerstream/store/render pipeline when chasing latency.
-        ping: async (peerStr: string) => {
-          const conn = node.getConnections().find(c => c.status === 'open' && c.remotePeer.toString() === peerStr);
-          if (!conn) return -1;
-          const svc = (node as unknown as { services?: { ping?: { ping(p: unknown): Promise<number> } } }).services?.ping;
-          if (!svc) return -2;
-          return await svc.ping(conn.remotePeer);
-        },
-      };
-    }
     try {
       await registerInboundHandlers(node, this._identity.peerId, this.peerSync);
       // Inbound VOICE MESH handler. Peers dial us directly over /aether/voice/0.1.0
@@ -726,8 +721,8 @@ export class XoreinNativeEngine {
    * Join a server from an invite over P2P: parse the owner peer id from the
    * invite, dial the owner across the relay circuit, pull the server's
    * manifest/channels/history, and store it (membership recorded; the owner adds
-   * us to its member list). Falls back to a local placeholder only when the
-   * invite has no owner or the owner is currently unreachable.
+   * us to its member list). Unreachable or malformed owners are reported as a
+   * failed join; no local placeholder can grant membership or encryption state.
    */
   async joinServer(deeplink: string): Promise<XoreinRuntimeServer> {
     const meta = parseInviteMetadata(deeplink);
@@ -741,7 +736,10 @@ export class XoreinNativeEngine {
           meta.inviteToken,
         );
         if (data?.ok && data.server) {
-          const server = data.server as XoreinRuntimeServer;
+          if (!isAuthoritativeJoinRecord(data.server, meta.serverId, meta.ownerPeerId, me ?? '')) {
+            throw new Error('join: owner response failed authority or encryption validation');
+          }
+          const server = data.server;
           if (!applyJoinedServer(meta.serverId, server, (data.messages ?? []) as XoreinRuntimeMessage[])) {
             throw new Error('join: owner returned a different server than the invite');
           }
@@ -756,13 +754,9 @@ export class XoreinNativeEngine {
           publishNativeSnapshot();
           return server;
         }
-        // Reached the owner but it declined or returned no server — surface why
-        // instead of silently handing back a broken empty stub.
-        console.warn('[xorein/join] owner reachable but join not granted:', data?.error ?? data);
-      } catch (err) {
-        // owner offline/unreachable — fall back to a local membership record, but
-        // log it: a silent stub looks like a successful (yet empty) join.
-        console.warn('[xorein/join] P2P join dial failed, using local stub:', err);
+      } catch {
+        // The owner may be offline. A member response is not an authorization
+        // decision for a new join, so fail closed rather than trusting a seed.
       }
     }
 
@@ -771,40 +765,9 @@ export class XoreinNativeEngine {
     // server record has the owner-only invite_secret stripped, so the seed's
     // verifyInviteToken always fails for a new joiner — the fallback can't actually be
     // granted without a delegatable capability — and served history isn't individually
-    // authenticated. Until owner-signed invites/history exist, skip seeds and fall
-    // through to the local stub (membership reconciles when the owner returns).
-    const seeds = resolveFeatureFlag('memberServedHistory')
-      ? (meta.seeds ?? []).filter(s => s && s !== me && s !== meta.ownerPeerId)
-      : [];
-    for (const seed of seeds) {
-      try {
-        const data = await this.peerSync.joinServer(
-          seed,
-          meta.serverId,
-          getState().identity?.profile?.display_name,
-          meta.inviteToken,
-        );
-        if (data?.ok && data.server) {
-          const server = data.server as XoreinRuntimeServer;
-          if (!applyJoinedServer(meta.serverId, server, (data.messages ?? []) as XoreinRuntimeMessage[])) {
-            continue; // seed answered for a different server — try the next one
-          }
-          upsertPeer({
-            peer_id: seed,
-            role: 'peer',
-            addresses: Array.isArray(data.addresses) ? data.addresses : [],
-            last_seen_at: new Date().toISOString(),
-          });
-          publishNativeSnapshot();
-          console.info('[xorein/join] owner offline; joined via member seed', seed);
-          return server;
-        }
-      } catch {
-        // try the next seed
-      }
-    }
-
-    return nativeJoinServer(deeplink, { name: meta.serverName, ownerPeerId: meta.ownerPeerId });
+    // authenticated. No local placeholder is created when no authenticated
+    // response is available.
+    throw new Error('join failed: the server owner did not provide an authenticated membership response');
   }
 
   /**
@@ -840,11 +803,9 @@ export class XoreinNativeEngine {
 
     // Authoritative history comes from the OWNER only: served message copies are not
     // individually signed, so trusting an arbitrary member's page would let it inject
-    // forged messages into permanent channel history. Member-served fallback is opt-in
-    // (memberServedHistory, dark) until history carries owner signatures.
-    const candidates = resolveFeatureFlag('memberServedHistory')
-      ? [server.owner_peer_id, ...server.members].filter((p, i, arr) => p && p !== me && arr.indexOf(p) === i)
-      : [server.owner_peer_id].filter(p => p && p !== me);
+    // forged messages into permanent channel history. This remains owner-only even if
+    // a local feature override attempts to enable member-served history.
+    const candidates = [server.owner_peer_id].filter(p => p && p !== me);
 
     for (const peer of candidates) {
       // Paging is a member operation — the responder exempts existing members from

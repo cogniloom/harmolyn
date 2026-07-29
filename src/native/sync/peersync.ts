@@ -5,11 +5,13 @@
 // This works for all peers using node.xorein.com as their relay.
 import type { Libp2p } from 'libp2p';
 import { callFamily } from '../families/peerstream.js';
+import { MAX_FRAME_BYTES } from '../families/peerstream.js';
 import { PROTOCOLS } from '../families/families.js';
 import { RELAY_MULTIADDR } from '../transport/node.js';
 import { getState } from '../state/store.js';
 import { resolveFeatureFlag } from '../../config/featureFlags.js';
 import type { PrekeyBundle } from '../seal/bundle.js';
+import { hasControlCharacters } from '../security/limits.js';
 
 // Derive the expected circuit address for a peer using the standard relay.
 function circuitAddr(peerId: string, relayMultiaddr = RELAY_MULTIADDR): string {
@@ -26,6 +28,14 @@ export function webrtcCircuitAddr(peerId: string, relayMultiaddr = RELAY_MULTIAD
 /** True when an address is a WebRTC-upgradeable circuit address. */
 function isWebrtcCircuit(addr: string): boolean {
   return addr.includes('/p2p-circuit/webrtc/');
+}
+
+function isPeerCircuitAddress(addr: unknown, peerId: string): addr is string {
+  return typeof addr === 'string'
+    && addr.length <= 1024
+    && !hasControlCharacters(addr)
+    && addr.includes('/p2p-circuit')
+    && addr.endsWith(`/p2p/${peerId}`);
 }
 
 /**
@@ -50,16 +60,18 @@ export function selectPeerAddr(
   directOn: boolean,
 ): string {
   if (directOn) {
-    const wrtc = advertised.find(isWebrtcCircuit);
+    const wrtc = advertised.find(a => isPeerCircuitAddress(a, peerId) && isWebrtcCircuit(a));
     if (wrtc) return wrtc;
   }
-  const anyCircuit = advertised.find(a => a.includes('p2p-circuit'));
+  const anyCircuit = advertised.find(a => isPeerCircuitAddress(a, peerId));
   if (anyCircuit) return anyCircuit;
   return circuitAddr(peerId, relayMultiaddr);
 }
 
 function jsonBytes(obj: unknown): Uint8Array {
-  return new TextEncoder().encode(JSON.stringify(obj));
+  const bytes = new TextEncoder().encode(JSON.stringify(obj));
+  if (bytes.length > MAX_FRAME_BYTES) throw new RangeError('peer sync payload exceeds frame limit');
+  return bytes;
 }
 
 // ── PeerSync ───────────────────────────────────────────────────────────────
@@ -82,7 +94,8 @@ export class PeerSync {
   /** This node's own reachable circuit addresses (which relay(s) we're on). */
   localCircuitAddrs(): string[] {
     if (!this.node) return [];
-    const circuits = this.node.getMultiaddrs().map(m => m.toString()).filter(s => s.includes('p2p-circuit'));
+    const self = this.node.peerId.toString();
+    const circuits = this.node.getMultiaddrs().map(m => m.toString()).filter(s => isPeerCircuitAddress(s, self));
     if (!resolveFeatureFlag('directTransport')) return circuits;
     // Advertise the WebRTC-upgradeable variant of each circuit addr ALONGSIDE
     // the plain form. The /webrtc listener is live whenever directTransport is
@@ -119,7 +132,9 @@ export class PeerSync {
 
   /** Record a peer's actual circuit address (used when they dial us first). */
   registerPeer(peerId: string, addr?: string): void {
-    const resolved = addr ?? circuitAddr(peerId, this.relayMultiaddr);
+    const resolved = addr && isPeerCircuitAddress(addr, peerId)
+      ? addr
+      : circuitAddr(peerId, this.relayMultiaddr);
     this.peerAddrs.set(peerId, resolved);
   }
 
@@ -138,7 +153,7 @@ export class PeerSync {
     const directOn = resolveFeatureFlag('directTransport');
     const advertised = getState().peers?.[peerId]?.addresses ?? [];
     if (directOn) {
-      const wrtc = advertised.find(isWebrtcCircuit);
+      const wrtc = advertised.find(a => isPeerCircuitAddress(a, peerId) && isWebrtcCircuit(a));
       if (wrtc) return wrtc;
     }
     const direct = this.peerAddrs.get(peerId);
@@ -328,14 +343,12 @@ export class PeerSync {
     senderPeerId: string;
     body: string;
   }): Promise<void> {
-    await this.broadcastToScope(opts.memberPeerIds, PROTOCOLS.chat, 'chat.send', {
-      message_id: opts.messageId,
-      scope_id: opts.scopeId,
-      scope_type: opts.scopeType,
-      sender_id: opts.senderPeerId,
-      // body is []byte in Go → JSON marshals as base64
-      body: btoa(unescape(encodeURIComponent(opts.body))),
-    });
+    // This legacy helper used to put a UTF-8 message body directly on the
+    // PeerStream. Keeping a callable plaintext path makes future callers able
+    // to bypass the encrypted mutation pipeline by accident. The production
+    // path sends a mode-specific secure envelope through broadcastToScope.
+    void opts;
+    throw new Error('plaintext chat broadcast disabled; send an encrypted envelope');
   }
 
   /** Broadcast a reaction event as a notify.push to all scope members. */

@@ -71,8 +71,8 @@ function seedRegisteredState(id: XoreinIdentity): void {
 /** Simulate a page reload's pre-engine module state (fresh JS context). */
 function simulateReloadBoot(): void {
   setStateEncryptionKey(null);
-  // What NativeEngineProvider's module scope now does: route pre-engine writes
-  // to throwaway sessionStorage so they can never clobber the registered blob.
+  // What NativeEngineProvider's module scope now does: keep pre-engine writes
+  // in memory so they can never clobber the registered blob.
   configureNativeStore({ guest: true });
   // In-memory state resets on reload; emulate by loading from (empty) sessionStorage.
   initStore();
@@ -143,11 +143,11 @@ describe('bootstrapLocalState() after reload (defect ii)', () => {
     simulateReloadBoot();
     // The exact write that used to destroy the account: Layout's setActiveScope
     // effect firing while the identity is still locked (before initStore ran on
-    // the real backend). It must land in throwaway sessionStorage.
+    // the real backend). It must not be serialized anywhere.
     setActiveScope('channel-123');
 
     expect(localStorage.getItem(STATE_KEY)).toBe(blobBefore); // blob intact
-    expect(sessionStorage.getItem(STATE_KEY)).toBeTruthy();   // stray write went here
+    expect(sessionStorage.getItem(STATE_KEY)).toBeNull();     // locked state is memory-only
 
     const engine = new XoreinNativeEngine({});
     await engine.bootstrapLocalState();

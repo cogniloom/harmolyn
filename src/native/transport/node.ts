@@ -71,6 +71,7 @@ export interface XoreinNodeOptions {
  * reserveCircuitRelay() explicitly with a 30-second timeout after the node starts.
  */
 export async function createXoreinNode(opts: XoreinNodeOptions = {}) {
+  const bootstrapRelay = opts.relayMultiaddr?.trim() || RELAY_MULTIADDR;
   const privateKey = opts.identity
     ? await generateKeyPairFromSeed('Ed25519', opts.identity.edSeed)
     : undefined;
@@ -103,7 +104,18 @@ export async function createXoreinNode(opts: XoreinNodeOptions = {}) {
     ],
     streamMuxers: [yamux()],
     connectionGater: {
-      denyDialMultiaddr: () => false,
+      // The browser only needs to dial the configured relay and authenticated
+      // circuit paths. Never let a peer-provided address turn the client into
+      // an arbitrary outbound dialer (or leak the user's network location to a
+      // malicious address book entry).
+      denyDialMultiaddr: (addr) => {
+        const text = addr.toString();
+        const target = `/p2p/${RELAY_PEER_ID}`;
+        const configuredRelay = text === bootstrapRelay
+          || (text.endsWith(target) && (text.includes('/ws') || text.includes('/quic')));
+        const circuit = text.includes('/p2p-circuit') && /\/p2p\/[^/]+$/.test(text);
+        return !(configuredRelay || circuit);
+      },
     },
     services: {
       identify: identify(),
@@ -141,7 +153,6 @@ export async function reserveCircuitRelay(node: Libp2p, relayMultiaddr?: string)
     // Dial the relay with a generous timeout.
     const dialSignal = AbortSignal.timeout(RELAY_DIAL_TIMEOUT_MS);
     const conn = await node.dial(relayMa, { signal: dialSignal });
-    console.debug('[xorein/relay] dialed relay', conn.remotePeer.toString().substring(0, 20));
 
     // Access the circuit relay transport's reservation store to trigger a
     // proper HOP reservation now that we have a live connection.
@@ -159,15 +170,13 @@ export async function reserveCircuitRelay(node: Libp2p, relayMultiaddr?: string)
       );
 
       if (circuitTransport?.reservationStore) {
-        console.debug('[xorein/relay] calling addRelay');
         // Use 'discovered' type so the reservation ID matches what the CircuitSearch
         // listener registered via reserveRelay() during node.start(). With 'configured'
         // type, the reservation has no id, and _onAddRelayPeer skips addedRelay(),
         // leaving node.getMultiaddrs() empty.
-        const result = await circuitTransport.reservationStore.addRelay(conn.remotePeer, 'discovered') as { details?: { reservation?: { addrs?: unknown[] } } } | undefined;
-        console.debug('[xorein/relay] addRelay result', JSON.stringify(result?.details?.reservation?.addrs?.length ?? 'no addrs'));
+        await circuitTransport.reservationStore.addRelay(conn.remotePeer, 'discovered');
       } else {
-        console.warn('[xorein/relay] circuit relay transport not found, transports:', transports.length);
+        // No public reservation store is available in this libp2p build.
       }
     }
 
@@ -175,13 +184,11 @@ export async function reserveCircuitRelay(node: Libp2p, relayMultiaddr?: string)
     for (let i = 0; i < 20; i++) {
       const addrs = circuitAddrs(node);
       if (addrs.length > 0) {
-        console.debug('[xorein/relay] circuit addrs acquired:', addrs);
         return true;
       }
       await new Promise(r => setTimeout(r, 500));
     }
     const finalAddrs = circuitAddrs(node);
-    console.warn('[xorein/relay] no circuit addrs after 10s, getMultiaddrs:', node.getMultiaddrs().map(m => m.toString()));
     const ok = finalAddrs.length > 0;
 
     // Best-effort: also dial the WebTransport (QUIC) addr so future protocol
@@ -189,8 +196,7 @@ export async function reserveCircuitRelay(node: Libp2p, relayMultiaddr?: string)
     dialWebTransport(node).catch(() => undefined);
 
     return ok;
-  } catch (err) {
-    console.error('[xorein/relay] reserveCircuitRelay error:', err instanceof Error ? err.message : String(err));
+  } catch {
     return false;
   }
 }
@@ -207,9 +213,8 @@ async function dialWebTransport(node: Libp2p): Promise<void> {
   try {
     const signal = AbortSignal.timeout(15_000);
     await node.dial(multiaddr(wtAddr), { signal });
-    console.debug('[xorein/wt] WebTransport QUIC connection established');
-  } catch (err) {
-    console.debug('[xorein/wt] WebTransport dial failed (WSS remains active):', err instanceof Error ? err.message : String(err));
+  } catch {
+    // WSS remains the fallback path.
   }
 }
 

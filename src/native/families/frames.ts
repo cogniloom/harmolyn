@@ -100,6 +100,7 @@ export function decodePeerStreamRequest(buf: Uint8Array): PeerStreamRequest {
   while (off < buf.length) {
     let tag: number;
     [tag, off] = readVarint(buf, off);
+    if (tag === VARINT_INVALID) break;
     const fieldNum = tag >>> 3;
     const wireType = tag & 0x7;
     if (wireType === 2) {
@@ -154,6 +155,7 @@ export function decodePeerStreamResponse(buf: Uint8Array): PeerStreamResponse {
   while (off < buf.length) {
     let tag: number;
     [tag, off] = readVarint(buf, off);
+    if (tag === VARINT_INVALID) break;
     const fieldNum = tag >>> 3;
     const wireType = tag & 0x7;
     if (wireType === 2) {
@@ -181,6 +183,7 @@ function decodeError(buf: Uint8Array): PeerStreamError {
   while (off < buf.length) {
     let tag: number;
     [tag, off] = readVarint(buf, off);
+    if (tag === VARINT_INVALID) break;
     const fieldNum = tag >>> 3;
     const wireType = tag & 0x7;
     if (wireType === 0) {
@@ -203,6 +206,9 @@ function decodeError(buf: Uint8Array): PeerStreamError {
 // ── 4-byte length framing ──────────────────────────────────────────────────
 
 export function frameMessage(msg: Uint8Array): Uint8Array {
+  if (msg.length > MAX_FRAME_BYTES) {
+    throw new RangeError(`peerstream: frame length ${msg.length} exceeds cap`);
+  }
   const out = new Uint8Array(4 + msg.length);
   new DataView(out.buffer).setUint32(0, msg.length, false);
   out.set(msg, 4);
@@ -212,6 +218,7 @@ export function frameMessage(msg: Uint8Array): Uint8Array {
 export function unframeMessage(buf: Uint8Array): Uint8Array | null {
   if (buf.length < 4) return null;
   const len = new DataView(buf.buffer, buf.byteOffset).getUint32(0, false);
+  if (len > MAX_FRAME_BYTES) return null;
   if (buf.length < 4 + len) return null;
   return buf.subarray(4, 4 + len);
 }
@@ -237,6 +244,9 @@ export class FrameDecoder {
 
   /** Feed one chunk; returns all frames completed by it (possibly none). */
   push(chunk: Uint8Array): Uint8Array[] {
+    if (chunk.length > 4 + MAX_FRAME_BYTES) {
+      throw new Error(`peerstream: input chunk exceeds cap`);
+    }
     this.buf = this.buf.length === 0 ? chunk : concat(this.buf, chunk);
     const frames: Uint8Array[] = [];
     let off = 0;
@@ -288,9 +298,15 @@ export async function readFramedMessage(
     const bytes = chunkBytes(chunk);
     chunks.push(bytes);
     size += bytes.length;
+    if (size > 4 + MAX_FRAME_BYTES) {
+      throw new Error(`peerstream: frame input exceeds cap`);
+    }
     if (size < 4) continue;
     joined = assemble();
     const len = new DataView(joined.buffer, joined.byteOffset).getUint32(0, false);
+    if (len > MAX_FRAME_BYTES) {
+      throw new Error(`peerstream: frame length ${len} exceeds cap`);
+    }
     if (size >= 4 + len) return joined.subarray(4, 4 + len);
   }
   // Stream ended: fall back to whatever arrived (handles a peer that closed

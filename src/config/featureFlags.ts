@@ -49,11 +49,13 @@ export const FEATURES = {
   // network grows the matching protocol primitives (see docs/PROTOCOL_GAPS.md).
 
   // ─── Server moderation / admin extras ────────────────────
-  // Real control-API endpoints: GET /v1/servers/{id}/audit, /v1/servers/{id}/automod/rules,
-  // /v1/servers/{id}/bots. See docs/PROTOCOL_GAPS.md — resolved 2026-06-07.
-  auditLog: true,
-  autoMod: true,
-  bots: true,
+  // The current xorein control API does not expose authenticated audit,
+  // AutoMod, or bot handlers. Keep these hidden until the protocol and
+  // owner-authority checks exist; a 404/501 support-node response is not a
+  // feature implementation and must not be presented as one.
+  auditLog: false,
+  autoMod: false,
+  bots: false,
 
   // ─── User ────────────────────────────────────────────────
   userStatus: true,

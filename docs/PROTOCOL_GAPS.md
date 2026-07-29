@@ -213,10 +213,9 @@ approve/reject mutated local state.
 No boost/tier model (also depends on monetization).
 **Needed:** `GET /v1/servers/{id}/boosts`, `POST /v1/servers/{id}/boost`.
 
-### Audit log — `auditLog` — ✅ RESOLVED (2026-06-07)
-`GET /v1/servers/{id}/audit` implemented in the xorein control API (`handlers_audit.go`).
-`emitAudit()` called from moderation/roles/channels/servers handlers. Frontend wired via
-`useAuditLog` hook + `AuditLogSection`. Flag set `true`.
+### Audit log — `auditLog` — OPEN (verified 2026-07-29)
+The current xorein control API has no authenticated audit-log handler. The feature remains
+hidden; do not expose a support-node 404 as a fake implementation.
 
 ### Server insights — `serverInsights`
 No analytics/metrics endpoint.
@@ -344,18 +343,11 @@ and replaced it with real, P2P-propagating mutations (the mutation facade
 - **Calls (FriendsPanel)** — the "Call" button popped "not supported yet"; removed
   (no 1:1 call transport exists). 1:1 voice calling remains a gap.
 
-### ✅ RESOLVED (2026-06-07) — auditLog, autoMod, bots
+### 2026-07-29 — auditLog, autoMod, bots remain gated
 
-- `auditLog: true` — real `GET /v1/servers/{id}/audit` endpoint; `emitAudit()` wired
-  to moderation/roles/channels/servers handlers; `useAuditLog` query hook.
-- `autoMod: true` — `GET/POST /v1/servers/{id}/automod/rules`, `PATCH/DELETE …/{ruleID}`;
-  keyword/spam/link/invite/mention rule types; block/delete/timeout/alert actions;
-  enforcement in `handleSendChannelMessage`; `useAutoModRules`/`useCreateAutoModRule`/
-  `useUpdateAutoModRule`/`useDeleteAutoModRule` hooks.
-- `bots: true` — `GET/POST /v1/servers/{id}/bots`, `DELETE …/{botID}`,
-  `GET /v1/bots/{id}/events` (SSE), `POST /v1/bots/{id}/messages`; per-bot token auth
-  with injector middleware; `useBots`/`useCreateBot`/`useDeleteBot` hooks;
-  `BotManagementSection` in `ServerSettingsScreen`.
+The current xorein control route table does not contain authenticated handlers for these
+surfaces. Their flags are `false` in `src/config/featureFlags.ts`; implementing them requires
+owner-authoritative P2P state, bounded storage, and a real bot-token delivery design.
 
 ### 2026-06-07 — session-3: roles, polls, threads, DM edit E2EE, crowd rotation
 
@@ -368,7 +360,7 @@ and replaced it with real, P2P-propagating mutations (the mutation facade
 - `rolesManagement: true` in featureFlags; roles section wired in `ServerSettingsScreen`.
 - Protected roles cannot be deleted (`protected: true` guard).
 - Role rename (`nativeUpdateRole`) ✅ — implemented; inline edit input in `RoleRow`, wired via `useUpdateRole`.
-- `autoMod`, `auditLog`, and `bots` resolved — see control-API implementation 2026-06-07.
+- `autoMod`, `auditLog`, and `bots` remain gated until their control/protocol primitives exist.
 
 **Polls (`polls: true`)** — Poll votes are now P2P-accumulated:
 - Poll data encoded in message body as `🗳️ POLL:{…}` — sent via native engine so the
@@ -441,8 +433,8 @@ These items appeared in the original audit goal list but cannot be implemented h
 - **Role rename (`nativeUpdateRole`)** ✅ — implemented: `updateServerRole` in store,
   `nativeUpdateRole` in mutations (owner-only, protected roles blocked), wired via
   `useUpdateRole` hook; inline rename input in `RoleRow` component.
-- **`autoMod` / `auditLog` / `bots`** ✅ — implemented 2026-06-07; see the control-API
-  section above. Flags set `true` in featureFlags.ts.
+- **`autoMod` / `auditLog` / `bots`** ⚠️ — no current xorein control/protocol primitives;
+  flags remain `false` so no fake or unauthenticated admin surface ships.
 
 ---
 

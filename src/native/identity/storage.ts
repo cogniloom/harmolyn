@@ -23,6 +23,12 @@ const STORAGE_VERSION = 1;
 const ARGON2_M = 65536; // 64 MiB
 const ARGON2_T = 3;
 const ARGON2_P = 1;
+const ARGON2_MIN_M = 256; // Keep the explicit reduced test profile valid.
+const ARGON2_MAX_M = 128 * 1024; // Never let imported data request unbounded RAM.
+const ARGON2_MAX_T = 10;
+const ARGON2_MAX_P = 4;
+const MAX_IDENTITY_CIPHERTEXT_BYTES = 512 * 1024;
+const AES_GCM_TAG_BYTES = 16;
 
 // ── Encryption types ───────────────────────────────────────────────────────
 
@@ -51,17 +57,92 @@ function toHex(b: Uint8Array): string {
 }
 
 function fromHex(s: string): Uint8Array {
-  const b = new Uint8Array(s.length / 2);
+	if (typeof s !== 'string' || s.length % 2 !== 0 || !/^[0-9a-fA-F]*$/.test(s)) {
+		throw new Error('identity storage: invalid hexadecimal value');
+	}
+	const b = new Uint8Array(s.length / 2);
   for (let i = 0; i < b.length; i++) b[i] = parseInt(s.slice(i * 2, i * 2 + 2), 16);
   return b;
 }
 
 function toBase64(b: Uint8Array): string {
-  return btoa(String.fromCharCode(...b));
+	let binary = '';
+	for (let offset = 0; offset < b.length; offset += 0x8000) {
+		binary += String.fromCharCode(...b.subarray(offset, offset + 0x8000));
+	}
+	return btoa(binary);
 }
 
 function fromBase64(s: string): Uint8Array {
-  return new Uint8Array([...atob(s)].map(c => c.charCodeAt(0)));
+	if (typeof s !== 'string' || s.length > 4 * Math.ceil(MAX_IDENTITY_CIPHERTEXT_BYTES / 3) + 4
+		|| s.length % 4 === 1 || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(s)) {
+		throw new Error('identity storage: invalid base64 value');
+	}
+	const decoded = atob(s);
+	return Uint8Array.from(decoded, c => c.charCodeAt(0));
+}
+
+function validateArgon2Params(params: Argon2Params): void {
+	if (!Number.isSafeInteger(params.m) || params.m < ARGON2_MIN_M || params.m > ARGON2_MAX_M
+		|| !Number.isSafeInteger(params.t) || params.t < 1 || params.t > ARGON2_MAX_T
+		|| !Number.isSafeInteger(params.p) || params.p < 1 || params.p > ARGON2_MAX_P
+		|| params.m < 8 * params.p) {
+		throw new Error('identity storage: invalid KDF parameters');
+	}
+}
+
+function isByteArray(value: unknown, length: number): value is number[] {
+	return Array.isArray(value) && value.length === length
+		&& value.every(byte => Number.isSafeInteger(byte) && byte >= 0 && byte <= 255);
+}
+
+function parseStoredIdentity(plaintext: Uint8Array): { ed25519_priv: number[]; mldsa65_priv: number[] } {
+	if (plaintext.length > MAX_IDENTITY_CIPHERTEXT_BYTES) {
+		throw new Error('identity storage: identity payload is too large');
+	}
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(new TextDecoder().decode(plaintext));
+	} catch {
+		throw new Error('identity storage: invalid identity payload');
+	}
+	if (typeof parsed !== 'object' || parsed === null) {
+		throw new Error('identity storage: invalid identity payload');
+	}
+	const stored = parsed as Record<string, unknown>;
+	if (!isByteArray(stored.ed25519_priv, 64) || !isByteArray(stored.mldsa65_priv, 4032)) {
+		throw new Error('identity storage: invalid identity key material');
+	}
+	return {
+		ed25519_priv: stored.ed25519_priv,
+		mldsa65_priv: stored.mldsa65_priv,
+	};
+}
+
+function validateEncryptedIdentityBlob(blob: unknown): asserts blob is EncryptedIdentityBlob {
+	if (typeof blob !== 'object' || blob === null) {
+		throw new Error('identity storage: invalid format');
+	}
+	const candidate = blob as Record<string, unknown>;
+	if (candidate.v !== STORAGE_VERSION || candidate.kdf !== 'argon2id'
+		|| typeof candidate.salt !== 'string' || candidate.salt.length !== 32
+		|| typeof candidate.nonce !== 'string' || candidate.nonce.length !== 24
+		|| typeof candidate.ciphertext !== 'string') {
+		throw new Error('identity storage: unsupported format');
+	}
+	const salt = fromHex(candidate.salt);
+	const nonce = fromHex(candidate.nonce);
+	if (salt.length !== 16 || nonce.length !== 12) {
+		throw new Error('identity storage: invalid nonce or salt');
+	}
+	if (typeof candidate.m !== 'number' || typeof candidate.t !== 'number' || typeof candidate.p !== 'number') {
+		throw new Error('identity storage: invalid KDF parameters');
+	}
+	validateArgon2Params({ m: candidate.m, t: candidate.t, p: candidate.p });
+	const ciphertext = fromBase64(candidate.ciphertext);
+	if (ciphertext.length < AES_GCM_TAG_BYTES || ciphertext.length > MAX_IDENTITY_CIPHERTEXT_BYTES) {
+		throw new Error('identity storage: ciphertext size is invalid');
+	}
 }
 
 /** Serialize an identity to the Go-oracle-compatible stored format. */
@@ -113,7 +194,8 @@ export function encryptIdentity(
   passphrase: string,
   argon2Params: Argon2Params = { m: ARGON2_M, t: ARGON2_T, p: ARGON2_P },
 ): EncryptedIdentityBlob {
-  const { m, t, p } = argon2Params;
+	const { m, t, p } = argon2Params;
+	validateArgon2Params(argon2Params);
   const salt = crypto.getRandomValues(new Uint8Array(16));
   const nonce = crypto.getRandomValues(new Uint8Array(12));
   const key = deriveKey(passphrase, salt, m, t, p);
@@ -127,8 +209,8 @@ export function encryptIdentity(
 
 /** Decrypt an encrypted identity blob with the given passphrase. */
 export async function decryptIdentity(blob: EncryptedIdentityBlob, passphrase: string): Promise<XoreinIdentity> {
-  if (blob.v !== 1 || blob.kdf !== 'argon2id') throw new Error('identity storage: unsupported format');
-  const salt = fromHex(blob.salt);
+	validateEncryptedIdentityBlob(blob);
+	const salt = fromHex(blob.salt);
   const nonce = fromHex(blob.nonce);
   const key = deriveKey(passphrase, salt, blob.m, blob.t, blob.p);
   const ciphertext = fromBase64(blob.ciphertext);
@@ -141,10 +223,7 @@ export async function decryptIdentity(blob: EncryptedIdentityBlob, passphrase: s
     throw new Error('identity storage: decryption failed (wrong passphrase?)');
   }
 
-  const stored = JSON.parse(new TextDecoder().decode(plaintext)) as {
-    ed25519_priv: number[];
-    mldsa65_priv: number[];
-  };
+	const stored = parseStoredIdentity(plaintext);
   const edPriv64 = new Uint8Array(stored.ed25519_priv);
   const mldsaPriv = new Uint8Array(stored.mldsa65_priv);
   return identityFromStored(edPriv64, mldsaPriv);
@@ -168,7 +247,8 @@ function openDB(): Promise<IDBDatabase> {
 
 /** Save an encrypted identity blob to IndexedDB. */
 export async function saveEncryptedIdentity(blob: EncryptedIdentityBlob): Promise<void> {
-  const db = await openDB();
+	validateEncryptedIdentityBlob(blob);
+	const db = await openDB();
   await new Promise<void>((resolve, reject) => {
     const tx = db.transaction(IDB_STORE_NAME, 'readwrite');
     tx.objectStore(IDB_STORE_NAME).put(JSON.stringify(blob), IDB_KEY);
@@ -187,9 +267,15 @@ export async function loadEncryptedIdentity(): Promise<EncryptedIdentityBlob | n
     req.onsuccess = () => resolve(req.result as string | undefined);
     req.onerror = () => reject(req.error);
   });
-  db.close();
-  if (!raw) return null;
-  return JSON.parse(raw) as EncryptedIdentityBlob;
+	db.close();
+	if (!raw) return null;
+	try {
+		const parsed: unknown = JSON.parse(raw);
+		validateEncryptedIdentityBlob(parsed);
+		return parsed;
+	} catch {
+		return null;
+	}
 }
 
 /** Check if an identity is persisted in IndexedDB (no decryption needed). */
@@ -295,7 +381,8 @@ export async function listVaultIdentities(): Promise<VaultEntry[]> {
 }
 
 export async function saveToVault(entry: VaultEntry): Promise<void> {
-  const db = await openVaultDB();
+	validateEncryptedIdentityBlob(entry.blob);
+	const db = await openVaultDB();
   await new Promise<void>((resolve, reject) => {
     const tx = db.transaction(VAULT_STORE_NAME, 'readwrite');
     tx.objectStore(VAULT_STORE_NAME).put(entry);
@@ -339,8 +426,14 @@ export async function saveCurrentToVault(peerId: string, displayName: string): P
 
 /** Import an external encrypted backup blob into the vault after verifying the passphrase. */
 export async function importToVault(blobJson: string, passphrase: string): Promise<VaultEntry> {
-  const parsed = JSON.parse(blobJson) as EncryptedIdentityBlob;
-  const identity = await decryptIdentity(parsed, passphrase);
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(blobJson);
+	} catch {
+		throw new Error('identity storage: invalid backup JSON');
+	}
+	validateEncryptedIdentityBlob(parsed);
+	const identity = await decryptIdentity(parsed, passphrase);
   const entry: VaultEntry = {
     peerId: identity.peerId,
     displayName: '',
@@ -423,6 +516,22 @@ interface SessionBlob {
   ciphertext: string; // base64 AES-256-GCM(identity JSON) under the non-extractable key
 }
 
+function validateSessionBlob(blob: unknown): asserts blob is SessionBlob {
+	if (typeof blob !== 'object' || blob === null) {
+		throw new Error('identity storage: invalid session blob');
+	}
+	const candidate = blob as Record<string, unknown>;
+	if (typeof candidate.nonce !== 'string' || candidate.nonce.length !== 24
+		|| typeof candidate.ciphertext !== 'string') {
+		throw new Error('identity storage: invalid session blob');
+	}
+	const nonce = fromHex(candidate.nonce);
+	const ciphertext = fromBase64(candidate.ciphertext);
+	if (nonce.length !== 12 || ciphertext.length < AES_GCM_TAG_BYTES || ciphertext.length > MAX_IDENTITY_CIPHERTEXT_BYTES) {
+		throw new Error('identity storage: invalid session blob');
+	}
+}
+
 /** Returns true if a non-expired opt-in session entry exists in localStorage. Synchronous. */
 export function hasValidSession(): boolean {
   try {
@@ -476,12 +585,16 @@ async function idbDelete(key: string): Promise<void> {
 }
 
 async function saveSessionBlob(blob: SessionBlob): Promise<void> {
-  await idbPut(SESSION_BLOB_IDB_KEY, JSON.stringify(blob));
+	validateSessionBlob(blob);
+	await idbPut(SESSION_BLOB_IDB_KEY, JSON.stringify(blob));
 }
 
 async function loadSessionBlob(): Promise<SessionBlob | null> {
-  const raw = await idbGet<string>(SESSION_BLOB_IDB_KEY);
-  return raw ? (JSON.parse(raw) as SessionBlob) : null;
+	const raw = await idbGet<string>(SESSION_BLOB_IDB_KEY);
+	if (!raw) return null;
+	const parsed: unknown = JSON.parse(raw);
+	validateSessionBlob(parsed);
+	return parsed;
 }
 
 /**
@@ -563,10 +676,7 @@ export async function loadSessionIdentity(): Promise<XoreinIdentity | null> {
     const plaintext = new Uint8Array(
       await crypto.subtle.decrypt({ name: 'AES-GCM', iv: fromHex(blob.nonce) as BufferSource }, wrapKey, fromBase64(blob.ciphertext) as BufferSource),
     );
-    const stored = JSON.parse(new TextDecoder().decode(plaintext)) as {
-      ed25519_priv: number[];
-      mldsa65_priv: number[];
-    };
+	const stored = parseStoredIdentity(plaintext);
     // Refresh the sliding TTL, hard-capped from the initial password unlock.
     entry.expiresAt = Math.min(now + SESSION_TTL_MS, capAt);
     localStorage.setItem(SESSION_KEY_LS_KEY, JSON.stringify(entry));

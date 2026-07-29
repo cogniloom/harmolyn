@@ -9,6 +9,7 @@
 import type { PeerSync } from '../sync/peersync.js';
 import { PROTOCOLS, RECOVERY_OPS } from '../families/families.js';
 import { storeCustody, getCustody, type CustodyEntry } from './custody.js';
+import { hasControlCharacters, isPlainObject } from '../security/limits.js';
 
 // ── UI event bus (window CustomEvents) ───────────────────────────────────────
 
@@ -31,12 +32,36 @@ export interface RecoveryDelivery {
 }
 
 const _pending = new Map<string, PendingRecoveryRequest>();
+const MAX_PENDING = 100;
+const PENDING_TTL_MS = 15 * 60 * 1000;
+const MAX_PEER_ID_BYTES = 256;
+const MAX_DISPLAY_NAME_BYTES = 256;
+const MAX_BLOB_JSON_BYTES = 1 * 1024 * 1024;
+const MAX_STATE_JSON_BYTES = 4 * 1024 * 1024;
+
+function validPeerId(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length <= MAX_PEER_ID_BYTES
+    && !hasControlCharacters(value);
+}
+
+function boundedObject(value: unknown, maxBytes: number): value is Record<string, unknown> {
+  if (!isPlainObject(value)) return false;
+  try { return JSON.stringify(value).length <= maxBytes; } catch { return false; }
+}
+
+function prunePending(now = Date.now()): void {
+  for (const [id, request] of _pending) {
+    const timestamp = Date.parse(request.requestedAt);
+    if (!Number.isFinite(timestamp) || now - timestamp > PENDING_TTL_MS) _pending.delete(id);
+  }
+}
 
 function emit(name: string, detail: unknown): void {
   if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent(name, { detail }));
 }
 
 export function listPendingRecovery(): PendingRecoveryRequest[] {
+  prunePending();
   return Array.from(_pending.values());
 }
 
@@ -45,12 +70,16 @@ export function listPendingRecovery(): PendingRecoveryRequest[] {
 /** owner → guardian: persist the owner's encrypted backup. Owner == auth'd peer. */
 export async function handleRecoveryStore(payload: Record<string, unknown>, remotePeerId: string): Promise<Record<string, unknown>> {
   const blob = payload.blob;
-  if (!blob || typeof blob !== 'object') return { ok: false, error: 'no_blob' };
+  if (!validPeerId(remotePeerId) || !boundedObject(blob, MAX_BLOB_JSON_BYTES)) return { ok: false, error: 'invalid_blob' };
+  const state = payload.state === undefined ? undefined : payload.state;
+  if (state !== undefined && !boundedObject(state, MAX_STATE_JSON_BYTES)) return { ok: false, error: 'invalid_state' };
   const entry: CustodyEntry = {
     ownerPeerId: remotePeerId, // bind to the authenticated sender, not a payload field
-    ownerDisplayName: typeof payload.owner_display_name === 'string' ? payload.owner_display_name : '',
+    ownerDisplayName: typeof payload.owner_display_name === 'string'
+      ? payload.owner_display_name.slice(0, MAX_DISPLAY_NAME_BYTES)
+      : '',
     blob,
-    ...(payload.state && typeof payload.state === 'object' ? { state: payload.state } : {}),
+    ...(state !== undefined ? { state } : {}),
     receivedAt: new Date().toISOString(),
   };
   await storeCustody(entry);
@@ -59,12 +88,14 @@ export async function handleRecoveryStore(payload: Record<string, unknown>, remo
 
 /** requester → guardian: surface a consent prompt; do NOT auto-release. */
 export async function handleRecoveryRequest(payload: Record<string, unknown>, remotePeerId: string): Promise<Record<string, unknown>> {
-  const ownerPeerId = String(payload.owner_peer_id ?? '').trim();
-  if (!ownerPeerId) return { ok: false, error: 'no_owner' };
+  prunePending();
+  const ownerPeerId = typeof payload.owner_peer_id === 'string' ? payload.owner_peer_id.trim() : '';
+  if (!validPeerId(ownerPeerId) || !validPeerId(remotePeerId)) return { ok: false, error: 'invalid_owner' };
   const custody = await getCustody(ownerPeerId);
   if (!custody) return { ok: false, error: 'no_custody' };
+  if (_pending.size >= MAX_PENDING) return { ok: false, error: 'busy' };
   const req: PendingRecoveryRequest = {
-    id: `${ownerPeerId}:${remotePeerId}:${Math.floor(Math.random() * 1e9)}`,
+    id: crypto.randomUUID(),
     ownerPeerId,
     requesterPeerId: remotePeerId,
     requestedAt: new Date().toISOString(),
@@ -76,10 +107,12 @@ export async function handleRecoveryRequest(payload: Record<string, unknown>, re
 
 /** guardian → requester (post-consent): the backup arrived. Hand to the UI. */
 export function handleRecoveryDeliver(payload: Record<string, unknown>, remotePeerId: string): Record<string, unknown> {
-  const ownerPeerId = String(payload.owner_peer_id ?? '').trim();
+  const ownerPeerId = typeof payload.owner_peer_id === 'string' ? payload.owner_peer_id.trim() : '';
   const blob = payload.blob;
-  if (!ownerPeerId || !blob) return { ok: false, error: 'bad_delivery' };
-  emit(RECOVERY_DELIVERED_EVENT, { ownerPeerId, blob, state: payload.state, fromPeerId: remotePeerId } as RecoveryDelivery);
+  const state = payload.state;
+  if (!validPeerId(ownerPeerId) || !validPeerId(remotePeerId) || !boundedObject(blob, MAX_BLOB_JSON_BYTES)
+    || (state !== undefined && !boundedObject(state, MAX_STATE_JSON_BYTES))) return { ok: false, error: 'bad_delivery' };
+  emit(RECOVERY_DELIVERED_EVENT, { ownerPeerId, blob, state, fromPeerId: remotePeerId } as RecoveryDelivery);
   return { ok: true };
 }
 
@@ -92,9 +125,13 @@ export async function distributeRecovery(
   blob: unknown,
   state?: unknown,
 ): Promise<{ delivered: string[]; failed: string[] }> {
+  if (!boundedObject(blob, MAX_BLOB_JSON_BYTES) || (state !== undefined && !boundedObject(state, MAX_STATE_JSON_BYTES))) {
+    return { delivered: [], failed: contacts.filter(validPeerId) };
+  }
   const delivered: string[] = [];
   const failed: string[] = [];
-  await Promise.allSettled(contacts.map(async (peerId) => {
+  const safeContacts = Array.from(new Set(contacts.filter(validPeerId))).slice(0, MAX_PENDING);
+  await Promise.allSettled(safeContacts.map(async (peerId) => {
     const resp = await peerSync.requestPeer<{ ok?: boolean }>(peerId, PROTOCOLS.recovery, RECOVERY_OPS.store, {
       owner_display_name: ownerDisplayName,
       blob,
@@ -102,7 +139,7 @@ export async function distributeRecovery(
     });
     if (resp?.ok) delivered.push(peerId); else failed.push(peerId);
   }));
-  return { delivered, failed };
+  return { delivered, failed: [...failed, ...contacts.filter(peerId => !safeContacts.includes(peerId))] };
 }
 
 // ── Requester side: ask a guardian to release my backup ───────────────────────
@@ -112,6 +149,7 @@ export async function sendRecoveryRequest(
   guardianPeerId: string,
   ownerPeerId: string,
 ): Promise<{ ok: boolean; pending?: boolean; error?: string }> {
+  if (!validPeerId(guardianPeerId) || !validPeerId(ownerPeerId)) return { ok: false, error: 'invalid_peer' };
   const resp = await peerSync.requestPeer<{ ok?: boolean; pending?: boolean; error?: string }>(
     guardianPeerId, PROTOCOLS.recovery, RECOVERY_OPS.request, { owner_peer_id: ownerPeerId },
   );
@@ -122,6 +160,7 @@ export async function sendRecoveryRequest(
 // ── Guardian side: approve / deny a pending request ───────────────────────────
 
 export async function approveRecovery(peerSync: PeerSync, requestId: string): Promise<boolean> {
+  prunePending();
   const req = _pending.get(requestId);
   if (!req) return false;
   const custody = await getCustody(req.ownerPeerId);
@@ -135,5 +174,6 @@ export async function approveRecovery(peerSync: PeerSync, requestId: string): Pr
 }
 
 export function denyRecovery(requestId: string): void {
+  prunePending();
   _pending.delete(requestId);
 }

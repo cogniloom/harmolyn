@@ -20,6 +20,13 @@ import type {
   XoreinReport,
   XoreinOutboxEntry,
 } from '../../types.js';
+import {
+  decodeBase64Strict,
+  hasControlCharacters,
+  isPlainObject,
+  normalizeSafeAttachments,
+  MAX_CHAT_BODY_BYTES,
+} from '../security/limits.js';
 
 const STORAGE_KEY = 'harmolyn:native:state';
 
@@ -32,9 +39,68 @@ const MAX_PERSISTED_MESSAGES = 5000;
 const STATE_KEY_LABEL = 'xorein/state/v1/at-rest';
 
 // AES-256 key for encrypting the at-rest state blob, derived from the unlocked
-// identity seed and held only in memory. Null before unlock (or in tests) — see
-// persist()/load() for the plaintext-legacy fallback used only when it is null.
+// identity seed and held only in memory. Null before unlock (or for a guest) —
+// persistence is memory-only until an identity-derived key is installed.
 let _stateKey: Uint8Array | null = null;
+
+function boundedStateText(value: unknown, maxBytes: number, allowEmpty = false): value is string {
+  return typeof value === 'string'
+    && (allowEmpty || value.length > 0)
+    && value.length <= maxBytes
+    && !hasControlCharacters(value);
+}
+
+function isSafeRuntimeMessage(value: unknown): value is XoreinRuntimeMessage {
+  if (!isPlainObject(value)
+    || !boundedStateText(value.id, 256)
+    || (value.scope_type !== 'channel' && value.scope_type !== 'dm')
+    || !boundedStateText(value.scope_id, 256)
+    || !boundedStateText(value.sender_peer_id, 256)
+    || typeof value.body !== 'string'
+    || new TextEncoder().encode(value.body).length > MAX_CHAT_BODY_BYTES) return false;
+  const media = normalizeSafeAttachments(value.media);
+  if (media === null) return false;
+  if (value.server_id !== undefined && !boundedStateText(value.server_id, 256)) return false;
+  if (value.reply_to !== undefined && !boundedStateText(value.reply_to, 256)) return false;
+  if (value.created_at !== undefined && !boundedStateText(value.created_at, 96, true)) return false;
+  if (value.updated_at !== undefined && !boundedStateText(value.updated_at, 96, true)) return false;
+  return true;
+}
+
+function isSafeJoinedServer(value: unknown, expectedServerId: string): value is XoreinRuntimeServer {
+  if (!isPlainObject(value)
+    || !boundedStateText(expectedServerId, 256)
+    || value.id !== expectedServerId
+    || !boundedStateText(value.id, 256)
+    || !boundedStateText(value.name, 512)
+    || !boundedStateText(value.owner_peer_id, 256)
+    || value.invite_secret !== undefined
+    || !Array.isArray(value.members)
+    || value.members.length > 1000
+    || !value.members.every(member => boundedStateText(member, 256))
+    || !isPlainObject(value.channels)
+    || Object.keys(value.channels).length > 500) return false;
+  if (value.crowd_root !== undefined
+    && (typeof value.crowd_root !== 'string' || decodeBase64Strict(value.crowd_root, 32)?.length !== 32)) return false;
+  for (const [channelId, channelValue] of Object.entries(value.channels)) {
+    if (!isPlainObject(channelValue)
+      || !boundedStateText(channelId, 256)
+      || channelValue.id !== channelId
+      || channelValue.server_id !== expectedServerId
+      || !boundedStateText(channelValue.name, 512)) return false;
+  }
+  if (value.description !== undefined && !boundedStateText(value.description, 4096, true)) return false;
+  if (value.created_at !== undefined && !boundedStateText(value.created_at, 96, true)) return false;
+  if (value.updated_at !== undefined && !boundedStateText(value.updated_at, 96, true)) return false;
+  const crowdEpoch = value.crowd_epoch;
+  if (crowdEpoch !== undefined
+    && (typeof crowdEpoch !== 'number' || !Number.isSafeInteger(crowdEpoch)
+      || crowdEpoch < 0 || crowdEpoch > 0xffffffff)) return false;
+  const serverRev = value.server_rev;
+  if (serverRev !== undefined
+    && (typeof serverRev !== 'number' || !Number.isSafeInteger(serverRev) || serverRev < 0)) return false;
+  return true;
+}
 
 /**
  * Install (or clear) the at-rest encryption key from the unlocked identity seed.
@@ -42,7 +108,7 @@ let _stateKey: Uint8Array | null = null;
  * Passing null clears the key (e.g. on lock/logout).
  */
 export function setStateEncryptionKey(seed: Uint8Array | null): void {
-  _stateKey = seed && seed.length > 0 ? deriveKey(seed, null, STATE_KEY_LABEL, 32) : null;
+  _stateKey = seed && seed.length === 32 ? deriveKey(seed, null, STATE_KEY_LABEL, 32) : null;
 }
 
 function b64encode(b: Uint8Array): string {
@@ -52,6 +118,10 @@ function b64encode(b: Uint8Array): string {
 }
 
 function b64decode(s: string): Uint8Array {
+  if (typeof s !== 'string' || s.length > 12 * 1024 * 1024
+    || s.length % 4 === 1 || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(s)) {
+    throw new Error('native state: invalid base64');
+  }
   const bin = atob(s);
   const out = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
@@ -137,13 +207,18 @@ function readPersistedState(): NativeState | null {
     const env = outer as { n?: string; ct?: string };
     if (!_stateKey || typeof env.n !== 'string' || typeof env.ct !== 'string') return null;
     try {
-      const pt = gcm(_stateKey, b64decode(env.n)).decrypt(b64decode(env.ct));
-      return JSON.parse(new TextDecoder().decode(pt)) as NativeState;
+      const nonce = b64decode(env.n);
+      const ciphertext = b64decode(env.ct);
+      if (nonce.length !== 12 || ciphertext.length < 16 || ciphertext.length > 8 * 1024 * 1024) return null;
+      const decoded: unknown = JSON.parse(new TextDecoder().decode(gcm(_stateKey, nonce).decrypt(ciphertext)));
+      return decoded && typeof decoded === 'object' && !Array.isArray(decoded) ? decoded as NativeState : null;
     } catch {
       return null; // wrong key / tampered — start fresh rather than surface garbage
     }
   }
-  // Legacy plaintext (pre-encryption). Accept once so it migrates on next persist.
+  // Legacy plaintext is only readable after the identity-derived key has been
+  // installed, so a locked/guest context cannot surface old communication data.
+  if (!_stateKey || !outer || typeof outer !== 'object' || Array.isArray(outer)) return null;
   return outer as NativeState;
 }
 
@@ -227,29 +302,35 @@ function persist(): void {
   try {
     const store = _storage();
     if (!store) return;
+    // Locked and guest contexts are memory-only. Never serialize or persist
+    // state until the registered identity-derived key is available.
+    if (!_stateKey) return;
     // Trim persisted messages to the retention cap (keep the most recent). The live
     // in-memory state keeps everything for this session; only the disk copy is bounded.
     const toPersist: NativeState = _state.messages.length > MAX_PERSISTED_MESSAGES
       ? { ..._state, messages: _state.messages.slice(-MAX_PERSISTED_MESSAGES) }
       : _state;
     const json = JSON.stringify(toPersist);
-    if (_stateKey) {
-      // Encrypt at rest: crowd_root, invite_secret, and every message body are in
-      // this blob — they must never touch disk in cleartext.
-      const nonce = crypto.getRandomValues(new Uint8Array(12));
-      const ct = gcm(_stateKey, nonce).encrypt(new TextEncoder().encode(json));
-      store.setItem(STORAGE_KEY, JSON.stringify({ v: 2, n: b64encode(nonce), ct: b64encode(ct) }));
-    } else {
-      // No key yet (pre-unlock / tests). No sensitive data exists before an identity
-      // is unlocked; writing plaintext here keeps dev/test round-trips working and is
-      // migrated to v2 as soon as a key is installed.
-      store.setItem(STORAGE_KEY, json);
-    }
+    // Encrypt at rest: crowd_root, invite_secret, and every message body are in
+    // this blob — they must never touch disk in cleartext.
+    const nonce = crypto.getRandomValues(new Uint8Array(12));
+    const ct = gcm(_stateKey, nonce).encrypt(new TextEncoder().encode(json));
+    store.setItem(STORAGE_KEY, JSON.stringify({ v: 2, n: b64encode(nonce), ct: b64encode(ct) }));
   } catch { /* quota exceeded / private browsing — best effort */ }
 }
 
 export function initStore(): NativeState {
+  const rawBeforeLoad = _storage()?.getItem(STORAGE_KEY);
   _state = load();
+  // Migrate legacy plaintext only after an identity key is active. A v2 blob is
+  // never overwritten here, which preserves data when the wrong identity key is
+  // supplied and decryption correctly fails closed.
+  if (_stateKey && rawBeforeLoad) {
+    try {
+      const outer: unknown = JSON.parse(rawBeforeLoad);
+      if (!outer || typeof outer !== 'object' || (outer as { v?: number }).v !== 2) persist();
+    } catch { /* corrupt storage stays unreadable */ }
+  }
   return _state;
 }
 
@@ -323,11 +404,7 @@ export function applyJoinedServer(
   server: XoreinRuntimeServer,
   messages: XoreinRuntimeMessage[] = [],
 ): boolean {
-  if (!server?.id || !expectedServerId || server.id !== expectedServerId) {
-    console.warn(
-      '[xorein/join] discarding server record: asked for',
-      expectedServerId, 'but peer returned', server?.id,
-    );
+  if (!isSafeJoinedServer(server, expectedServerId)) {
     return false;
   }
   const channelIds = new Set(Object.keys(server.channels ?? {}));
@@ -345,7 +422,7 @@ export function applyJoinedServer(
     // This also runs on every reconciliation re-pull, not just first join, so
     // the check applies unconditionally on every call, forever.
     const merged = messages.filter(m =>
-      m && m.id && !existingIds.has(m.id) &&
+      isSafeRuntimeMessage(m) && !existingIds.has(m.id) &&
       m.scope_type === 'channel' && m.server_id === server.id && channelIds.has(m.scope_id),
     );
     return {
@@ -368,7 +445,7 @@ export function mergeHistoryMessages(messages: XoreinRuntimeMessage[]): number {
   let added = 0;
   updateState(s => {
     const existingIds = new Set(s.messages.map(m => m.id));
-    const fresh = messages.filter(m => m && m.id && !existingIds.has(m.id));
+    const fresh = messages.filter(m => isSafeRuntimeMessage(m) && !existingIds.has(m.id));
     added = fresh.length;
     return fresh.length ? { messages: [...fresh, ...s.messages] } : {};
   });

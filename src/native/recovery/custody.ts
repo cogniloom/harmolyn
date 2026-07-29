@@ -12,6 +12,19 @@
 const DB_NAME = 'xorein-recovery';
 const STORE = 'custody';
 const CONTACTS_KEY = 'harmolyn:recovery:contacts';
+const MAX_CUSTODY_ENTRIES = 100;
+const MAX_PEER_ID_BYTES = 256;
+const MAX_DISPLAY_NAME_BYTES = 256;
+const MAX_CUSTODY_BLOB_BYTES = 1 * 1024 * 1024;
+const MAX_CUSTODY_STATE_BYTES = 4 * 1024 * 1024;
+
+function hasControlCharacters(value: string): boolean {
+  for (let i = 0; i < value.length; i++) {
+    const code = value.charCodeAt(i);
+    if (code <= 0x1f || code === 0x7f) return true;
+  }
+  return false;
+}
 
 /** A backup a friend (owner) entrusted to us (the guardian). Ciphertext only. */
 export interface CustodyEntry {
@@ -22,6 +35,30 @@ export interface CustodyEntry {
   /** The owner's identity-key-encrypted account state (servers/DMs/profile; opaque to us). */
   state?: unknown;
   receivedAt: string;
+}
+
+function validPeerId(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length <= MAX_PEER_ID_BYTES
+    && !hasControlCharacters(value);
+}
+
+function boundedJsonObject(value: unknown, maxBytes: number): value is Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  try {
+    return JSON.stringify(value).length <= maxBytes;
+  } catch {
+    return false;
+  }
+}
+
+function validCustodyEntry(value: unknown): value is CustodyEntry {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const entry = value as Partial<CustodyEntry>;
+  return validPeerId(entry.ownerPeerId)
+    && (typeof entry.ownerDisplayName === 'string' && entry.ownerDisplayName.length <= MAX_DISPLAY_NAME_BYTES)
+    && boundedJsonObject(entry.blob, MAX_CUSTODY_BLOB_BYTES)
+    && (entry.state === undefined || boundedJsonObject(entry.state, MAX_CUSTODY_STATE_BYTES))
+    && typeof entry.receivedAt === 'string' && entry.receivedAt.length <= 64;
 }
 
 function openDB(): Promise<IDBDatabase> {
@@ -39,6 +76,7 @@ function openDB(): Promise<IDBDatabase> {
 }
 
 export async function storeCustody(entry: CustodyEntry): Promise<void> {
+  if (!validCustodyEntry(entry)) throw new Error('recovery: invalid custody entry');
   const db = await openDB();
   await new Promise<void>((resolve, reject) => {
     const tx = db.transaction(STORE, 'readwrite');
@@ -58,7 +96,7 @@ export async function getCustody(ownerPeerId: string): Promise<CustodyEntry | nu
     req.onerror = () => reject(req.error);
   });
   db.close();
-  return entry ?? null;
+  return entry && validCustodyEntry(entry) ? entry : null;
 }
 
 export async function listCustody(): Promise<CustodyEntry[]> {
@@ -70,7 +108,7 @@ export async function listCustody(): Promise<CustodyEntry[]> {
     req.onerror = () => reject(req.error);
   });
   db.close();
-  return entries;
+  return entries.filter(validCustodyEntry).slice(0, MAX_CUSTODY_ENTRIES);
 }
 
 export async function removeCustody(ownerPeerId: string): Promise<void> {
@@ -90,7 +128,9 @@ export function getRecoveryContacts(): string[] {
   try {
     const raw = localStorage.getItem(CONTACTS_KEY);
     const parsed = raw ? (JSON.parse(raw) as unknown) : [];
-    return Array.isArray(parsed) ? parsed.filter((x): x is string => typeof x === 'string') : [];
+    return Array.isArray(parsed)
+      ? Array.from(new Set(parsed.filter(validPeerId))).slice(0, MAX_CUSTODY_ENTRIES)
+      : [];
   } catch {
     return [];
   }
@@ -98,7 +138,8 @@ export function getRecoveryContacts(): string[] {
 
 export function setRecoveryContacts(peerIds: string[]): void {
   try {
-    localStorage.setItem(CONTACTS_KEY, JSON.stringify(Array.from(new Set(peerIds))));
+    const safe = Array.from(new Set(peerIds.filter(validPeerId))).slice(0, MAX_CUSTODY_ENTRIES);
+    localStorage.setItem(CONTACTS_KEY, JSON.stringify(safe));
   } catch {
     /* storage full / unavailable — non-fatal */
   }

@@ -15,6 +15,13 @@ import type { XoreinIdentity } from '../identity/identity.js';
 import type { XoreinRuntimeServer, XoreinRuntimeDM, XoreinRuntimeProfile } from '../../types.js';
 import { getState, addServer, recordServerMembership, ensureDm, mergeNativeIdentityProfile } from './store.js';
 import { publishNativeSnapshot } from './snapshot.js';
+import {
+  decodeBase64Strict,
+  encodeBase64Chunked,
+  hasControlCharacters,
+  isPlainObject,
+  MAX_SYNC_STATE_BYTES,
+} from '../security/limits.js';
 
 const LABEL = 'xorein/state-sync/v1';
 /** localStorage slot holding an encrypted state blob delivered during recovery. */
@@ -43,18 +50,59 @@ export interface EncryptedSyncBlob {
 function hex(bytes: Uint8Array): string {
   return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
 }
-function unhex(s: string): Uint8Array {
-  const out = new Uint8Array(s.length / 2);
+function unhex(s: unknown, exactBytes: number): Uint8Array | null {
+  if (typeof s !== 'string' || s.length !== exactBytes * 2 || !/^[0-9a-f]+$/i.test(s)) return null;
+  const out = new Uint8Array(exactBytes);
   for (let i = 0; i < out.length; i++) out[i] = parseInt(s.slice(i * 2, i * 2 + 2), 16);
   return out;
 }
 function b64(bytes: Uint8Array): string {
-  let s = ''; for (const b of bytes) s += String.fromCharCode(b); return btoa(s);
+  return encodeBase64Chunked(bytes);
 }
-function unb64(s: string): Uint8Array {
-  const bin = atob(s); const out = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-  return out;
+
+function boundedId(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length <= 256
+    && !hasControlCharacters(value);
+}
+
+function validSyncState(value: unknown): value is SyncState {
+  if (!isPlainObject(value) || !isPlainObject(value.servers) || Object.keys(value.servers).length > 200
+    || !Array.isArray(value.joined_server_ids) || value.joined_server_ids.length > 2000
+    || !value.joined_server_ids.every(boundedId)
+    || !isPlainObject(value.dms) || Object.keys(value.dms).length > 2000) return false;
+  for (const [serverId, serverValue] of Object.entries(value.servers)) {
+    if (!isPlainObject(serverValue)
+      || serverValue.id !== serverId
+      || !boundedId(serverValue.id)
+      || typeof serverValue.name !== 'string'
+      || serverValue.name.length > 512
+      || !boundedId(serverValue.owner_peer_id)
+      || !Array.isArray(serverValue.members)
+      || serverValue.members.length > 1000
+      || !serverValue.members.every(boundedId)
+      || !isPlainObject(serverValue.channels)
+      || Object.keys(serverValue.channels).length > 500) return false;
+    if (serverValue.crowd_root !== undefined
+      && (typeof serverValue.crowd_root !== 'string' || decodeBase64Strict(serverValue.crowd_root, 32)?.length !== 32)) return false;
+    for (const [channelId, channel] of Object.entries(serverValue.channels)) {
+      if (!isPlainObject(channel) || channel.id !== channelId || channel.server_id !== serverId || !boundedId(channel.id)) return false;
+    }
+  }
+  for (const [dmId, dm] of Object.entries(value.dms)) {
+    if (!isPlainObject(dm) || dm.id !== dmId || !boundedId(dm.id)
+      || !Array.isArray(dm.participants) || dm.participants.length > 4 || !dm.participants.every(boundedId)) return false;
+  }
+  if (value.profile !== undefined) {
+    const profile = value.profile;
+    if (!isPlainObject(profile)
+      || (profile.display_name !== undefined && typeof profile.display_name !== 'string')
+      || (profile.bio !== undefined && typeof profile.bio !== 'string')
+      || (profile.avatar !== undefined && typeof profile.avatar !== 'string')) return false;
+    if (typeof profile.display_name === 'string' && profile.display_name.length > 256) return false;
+    if (typeof profile.bio === 'string' && profile.bio.length > 4096) return false;
+    if (typeof profile.avatar === 'string' && profile.avatar.length > 512 * 1024) return false;
+  }
+  return true;
 }
 
 function stateKey(id: XoreinIdentity): Uint8Array {
@@ -73,18 +121,26 @@ export function captureSyncState(): SyncState {
 }
 
 export function encryptSyncState(id: XoreinIdentity, state: SyncState): EncryptedSyncBlob {
+  if (!validSyncState(state)) throw new Error('state sync: invalid state');
   const key = stateKey(id);
   const nonce = crypto.getRandomValues(new Uint8Array(12));
   const pt = new TextEncoder().encode(JSON.stringify(state));
+  if (pt.length > MAX_SYNC_STATE_BYTES) throw new Error('state sync: state exceeds limit');
   const ct = gcm(key, nonce).encrypt(pt);
   return { v: 1, nonce: hex(nonce), ciphertext: b64(ct) };
 }
 
 export function decryptSyncState(id: XoreinIdentity, blob: EncryptedSyncBlob): SyncState | null {
   try {
+    if (!isPlainObject(blob) || blob.v !== 1) return null;
+    const nonce = unhex(blob.nonce, 12);
+    const ciphertext = decodeBase64Strict(blob.ciphertext, MAX_SYNC_STATE_BYTES + 16);
+    if (!nonce || !ciphertext || ciphertext.length < 16) return null;
     const key = stateKey(id);
-    const pt = gcm(key, unhex(blob.nonce)).decrypt(unb64(blob.ciphertext));
-    return JSON.parse(new TextDecoder().decode(pt)) as SyncState;
+    const pt = gcm(key, nonce).decrypt(ciphertext);
+    if (pt.length > MAX_SYNC_STATE_BYTES) return null;
+    const parsed: unknown = JSON.parse(new TextDecoder().decode(pt));
+    return validSyncState(parsed) ? parsed : null;
   } catch {
     return null;
   }
@@ -92,6 +148,7 @@ export function decryptSyncState(id: XoreinIdentity, blob: EncryptedSyncBlob): S
 
 /** Merge a recovered snapshot into local state (additive — never destructive). */
 export function applySyncState(state: SyncState): void {
+  if (!validSyncState(state)) return;
   for (const server of Object.values(state.servers ?? {})) {
     if (server && server.id) addServer(server);
   }
@@ -113,6 +170,10 @@ export function restorePendingSyncState(id: XoreinIdentity): boolean {
   try {
     const raw = localStorage.getItem(PENDING_STATE_KEY);
     if (!raw) return false;
+    if (raw.length > Math.ceil((MAX_SYNC_STATE_BYTES + 16) * 4 / 3) + 4096) {
+      localStorage.removeItem(PENDING_STATE_KEY);
+      return false;
+    }
     const blob = JSON.parse(raw) as EncryptedSyncBlob;
     const state = decryptSyncState(id, blob);
     localStorage.removeItem(PENDING_STATE_KEY);

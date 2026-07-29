@@ -476,9 +476,7 @@ export class VoiceSession {
     if (this.localStream) this.activity.addStream(this.localPeerId, this.localStream);
 
     // 4) Best-effort mesh: discover who is already here and dial them.
-    const tTurn = Date.now();
     this.iceServers = await fetchTurnCredentials().catch(() => [] as RTCIceServer[]);
-    console.debug(`[voice] turn-credentials fetch took ${Date.now() - tTurn}ms`);
     // Surface an honest warning when no TURN relay is available: on restrictive or
     // symmetric NATs a STUN-only mesh may never connect, and the user deserves to
     // know rather than watch a call spin forever.
@@ -504,10 +502,7 @@ export class VoiceSession {
       screen_sharing: false,
       ...selfProfile(),
     };
-    const tAnnounce = Date.now();
-    console.debug(`[voice] presence fan-out to ${members.length} member(s)`);
     const responses = await peerSync.requestScope<VoicePresenceResponse>(members, PROTOCOLS.voice, VOICE_OPS.presence, req);
-    console.debug(`[voice] presence responses after ${Date.now() - tAnnounce}ms: ${JSON.stringify(responses.map(r => ({ p: r.peerId.slice(-6), in: r.response?.in_channel })))}`);
 
     const present = responses.filter(r => r.response?.in_channel);
     for (const { peerId, response } of present) {

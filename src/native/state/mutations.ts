@@ -14,7 +14,7 @@ import {
   addReaction as storeAddReaction, removeReaction as storeRemoveReaction,
   pinMessage as storePinMessage,
   setMessageDeliveryStatus,
-  addServer, addChannel, updateChannel as storeUpdateChannel, removeChannel as storeRemoveChannel, recordServerMembership,
+  addServer, addChannel, updateChannel as storeUpdateChannel, removeChannel as storeRemoveChannel,
   updateServer, removeServerMembership, removeServerMember,
   setActiveScope as storeSetActiveScope, clearUnread as storeClearUnread,
   ensureDm,
@@ -70,7 +70,7 @@ export function rotateCrowdEpoch(serverId: string): boolean {
 }
 
 function localPeerId(): string {
-  return getState().identity?.peer_id ?? 'local';
+  return getState().identity?.peer_id ?? '';
 }
 
 function nowISO(): string {
@@ -536,39 +536,17 @@ export function nativeCreateServer(
 }
 
 /**
- * Join a server by invite. Records membership locally so the server appears for
- * this identity (read-only until the full manifest/channels arrive over P2P).
- *
- * NOTE: fetching the authoritative manifest (name, owner, channels) from the
- * server owner via rendezvous is the remaining P2P piece; `preview` lets the
- * caller seed name/owner from the support node's discovery in the meantime.
+ * Join a server by invite. A local placeholder is never accepted: membership,
+ * owner authority, channels, and encryption roots must come from an authenticated
+ * owner response over the P2P path.
  */
 export function nativeJoinServer(
   rawDeeplink: string,
-  preview?: { name?: string; ownerPeerId?: string },
 ): XoreinRuntimeServer {
   const { serverId } = parseJoinDeepLink(rawDeeplink.trim());
-  const me = localPeerId();
   const existing = getState().servers[serverId];
-  const base: XoreinRuntimeServer = existing ?? {
-    id: serverId,
-    name: preview?.name?.trim() || serverId,
-    // Never claim ownership for the joiner — that would grant them false
-    // owner/admin/moderation affordances. Use the discovered owner if known,
-    // otherwise a non-self placeholder until the authoritative manifest syncs.
-    owner_peer_id: preview?.ownerPeerId?.trim() || 'pending-owner-sync',
-    members: [],
-    channels: {},
-    created_at: nowISO(),
-    updated_at: nowISO(),
-  };
-  const members = Array.from(new Set([...(base.members ?? []), me]));
-  const joined: XoreinRuntimeServer = { ...base, members };
-  addServer(joined);
-  recordServerMembership(serverId);
-  publishNativeSnapshot();
-  markStateDirty(); // re-sync account state to recovery guardians
-  return joined;
+  if (existing && getState().joined_server_ids.includes(serverId)) return existing;
+  throw new Error('join requires an authenticated response from the server owner');
 }
 
 /**
@@ -600,7 +578,7 @@ export function nativeCreateChannel(
   name: string,
   voice = false,
 ): XoreinRuntimeChannel {
-  const id = `${serverId}-${name.toLowerCase().replace(/\s+/g, '-')}-${Date.now()}`;
+  const id = `${serverId}-${uid()}`;
   const channel: XoreinRuntimeChannel = {
     id,
     server_id: serverId,

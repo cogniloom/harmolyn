@@ -116,7 +116,8 @@ fn read_xorein_control_endpoint() -> String {
 }
 
 fn xorein_control_ready(endpoint: &str) -> bool {
-	xorein_control_ready_with_token(endpoint, "")
+	let token = read_xorein_control_token();
+	xorein_control_ready_with_token(endpoint, &token)
 }
 
 fn xorein_control_ready_with_token(endpoint: &str, token: &str) -> bool {
@@ -559,6 +560,9 @@ fn request_xorein_control_api_inner_with_timeout(
         .ok_or_else(|| "xorein control endpoint is unavailable".to_string())?;
     let method = normalized_control_method(method)?;
     let path = normalized_control_path(path)?;
+    if !is_usable_control_token(token) {
+        return Err("xorein control token is unavailable or invalid".to_string());
+    }
     if method == "GET" && body.is_some() {
         return Err("xorein control GET requests cannot include a body".to_string());
     }
@@ -588,6 +592,9 @@ fn request_xorein_control_api_inner_with_timeout(
         "{method} {path} HTTP/1.1\r\nHost: {host}\r\nAccept: application/json\r\nConnection: close\r\nContent-Length: {}\r\n",
         body_bytes.len()
     );
+    request.push_str("Authorization: Bearer ");
+    request.push_str(token);
+    request.push_str("\r\n");
     if !body_bytes.is_empty() {
         request.push_str("Content-Type: application/json\r\n");
     }
@@ -845,7 +852,8 @@ fn request_xorein_control_api(
     body: Option<serde_json::Value>,
 ) -> Result<XoreinControlApiResponse, String> {
     let endpoint = resolve_runtime_control_endpoint(endpoint, read_xorein_control_endpoint());
-    let response = request_xorein_control_api_inner(&endpoint, "", &method, &path, body)
+    let token = read_xorein_control_token();
+    let response = request_xorein_control_api_inner(&endpoint, &token, &method, &path, body)
         .map_err(|error| error.to_string())?;
     if should_emit_runtime_updated(&method, &path, response.status) {
         let _ = app.emit(RUNTIME_UPDATED_EVENT, path.trim());

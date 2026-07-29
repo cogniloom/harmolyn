@@ -14,6 +14,7 @@ import { decryptInboundEnvelope, getScopeCrypto, applyCrowdRoot, type DecryptedM
 import { verifyInviteToken } from './invite.js';
 import { rekeyVoiceForServer } from '../voice/registry.js';
 import type { PeerSync } from './peersync.js';
+import { hasControlCharacters, MAX_CHAT_BODY_BYTES } from '../security/limits.js';
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -171,18 +172,26 @@ function requiredEnc(scopeType: 'channel' | 'dm'): 'seal' | 'crowd' {
   return scopeType === 'dm' ? 'seal' : 'crowd';
 }
 
+function boundedPayloadString(value: unknown, maxBytes: number, allowEmpty = false): string | null {
+  if (typeof value !== 'string' || (!allowEmpty && value.length === 0) || value.length > maxBytes) return null;
+  if (hasControlCharacters(value)) return null;
+  return value;
+}
+
 // ── Chat inbound ────────────────────────────────────────────────────────────
 
 function handleChatSend(payload: Record<string, unknown>, remotePeerId: string): void {
-  const scopeId = String(payload.scope_id ?? '');
-  const scopeType = String(payload.scope_type ?? 'channel') as 'channel' | 'dm';
-  const messageId = String(payload.message_id ?? crypto.randomUUID());
+  const scopeId = boundedPayloadString(payload.scope_id, 256);
+  const scopeTypeValue = payload.scope_type;
+  const scopeType = scopeTypeValue === 'channel' || scopeTypeValue === 'dm' ? scopeTypeValue : null;
+  const messageId = boundedPayloadString(payload.message_id, 256);
+  if (!scopeId || !scopeType || !messageId || !remotePeerId) return;
 
   // SECURITY: the message author is the Noise-authenticated connection peer
   // (libp2p binds remotePeer to its static key), NOT a self-asserted payload
   // field. Reject any envelope whose claimed sender_id does not match the
   // authenticated peer — this closes the sender-spoofing hole.
-  if (payload.sender_id != null && String(payload.sender_id) !== remotePeerId) return;
+  if (typeof payload.sender_id !== 'string' || payload.sender_id !== remotePeerId) return;
   const senderId = remotePeerId;
 
   const decoded = decodeInboundMessage(payload, remotePeerId, scopeId, scopeType);
@@ -195,6 +204,7 @@ function handleChatSend(payload: Record<string, unknown>, remotePeerId: string):
   }
   const { body, media, mode } = decoded;
   // Accept text-only, attachment-only, or both — but never an empty message.
+  if (new TextEncoder().encode(body).length > MAX_CHAT_BODY_BYTES) return;
   if (!(body && body.length > 0) && !(media && media.length > 0)) return;
 
   // SECURITY/CORRECTNESS: only accept messages for a scope the local identity
@@ -248,8 +258,8 @@ function handleChatSend(payload: Record<string, unknown>, remotePeerId: string):
     body,
     ...(media && media.length ? { media } : {}),
     // Carry the sender's reply reference so the quoted context renders here too.
-    ...(typeof payload.reply_to === 'string' && payload.reply_to.trim()
-      ? { reply_to: payload.reply_to.trim() }
+    ...(boundedPayloadString(payload.reply_to, 256)
+      ? { reply_to: boundedPayloadString(payload.reply_to, 256) as string }
       : {}),
     // A message only reaches this point after successful decryption (requiredEnc
     // rejects anything unencrypted), so it is genuinely E2EE — stamp the real mode.
@@ -315,7 +325,7 @@ function decodeInboundMessage(
 // ── Chat edit / delete inbound ─────────────────────────────────────────────
 
 function handleChatEdit(payload: Record<string, unknown>, remotePeerId: string): void {
-  const messageId = String(payload.message_id ?? '');
+  const messageId = boundedPayloadString(payload.message_id, 256);
   if (!messageId) return;
 
   const state = getState();
@@ -336,7 +346,7 @@ function handleChatEdit(payload: Record<string, unknown>, remotePeerId: string):
 }
 
 function handleChatDelete(payload: Record<string, unknown>, remotePeerId: string): void {
-  const messageId = String(payload.message_id ?? '');
+  const messageId = boundedPayloadString(payload.message_id, 256);
   if (!messageId) return;
 
   const state = getState();
@@ -356,7 +366,7 @@ function handleChatOp(payload: Record<string, unknown>, remotePeerId: string, op
     handleChatEdit(payload, remotePeerId);
   } else if (operation === 'chat.delete') {
     handleChatDelete(payload, remotePeerId);
-  } else {
+  } else if (operation === 'chat.send') {
     // Default / 'chat.send'
     handleChatSend(payload, remotePeerId);
   }
@@ -368,7 +378,12 @@ function handleChatOp(payload: Record<string, unknown>, remotePeerId: string, op
 function circuitAddrsFromPayload(payload: Record<string, unknown>): string[] {
   const a = payload.addresses;
   return Array.isArray(a)
-    ? a.filter((x): x is string => typeof x === 'string' && x.includes('p2p-circuit'))
+    ? a
+      .filter((x): x is string => typeof x === 'string'
+        && x.length <= 512
+        && !hasControlCharacters(x)
+        && x.includes('p2p-circuit'))
+      .slice(0, 8)
     : [];
 }
 
@@ -409,19 +424,25 @@ function handlePresenceUpdate(payload: Record<string, unknown>, remotePeerId: st
   // payload field, which any peer can forge.
   const peerId = remotePeerId;
   if (!peerId) return;
-  const status = String(payload.status ?? 'online');
+  const status = payload.status === 'online' || payload.status === 'idle'
+    || payload.status === 'dnd' || payload.status === 'offline'
+    ? payload.status
+    : 'online';
+  const statusText = boundedPayloadString(payload.status_text, 512, true);
+  const typingScope = boundedPayloadString(payload.typing_in_scope, 256, true);
+  const updatedAt = boundedPayloadString(payload.updated_at, 64, true);
   updatePresenceEntry(peerId, {
     status,
-    status_text: payload.status_text ? String(payload.status_text) : undefined,
-    typing_in_scope: payload.typing_in_scope ? String(payload.typing_in_scope) : undefined,
-    updated_at: String(payload.updated_at ?? new Date().toISOString()),
+    status_text: statusText || undefined,
+    typing_in_scope: typingScope || undefined,
+    updated_at: updatedAt || new Date().toISOString(),
   });
   // Learn the peer's reachable circuit addresses for cross-relay delivery, plus
   // any profile (display name / avatar) they rode along with presence so it
   // propagates to everyone who sees them.
   const addrs = circuitAddrsFromPayload(payload);
-  const displayName = typeof payload.display_name === 'string' && payload.display_name.trim() ? payload.display_name.trim() : undefined;
-  const avatar = typeof payload.avatar === 'string' && payload.avatar.trim() ? payload.avatar.trim() : undefined;
+  const displayName = boundedPayloadString(payload.display_name, 256, true)?.trim() || undefined;
+  const avatar = boundedPayloadString(payload.avatar, 512 * 1024, true)?.trim() || undefined;
   if (addrs.length || displayName || avatar) {
     upsertPeer({
       peer_id: peerId,
@@ -450,10 +471,10 @@ function handleNotifyPush(payload: Record<string, unknown>, remotePeerId: string
   const fromPeerId = remotePeerId;
 
   if (payload.kind === 'reaction') {
-    const messageId = String(payload.message_id ?? '');
-    const emoji = String(payload.emoji ?? '');
-    const action = payload.action === 'remove' ? 'remove' : 'add';
-    if (!messageId || !emoji) return;
+    const messageId = boundedPayloadString(payload.message_id, 256);
+    const emoji = boundedPayloadString(payload.emoji, 128);
+    const action = payload.action === 'remove' || payload.action === 'add' ? payload.action : null;
+    if (!messageId || !emoji || !action) return;
     if (action === 'add') {
       addReaction(messageId, emoji, fromPeerId);
     } else {
@@ -464,7 +485,7 @@ function handleNotifyPush(payload: Record<string, unknown>, remotePeerId: string
   }
 
   if (payload.kind === 'pin') {
-    const messageId = String(payload.message_id ?? '');
+    const messageId = boundedPayloadString(payload.message_id, 256);
     if (!messageId) return;
     // AUTHORIZATION: a pin/unpin is a moderator action, not something any member may
     // do. Apply it only when the authenticated sender actually has MANAGE_MESSAGES on
@@ -480,9 +501,9 @@ function handleNotifyPush(payload: Record<string, unknown>, remotePeerId: string
   }
 
   if (payload.kind === 'poll_vote') {
-    const messageId = String(payload.message_id ?? '');
-    const optionIndex = Number(payload.option_index ?? -1);
-    if (!messageId || optionIndex < 0) return;
+    const messageId = boundedPayloadString(payload.message_id, 256);
+    const optionIndex = typeof payload.option_index === 'number' ? payload.option_index : -1;
+    if (!messageId || !Number.isSafeInteger(optionIndex) || optionIndex < 0 || optionIndex > 1000) return;
     // AUTHORIZATION: only a CURRENT participant of the poll's scope may vote. Connection
     // authentication proves who sent it, not that they belong to the channel/DM — without
     // this check a kicked member (or any peer that learned the message id) could keep
@@ -498,25 +519,25 @@ function handleNotifyPush(payload: Record<string, unknown>, remotePeerId: string
   if (payload.kind === 'report') {
     // Abuse report delivered to us as a server OWNER. Only accept it for a server we
     // actually own (the moderator who can act on it); ignore reports for anything else.
-    const serverId = String(payload.server_id ?? '');
+    const serverId = boundedPayloadString(payload.server_id, 256);
     const server = getState().servers[serverId];
     if (!serverId || !server || server.owner_peer_id !== (getState().identity?.peer_id ?? '')) return;
     // The authenticated sender must be a member of the server — otherwise any peer that
     // learns a server id could spam the owner with forged reports/notifications.
     if (!fromPeerId || !server.members.includes(fromPeerId)) return;
     // Reject references that don't belong to this server (channel must be one of ours).
-    const reportChannelId = payload.channel_id ? String(payload.channel_id) : undefined;
+    const reportChannelId = payload.channel_id ? boundedPayloadString(payload.channel_id, 256) ?? undefined : undefined;
     if (reportChannelId && !Object.prototype.hasOwnProperty.call(server.channels ?? {}, reportChannelId)) return;
     addReport({
-      id: String(payload.report_id ?? crypto.randomUUID()),
-      reason: String(payload.reason ?? 'other'),
-      details: payload.details ? String(payload.details) : undefined,
+      id: boundedPayloadString(payload.report_id, 256) ?? crypto.randomUUID(),
+      reason: boundedPayloadString(payload.reason, 128) ?? 'other',
+      details: payload.details ? boundedPayloadString(payload.details, 4096) ?? undefined : undefined,
       target_kind: payload.target_kind === 'user' ? 'user' : 'message',
-      target_id: String(payload.target_id ?? ''),
-      reported_peer_id: payload.reported_peer_id ? String(payload.reported_peer_id) : undefined,
+      target_id: boundedPayloadString(payload.target_id, 256) ?? '',
+      reported_peer_id: payload.reported_peer_id ? boundedPayloadString(payload.reported_peer_id, 256) ?? undefined : undefined,
       server_id: serverId,
       channel_id: reportChannelId,
-      content_excerpt: payload.content_excerpt ? String(payload.content_excerpt) : undefined,
+      content_excerpt: payload.content_excerpt ? boundedPayloadString(payload.content_excerpt, 4096) ?? undefined : undefined,
       reporter_peer_id: fromPeerId,
       created_at: new Date().toISOString(),
       inbound: true,
@@ -536,8 +557,17 @@ function handleNotifyPush(payload: Record<string, unknown>, remotePeerId: string
  * half of P2P invite-join — the joiner dials us over the relay circuit.
  */
 export function handleSyncRequest(operation: string, payload: Record<string, unknown>, remotePeerId: string): Record<string, unknown> {
-  const serverId = String(payload.server_id ?? '');
+  const serverId = boundedPayloadString(payload.server_id, 256);
   if (!serverId) return { ok: false, error: 'missing_server_id' };
+
+  // Never let an unknown operation fall through to the read path. In particular,
+  // an attacker must not turn an arbitrary family operation plus an invite token
+  // into an accidental history oracle.
+  if (operation !== 'sync.join' && operation !== 'sync.pull'
+    && operation !== 'sync.update' && operation !== 'sync.leave'
+    && operation !== 'sync.delete' && operation !== 'sync.remove') {
+    return { ok: false, error: 'unsupported_operation' };
+  }
 
   const state = getState();
   const server = state.servers[serverId];
@@ -643,9 +673,21 @@ export function handleSyncRequest(operation: string, payload: Record<string, unk
   // Servers without an invite_secret are treated as closed (verifyInviteToken
   // returns false) — use nativeCreateServer to get a fresh invite_secret.
   const alreadyMember = !!remotePeerId && server.members.includes(remotePeerId);
-  if (!alreadyMember && !verifyInviteToken(server.invite_secret, serverId, String(payload.invite_token ?? ''))) {
-    return { ok: false, error: 'invalid_invite' };
-  }
+	const inviteToken = boundedPayloadString(payload.invite_token, 4096, true) ?? '';
+	if (!alreadyMember && !verifyInviteToken(server.invite_secret, serverId, inviteToken)) {
+		return { ok: false, error: 'invalid_invite' };
+	}
+	// A fresh membership response is an owner authorization decision. Existing
+	// members may reconcile from any member, but a peer that is not yet a member
+	// must never be admitted by a co-member or receive a member-served snapshot.
+	// Validate the capability first so callers get the stable invalid_invite
+	// result for a missing/invalid token rather than an authorization oracle.
+	if (!alreadyMember && operation !== 'sync.join') {
+		return { ok: false, error: 'owner_required' };
+	}
+	if (operation === 'sync.join' && !alreadyMember && !isOwner) {
+		return { ok: false, error: 'owner_required' };
+	}
 
   // Learn the joiner's reachable circuit addresses so we can deliver back across
   // relays (keyed to the authenticated peer) — and their self-declared profile, so

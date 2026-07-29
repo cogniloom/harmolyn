@@ -4,6 +4,13 @@ import { hmac } from '@noble/hashes/hmac.js';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { supportNodeApiBase } from '../nodeOrigin.js';
 import { reportNodeRequestFailure, reportNodeRequestSuccess } from '../../lib/nodeHealth.js';
+import {
+  decodeBase64Strict,
+  encodeBase64Chunked,
+  isPlainObject,
+  MAX_MAILBOX_BODY_BYTES,
+  MAX_MAILBOX_DELIVERIES,
+} from '../security/limits.js';
 
 // ── Constants (must match Go oracle) ──────────────────────────────────────
 
@@ -29,7 +36,7 @@ export function mailboxEpoch(nowSeconds?: number): number {
  * Matches Go MailboxToken.
  */
 export function mailboxToken(mailboxSecret: Uint8Array, epoch: number): string {
-  if (mailboxSecret.length < MIN_MAILBOX_SECRET) return '';
+  if (mailboxSecret.length < MIN_MAILBOX_SECRET || !Number.isSafeInteger(epoch)) return '';
   const label = new TextEncoder().encode(MAILBOX_LABEL + epoch.toString());
   const mac = hmac(sha256, mailboxSecret, label);
   return base64urlNoPad(mac);
@@ -58,6 +65,7 @@ export function drainMailboxTokens(mailboxSecret: Uint8Array): string[] {
 
 /** Prepend the relay frame magic to ciphertext. Relay checks for opacity. */
 export function wrapRelayBody(ciphertext: Uint8Array): Uint8Array {
+  if (ciphertext.length > MAX_MAILBOX_BODY_BYTES) throw new RangeError('relay body: ciphertext exceeds limit');
   const out = new Uint8Array(RELAY_FRAME_MAGIC.length + ciphertext.length);
   out.set(RELAY_FRAME_MAGIC, 0);
   out.set(ciphertext, RELAY_FRAME_MAGIC.length);
@@ -67,6 +75,7 @@ export function wrapRelayBody(ciphertext: Uint8Array): Uint8Array {
 /** Strip the relay frame header, returning raw ciphertext. Throws on bad magic. */
 export function unwrapRelayBody(framed: Uint8Array): Uint8Array {
   if (framed.length < RELAY_FRAME_MAGIC.length) throw new Error('relay body: too short');
+  if (framed.length - RELAY_FRAME_MAGIC.length > MAX_MAILBOX_BODY_BYTES) throw new Error('relay body: ciphertext exceeds limit');
   for (let i = 0; i < RELAY_FRAME_MAGIC.length; i++) {
     if (framed[i] !== RELAY_FRAME_MAGIC[i]) throw new Error('relay body: invalid frame magic');
   }
@@ -81,6 +90,7 @@ export function unwrapRelayBody(framed: Uint8Array): Uint8Array {
  * ciphertext = raw encrypted message bytes (will be wrapped with relay frame).
  */
 export async function mailboxStore(token: string, ciphertext: Uint8Array): Promise<void> {
+  if (!/^[A-Za-z0-9_-]{43}$/.test(token)) throw new Error('mailbox store: invalid token');
   const framed = wrapRelayBody(ciphertext);
   const body_b64 = base64urlNoPad(framed);
   let res: Response;
@@ -104,6 +114,9 @@ export async function mailboxStore(token: string, ciphertext: Uint8Array): Promi
  */
 export async function mailboxDrain(tokens: string[]): Promise<Uint8Array[]> {
   if (tokens.length === 0) return [];
+  if (tokens.length > DRAIN_EPOCH_SKEW + 1 || tokens.some(token => !/^[A-Za-z0-9_-]{43}$/.test(token))) {
+    throw new Error('mailbox drain: invalid tokens');
+  }
   let res: Response;
   try {
     res = await fetch(`${supportNodeApiBase()}/mailbox/drain`, {
@@ -117,8 +130,15 @@ export async function mailboxDrain(tokens: string[]): Promise<Uint8Array[]> {
   }
   reportNodeRequestSuccess();
   if (!res.ok) throw new Error(`mailbox drain: ${res.status}`);
-  const data = await res.json() as { bodies: string[] };
-  return (data.bodies ?? []).map(b => unwrapRelayBody(base64urlDecode(b)));
+  const data = await res.json() as unknown;
+  if (!isPlainObject(data) || !Array.isArray(data.bodies) || data.bodies.length > MAX_MAILBOX_DELIVERIES) {
+    throw new Error('mailbox drain: invalid response');
+  }
+  return data.bodies.map(body => {
+    const framed = base64urlDecode(body);
+    if (!framed) throw new Error('mailbox drain: invalid body');
+    return unwrapRelayBody(framed);
+  });
 }
 
 // ── High-level offline delivery ────────────────────────────────────────────
@@ -146,12 +166,10 @@ export async function drainDeliveries(mailboxSecret: Uint8Array): Promise<Uint8A
 // ── Utilities ──────────────────────────────────────────────────────────────
 
 function base64urlNoPad(b: Uint8Array): string {
-  const base64 = btoa(String.fromCharCode(...b));
+  const base64 = encodeBase64Chunked(b);
   return base64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
 }
 
-function base64urlDecode(s: string): Uint8Array {
-  const base64 = s.replace(/-/g, '+').replace(/_/g, '/');
-  const padded = base64 + '='.repeat((4 - base64.length % 4) % 4);
-  return new Uint8Array([...atob(padded)].map(c => c.charCodeAt(0)));
+function base64urlDecode(s: unknown): Uint8Array | null {
+  return decodeBase64Strict(s, RELAY_FRAME_MAGIC.length + MAX_MAILBOX_BODY_BYTES, true);
 }

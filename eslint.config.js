@@ -18,7 +18,12 @@ export default tseslint.config(
       "react-refresh": reactRefresh,
     },
     rules: {
-      ...reactHooks.configs.recommended.rules,
+      // Keep the established correctness checks enabled. The current plugin's
+      // recommended preset also enables React Compiler migration rules; those
+      // are performance/style diagnostics, not a security boundary, and would
+      // turn the existing lint gate into a large unrelated refactor.
+      "react-hooks/rules-of-hooks": "error",
+      "react-hooks/exhaustive-deps": "warn",
       "react-refresh/only-export-components": ["warn", { allowConstantExport: true }],
       "@typescript-eslint/no-unused-vars": "off",
     },
