@@ -209,7 +209,7 @@ async function openDM(client, peerID) {
 }
 
 async function openServer(client, name) {
-  await client.page.getByRole('button', { name: `Server: ${name}` }).click();
+  await client.page.getByRole('button', { name: `Space: ${name}` }).click();
   await client.page.getByRole('button', { name: 'general' }).first().click();
   await client.page.getByRole('textbox', { name: 'Message Input' }).waitFor({ timeout: 10_000 });
 }

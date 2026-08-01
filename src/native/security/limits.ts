@@ -129,7 +129,8 @@ export function isSafeAttachment(value: unknown): value is XoreinAttachment {
     && (typeof value.content_hash !== 'string' || !/^[0-9a-f]{64}$/.test(value.content_hash))) {
     return false;
   }
-  if (value.swarm !== undefined && !isSafeBlobSwarmManifest(value.swarm)) return false;
+  if (value.swarm !== undefined
+    && (value.content_hash === undefined || !isSafeBlobSwarmManifest(value.swarm))) return false;
   return true;
 }
 

@@ -100,6 +100,16 @@ describe('encrypted attachments (priv-4)', () => {
     await expect(downloadDecryptedAttachment(att)).rejects.toThrow();
   });
 
+  it('retains the legacy HTTP recovery path for pre-hash attachments', async () => {
+    mockNodeUploads();
+    const plaintext = new TextEncoder().encode('legacy attachment');
+    const current = await uploadEncryptedAttachment(plaintext, 'legacy.txt', 'text/plain');
+    const legacy = { ...current, content_hash: undefined, swarm: undefined };
+
+    const recovered = await downloadDecryptedAttachment(legacy);
+    expect(new TextDecoder().decode(recovered)).toBe('legacy attachment');
+  });
+
   it('uses the replica protocol directly for scoped attachments without probing legacy HTTP', async () => {
     localStorage.clear();
     initStore();

@@ -13,6 +13,11 @@ on:
           - patch
           - minor
           - major
+      resume_tag:
+        description: Existing signed vX.Y.Z tag to rebuild and finish publishing after a post-promotion failure
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: read
@@ -43,6 +48,9 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
           WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+          RELEASE_TAG_GPG_PRIVATE_KEY: ${{ secrets.RELEASE_TAG_GPG_PRIVATE_KEY }}
+          RELEASE_TAG_GPG_PASSPHRASE: ${{ secrets.RELEASE_TAG_GPG_PASSPHRASE }}
+          RELEASE_TAG_GPG_FINGERPRINT: ${{ secrets.RELEASE_TAG_GPG_FINGERPRINT }}
         run: |
           set -euo pipefail
           required=(
@@ -50,6 +58,8 @@ jobs:
             APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY
             APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID
             WINDOWS_CERTIFICATE WINDOWS_CERTIFICATE_PASSWORD
+            RELEASE_TAG_GPG_PRIVATE_KEY RELEASE_TAG_GPG_PASSPHRASE
+            RELEASE_TAG_GPG_FINGERPRINT
           )
           missing=()
           for name in "${required[@]}"; do
@@ -64,6 +74,7 @@ jobs:
     name: Validate and version staging
     needs: gate
     runs-on: [self-hosted, linux, x64]
+    environment: official-release
     timeout-minutes: 45
     outputs:
       version: ${{ steps.version.outputs.version }}
@@ -71,21 +82,55 @@ jobs:
       source_sha: ${{ steps.refs.outputs.staging_sha }}
       main_sha: ${{ steps.refs.outputs.main_sha }}
       candidate_tree: ${{ steps.candidate.outputs.tree }}
+      resume: ${{ steps.refs.outputs.resume }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: staging
           fetch-depth: 0
 
-      - name: Verify staging is a fast-forward of main
+      - name: Configure release tag signing and verification
+        if: inputs.resume_tag != ''
+        env:
+          RELEASE_TAG_GPG_PRIVATE_KEY: ${{ secrets.RELEASE_TAG_GPG_PRIVATE_KEY }}
+          RELEASE_TAG_GPG_PASSPHRASE: ${{ secrets.RELEASE_TAG_GPG_PASSPHRASE }}
+          RELEASE_TAG_GPG_FINGERPRINT: ${{ secrets.RELEASE_TAG_GPG_FINGERPRINT }}
+        run: bash scripts/configure-release-gpg.sh
+
+      - name: Verify release source refs
         id: refs
         shell: bash
+        env:
+          RESUME_TAG: ${{ inputs.resume_tag }}
         run: |
           set -euo pipefail
           git fetch --prune origin main staging --tags
-          git merge-base --is-ancestor origin/main HEAD
-          echo "staging_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-          echo "main_sha=$(git rev-parse origin/main)" >> "$GITHUB_OUTPUT"
+          resume_tag="$RESUME_TAG"
+          staging_sha=$(git rev-parse origin/staging)
+          main_sha=$(git rev-parse origin/main)
+          if [[ -n "$resume_tag" ]]; then
+            [[ "$resume_tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+            [[ "$(git cat-file -t "$resume_tag")" == tag ]]
+            git tag -v "$resume_tag"
+            release_sha=$(git rev-parse "$resume_tag^{commit}")
+            [[ "$staging_sha" == "$release_sha" ]]
+            [[ "$main_sha" == "$release_sha" ]]
+            echo "resume=true" >> "$GITHUB_OUTPUT"
+            echo "staging_sha=$release_sha" >> "$GITHUB_OUTPUT"
+            echo "main_sha=$release_sha" >> "$GITHUB_OUTPUT"
+          else
+            git merge-base --is-ancestor "$main_sha" "$staging_sha"
+            echo "resume=false" >> "$GITHUB_OUTPUT"
+            echo "staging_sha=$staging_sha" >> "$GITHUB_OUTPUT"
+            echo "main_sha=$main_sha" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Remove release tag verification material
+        if: always()
+        shell: bash
+        run: |
+          if [[ -n "${GNUPGHOME:-}" ]]; then rm -rf -- "$GNUPGHOME"; fi
+          if [[ -n "${HARMOLYN_RELEASE_GPG_PROGRAM:-}" ]]; then rm -f -- "$HARMOLYN_RELEASE_GPG_PROGRAM"; fi
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
@@ -115,12 +160,19 @@ jobs:
       - name: Install the lockfile-pinned Chromium runtime
         run: npx playwright-core install --with-deps chromium
 
-      - name: Bump every application version together
+      - name: Select and synchronize the release version
         id: version
         shell: bash
+        env:
+          RESUME_TAG: ${{ inputs.resume_tag }}
         run: |
           set -euo pipefail
-          version=$(npm run --silent release:version -- "${{ inputs.bump }}")
+          if [[ "${{ steps.refs.outputs.resume }}" == true ]]; then
+            version=$(npm run --silent release:version -- --check)
+            [[ "v$version" == "$RESUME_TAG" ]]
+          else
+            version=$(npm run --silent release:version -- "${{ inputs.bump }}")
+          fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "tag=v$version" >> "$GITHUB_OUTPUT"
 
@@ -142,9 +194,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          git add package.json package-lock.json src-tauri/Cargo.toml src-tauri/Cargo.lock src-tauri/tauri.conf.json
-          git diff --cached --quiet && { echo "::error::The selected bump produced no release commit"; exit 1; }
-          echo "tree=$(git write-tree)" >> "$GITHUB_OUTPUT"
+          if [[ "${{ steps.refs.outputs.resume }}" == true ]]; then
+            git diff --quiet
+            git diff --cached --quiet
+            echo "tree=$(git rev-parse HEAD^{tree})" >> "$GITHUB_OUTPUT"
+          else
+            git add package.json package-lock.json src-tauri/Cargo.toml src-tauri/Cargo.lock src-tauri/tauri.conf.json
+            git diff --cached --quiet && { echo "::error::The selected bump produced no release commit"; exit 1; }
+            echo "tree=$(git write-tree)" >> "$GITHUB_OUTPUT"
+          fi
 
   build:
     name: Signed build - ${{ matrix.name }}
@@ -198,9 +256,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          version=$(npm run --silent release:version -- "${{ inputs.bump }}")
+          if [[ "${{ needs.prepare.outputs.resume }}" == true ]]; then
+            version=$(npm run --silent release:version -- --check)
+          else
+            version=$(npm run --silent release:version -- "${{ inputs.bump }}")
+            git add package.json package-lock.json src-tauri/Cargo.toml src-tauri/Cargo.lock src-tauri/tauri.conf.json
+          fi
           [[ "$version" == "${{ needs.prepare.outputs.version }}" ]]
-          git add package.json package-lock.json src-tauri/Cargo.toml src-tauri/Cargo.lock src-tauri/tauri.conf.json
           [[ "$(git write-tree)" == "${{ needs.prepare.outputs.candidate_tree }}" ]]
 
       - name: Install Linux build dependencies
@@ -305,6 +367,7 @@ jobs:
       TAG: ${{ needs.prepare.outputs.tag }}
       SOURCE_SHA: ${{ needs.prepare.outputs.source_sha }}
       PREPARED_MAIN_SHA: ${{ needs.prepare.outputs.main_sha }}
+      RESUME: ${{ needs.prepare.outputs.resume }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -329,10 +392,15 @@ jobs:
           git fetch --prune origin main staging --tags
           [[ "$(git rev-parse origin/staging)" == "$SOURCE_SHA" ]]
           [[ "$(git rev-parse origin/main)" == "$PREPARED_MAIN_SHA" ]]
-          git merge-base --is-ancestor origin/main "$SOURCE_SHA"
-          if git show-ref --verify --quiet "refs/tags/$TAG"; then
-            echo "::error::Release tag $TAG already exists"
-            exit 1
+          if [[ "$RESUME" == true ]]; then
+            [[ "$(git rev-parse origin/main)" == "$SOURCE_SHA" ]]
+            [[ "$(git rev-parse "$TAG^{commit}")" == "$SOURCE_SHA" ]]
+          else
+            git merge-base --is-ancestor origin/main "$SOURCE_SHA"
+            if git show-ref --verify --quiet "refs/tags/$TAG"; then
+              echo "::error::Release tag $TAG already exists; rerun with resume_tag=$TAG to finish publication"
+              exit 1
+            fi
           fi
 
       - run: npm ci
@@ -341,14 +409,22 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          version=$(npm run --silent release:version -- "${{ inputs.bump }}")
-          [[ "$version" == "$VERSION" ]]
-          git add package.json package-lock.json src-tauri/Cargo.toml src-tauri/Cargo.lock src-tauri/tauri.conf.json
-          [[ "$(git write-tree)" == "${{ needs.prepare.outputs.candidate_tree }}" ]]
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git commit -m "release: v$VERSION"
-          echo "RELEASE_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+          if [[ "$RESUME" == true ]]; then
+            version=$(npm run --silent release:version -- --check)
+            [[ "$version" == "$VERSION" ]]
+            [[ "$(git rev-parse HEAD^{tree})" == "${{ needs.prepare.outputs.candidate_tree }}" ]]
+            release_sha="$SOURCE_SHA"
+          else
+            version=$(npm run --silent release:version -- "${{ inputs.bump }}")
+            [[ "$version" == "$VERSION" ]]
+            git add package.json package-lock.json src-tauri/Cargo.toml src-tauri/Cargo.lock src-tauri/tauri.conf.json
+            [[ "$(git write-tree)" == "${{ needs.prepare.outputs.candidate_tree }}" ]]
+            git config user.name github-actions[bot]
+            git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+            git commit -m "release: v$VERSION"
+            release_sha=$(git rev-parse HEAD)
+          fi
+          echo "RELEASE_SHA=$release_sha" >> "$GITHUB_ENV"
 
       - name: Verify assets and generate signed manifests
         shell: bash
@@ -363,12 +439,31 @@ jobs:
           npm exec tauri signer sign -- generated-release/SHA256SUMS
           cp generated-release/* release-assets/
 
-      - name: Promote staging to main and create the official tag atomically
+      - name: Configure release tag signing and verification
+        env:
+          RELEASE_TAG_GPG_PRIVATE_KEY: ${{ secrets.RELEASE_TAG_GPG_PRIVATE_KEY }}
+          RELEASE_TAG_GPG_PASSPHRASE: ${{ secrets.RELEASE_TAG_GPG_PASSPHRASE }}
+          RELEASE_TAG_GPG_FINGERPRINT: ${{ secrets.RELEASE_TAG_GPG_FINGERPRINT }}
+        run: bash scripts/configure-release-gpg.sh
+
+      - name: Verify the existing tag or promote atomically with a signed tag
         shell: bash
         run: |
           set -euo pipefail
-          git tag -a "$TAG" "$RELEASE_SHA" -m "Harmolyn $VERSION"
-          git push --atomic origin "$RELEASE_SHA:refs/heads/staging" "$RELEASE_SHA:refs/heads/main" "refs/tags/$TAG"
+          if [[ "$RESUME" == true ]]; then
+            git tag -v "$TAG"
+          else
+            git tag -s "$TAG" "$RELEASE_SHA" -m "Harmolyn $VERSION"
+            git push --atomic origin "$RELEASE_SHA:refs/heads/staging" "$RELEASE_SHA:refs/heads/main" "refs/tags/$TAG"
+          fi
+          git tag -v "$TAG"
+
+      - name: Remove release tag signing material
+        if: always()
+        shell: bash
+        run: |
+          if [[ -n "${GNUPGHOME:-}" ]]; then rm -rf -- "$GNUPGHOME"; fi
+          if [[ -n "${HARMOLYN_RELEASE_GPG_PROGRAM:-}" ]]; then rm -f -- "$HARMOLYN_RELEASE_GPG_PROGRAM"; fi
 
       - name: Publish verified release assets
         shell: bash
@@ -376,10 +471,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --draft --generate-notes --title "Harmolyn $VERSION"
+          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --draft --generate-notes --title "Harmolyn $VERSION"
+          fi
           mapfile -d '' assets < <(find release-assets -maxdepth 1 -type f -print0 | sort -z)
           (( ${#assets[@]} > 0 ))
-          gh release upload "$TAG" "${assets[@]}" --repo "$GITHUB_REPOSITORY"
+          gh release upload "$TAG" "${assets[@]}" --repo "$GITHUB_REPOSITORY" --clobber
           gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest
           echo "### Published Harmolyn $VERSION" >> "$GITHUB_STEP_SUMMARY"
           echo "All signed platform builds completed before the atomic staging/main/tag promotion." >> "$GITHUB_STEP_SUMMARY"

@@ -70,6 +70,13 @@ quotas, authenticated forwarding peers, and replacement repair when the live
 node set changes. A node may point a client at holders for missing records, but
 the client still verifies every returned author proof.
 
+Before upload, Harmolyn adds a portable Ed25519 + ML-DSA-65 uploader proof over
+the replica metadata and SHA-256 of the exact opaque envelope. Forwarding Nodes
+must preserve and verify it, so copying a victim's textual peer ID is not enough
+to replace that victim's record. After decryption, the inner message/attachment
+proof remains the authority; the outer proof establishes provenance, not
+plaintext truth.
+
 This is replication, not yet erasure coding. Losing all holders delays recovery
 until one returns. Nodes are motivated operationally by being preferred for
 reads and by contributing availability; an economic incentive/reward mechanism

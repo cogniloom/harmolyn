@@ -129,9 +129,9 @@ try {
     await password.waitFor({ timeout: 30_000 });
     await password.fill(PASSWORD);
     await page.getByRole('button', { name: 'Unlock', exact: true }).click();
-    await page.getByRole('button', { name: `Server: ${serverName}` }).waitFor({ timeout: 30_000 });
+    await page.getByRole('button', { name: `Space: ${serverName}` }).waitFor({ timeout: 30_000 });
     if (await page.getByText(message, { exact: true }).count() === 0) {
-      await page.getByRole('button', { name: `Server: ${serverName}` }).click();
+      await page.getByRole('button', { name: `Space: ${serverName}` }).click();
       await page.getByRole('button', { name: 'general', exact: true }).first().click();
     }
     await page.getByText(message, { exact: true }).waitFor({ timeout: 30_000 });
@@ -143,7 +143,7 @@ try {
       'Harmolyn native browser smoke: happy path',
       `Base URL: ${baseUrl}`,
       `Registered peer: ${peerId}`,
-      `Created server: ${serverName}`,
+      `Created Space: ${serverName}`,
       `Durable message survived reload/unlock: ${message}`,
       'Connection indicator remained FINDING PEERS with the relay deliberately absent.',
       `Main indicator: ${connectionLabel}`,

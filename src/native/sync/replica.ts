@@ -6,13 +6,18 @@
 // are availability evidence, never truth.
 import { sha256 } from '@noble/hashes/sha2.js';
 import type { XoreinRuntimeMessage } from '../../types.js';
+import type { XoreinIdentity } from '../identity/identity.js';
+import { identitySigningKey } from '../identity/identity.js';
+import { hybridSign } from '../crypto/hybrid.js';
 import { decodeBase64Strict, hasControlCharacters, isPlainObject } from '../security/limits.js';
 import { getState } from '../state/store.js';
 import { decryptChannelReplica, encryptChannelReplica } from './secureEnvelope.js';
 import { verifySignedHistoryMessage } from './signedHistory.js';
 
 const NAMESPACE_DOMAIN = new TextEncoder().encode('xorein/history-replica-namespace/v1\n');
+const REPLICA_PROOF_DOMAIN = new TextEncoder().encode('xorein/sync-replica/uploader-proof/v1\0');
 const MAX_REPLICA_JSON_BYTES = 512 * 1024;
+let _replicaIdentity: XoreinIdentity | null = null;
 
 export interface EncryptedHistoryReplica {
   version: 1;
@@ -23,6 +28,9 @@ export interface EncryptedHistoryReplica {
   content_hash: string;
   key_epoch: number;
   uploader_peer_id: string;
+	uploader_ed_pub?: string;
+	uploader_mldsa_pub?: string;
+	uploader_signature?: string;
   envelope: {
     /** Missing legacy replicas were Crowd. */
     mode?: 'tree' | 'crowd';
@@ -31,6 +39,32 @@ export interface EncryptedHistoryReplica {
     nonce: string;
     ct: string;
   };
+}
+
+interface ReplicaProofInput {
+	version: number;
+	namespace: string;
+	id: string;
+	revision: number;
+	created_at: string;
+	content_hash: string;
+	key_epoch: number;
+	uploader_peer_id: string;
+	envelope: unknown;
+}
+
+export interface ReplicaUploaderProof {
+	uploader_ed_pub: string;
+	uploader_mldsa_pub: string;
+	uploader_signature: string;
+}
+
+export function registerReplicaIdentity(identity: XoreinIdentity): void {
+	_replicaIdentity = identity;
+}
+
+export function resetReplicaIdentity(): void {
+	_replicaIdentity = null;
 }
 
 function b64url(bytes: Uint8Array): string {
@@ -48,6 +82,53 @@ function concat(...parts: Uint8Array[]): Uint8Array {
     offset += part.length;
   }
   return out;
+}
+
+function proofField(value: string): Uint8Array {
+	const encoded = new TextEncoder().encode(value);
+	const out = new Uint8Array(4 + encoded.length);
+	new DataView(out.buffer).setUint32(0, encoded.length, false);
+	out.set(encoded, 4);
+	return out;
+}
+
+function replicaProofCanonical(record: ReplicaProofInput): Uint8Array | null {
+	let envelopeBytes: Uint8Array;
+	try {
+		envelopeBytes = new TextEncoder().encode(JSON.stringify(record.envelope));
+	} catch {
+		return null;
+	}
+	if (!envelopeBytes.length || envelopeBytes.length > MAX_REPLICA_JSON_BYTES) return null;
+	return concat(
+		REPLICA_PROOF_DOMAIN,
+		...[
+			String(record.version),
+			record.namespace,
+			record.id,
+			String(record.revision),
+			record.created_at,
+			record.content_hash,
+			String(record.key_epoch),
+			record.uploader_peer_id,
+			b64url(sha256(envelopeBytes)),
+		].map(proofField),
+	);
+}
+
+/** Bind an opaque replica to the original uploader before any node forwards it. */
+export function createReplicaUploaderProof(
+	record: ReplicaProofInput,
+): ReplicaUploaderProof | null {
+	const identity = _replicaIdentity;
+	if (!identity || identity.peerId !== record.uploader_peer_id) return null;
+	const canonical = replicaProofCanonical(record);
+	if (!canonical) return null;
+	return {
+		uploader_ed_pub: b64url(identity.edPub),
+		uploader_mldsa_pub: b64url(identity.mldsaPub),
+		uploader_signature: b64url(hybridSign(canonical, identitySigningKey(identity))),
+	};
 }
 
 /** Derive an unguessable, stable namespace without revealing server/channel IDs. */
@@ -84,7 +165,17 @@ function validReplica(value: unknown): value is EncryptedHistoryReplica {
     || (value.envelope.mode !== undefined
       && value.envelope.mode !== 'tree' && value.envelope.mode !== 'crowd')
     || value.envelope.sndr !== value.uploader_peer_id
-    || value.envelope.epoch !== value.key_epoch) return false;
+	    || value.envelope.epoch !== value.key_epoch) return false;
+	const proofFields = [
+		value.uploader_ed_pub,
+		value.uploader_mldsa_pub,
+		value.uploader_signature,
+	];
+	const present = proofFields.filter(field => field !== undefined).length;
+	if (present !== 0 && (present !== 3
+		|| decodeBase64Strict(value.uploader_ed_pub, 32, true)?.length !== 32
+		|| decodeBase64Strict(value.uploader_mldsa_pub, 1952, true)?.length !== 1952
+		|| decodeBase64Strict(value.uploader_signature, 3381, true)?.length !== 3381)) return false;
   return true;
 }
 
@@ -107,7 +198,7 @@ export function encryptHistoryReplica(
   if (!plaintext.length || plaintext.length > MAX_REPLICA_JSON_BYTES) return null;
   const envelope = encryptChannelReplica(serverId, uploader, plaintext);
   if (!envelope) return null;
-  return {
+	const record: EncryptedHistoryReplica = {
     version: 1,
     namespace,
     id: message.id,
@@ -118,6 +209,8 @@ export function encryptHistoryReplica(
     uploader_peer_id: uploader,
     envelope,
   };
+	const proof = createReplicaUploaderProof(record);
+	return proof ? { ...record, ...proof } : null;
 }
 
 /**

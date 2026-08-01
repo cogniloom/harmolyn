@@ -488,10 +488,23 @@ export function applyJoinedServer(
  * de-duplicating by message id. Returns the number of NEW messages actually added,
  * so the caller (UI load-older) can tell whether the page advanced anything.
  */
-export function mergeHistoryMessages(messages: XoreinRuntimeMessage[]): number {
+export function mergeHistoryMessages(
+  messages: XoreinRuntimeMessage[],
+  options: { allowUnsignedFromPeerId?: string } = {},
+): number {
   let added = 0;
   updateState(s => {
     const incoming = messages.filter(isSafeRuntimeMessage);
+    const acceptsPortableAuthor = (message: XoreinRuntimeMessage): boolean => {
+      if (verifySignedHistoryMessage(message).ok) return true;
+      // Compatibility is deliberately narrow: only a proof-less record from
+      // the authenticated legacy Space Owner may pass. A malformed proof is
+      // never downgraded to legacy, and replicated/member providers get no such
+      // exception.
+      return message.author_proof === undefined
+        && options.allowUnsignedFromPeerId !== undefined
+        && message.sender_peer_id === options.allowUnsignedFromPeerId;
+    };
     const byID = new Map(incoming.map(message => [message.id, message]));
     const replaced = s.messages.map(current => {
       const candidate = byID.get(current.id);
@@ -500,13 +513,13 @@ export function mergeHistoryMessages(messages: XoreinRuntimeMessage[]): number {
       // A higher revision replaces an older copy only when the ORIGINAL author
       // verifies it. The provider's identity/score is irrelevant to authority.
       if ((candidate.author_revision ?? 0) > (current.author_revision ?? 0)
-        && verifySignedHistoryMessage(candidate).ok) {
+        && acceptsPortableAuthor(candidate)) {
         added++;
         return candidate;
       }
       return current;
     });
-    const fresh = [...byID.values()];
+    const fresh = [...byID.values()].filter(acceptsPortableAuthor);
     added += fresh.length;
     return fresh.length || added ? { messages: [...fresh, ...replaced] } : {};
   });

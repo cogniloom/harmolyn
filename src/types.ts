@@ -428,7 +428,8 @@ export interface BlobSwarmManifest {
  * record or invent a newer edit/tombstone.
  */
 export interface XoreinMessageAuthorProof {
-  version: 1;
+  /** v2 additionally binds the complete attachment swarm manifest. */
+  version: 1 | 2;
   /** base64(Ed25519 public key || ML-DSA-65 public key). */
   identity_key: string;
   /** base64url-no-pad hybrid signature over the canonical message version. */

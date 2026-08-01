@@ -99,7 +99,8 @@ function validBlobRef(ref: BlobRef): boolean {
     && Number.isSafeInteger(ref.size) && ref.size >= 0 && ref.size <= MAX_ATTACHMENT_BYTES
     && ref.key instanceof Uint8Array && ref.key.length === 32
     && ref.nonce instanceof Uint8Array && ref.nonce.length === 12
-    && /^[0-9a-f]{64}$/.test(ref.contentHash)
+    && (/^[0-9a-f]{64}$/.test(ref.contentHash)
+      || (ref.contentHash === '' && ref.swarm === undefined))
     && validOrigin(ref.origin)
     && (ref.swarm === undefined || isSafeBlobSwarmManifest(ref.swarm));
 }
@@ -218,7 +219,11 @@ export async function uploadBlob(
     // currently reachable member has had a chance to retain encrypted fragments.
     // A lone peer may still publish: it remains the complete source and future
     // members can fetch from it once a route exists.
-    await seedBlobSwarm(swarm);
+    const report = await seedBlobSwarm(swarm);
+    // Provider acknowledgements are part of author-proof v2. Freeze the initial
+    // set before the attachment enters the signed message; later anti-entropy
+    // passes return fresh health data but must never mutate this manifest.
+    swarm.provider_peer_ids = [...report.successfulProviders];
   } else if (!nodeId) {
     if (nodeError instanceof Error) throw nodeError;
     throw new Error('blob upload: no support node or peer storage scope is available');
@@ -307,7 +312,10 @@ export async function downloadBlob(ref: BlobRef): Promise<Uint8Array> {
     throw new Error('blob download: no support node or peer provider is reachable');
   }
   const data = decryptBlob(ciphertext, ref.key, ref.nonce);
-  if (data.length !== ref.size || contentHash(data) !== ref.contentHash) throw new Error('blob download: integrity check failed');
+  if (data.length !== ref.size
+    || (ref.contentHash !== '' && contentHash(data) !== ref.contentHash)) {
+    throw new Error('blob download: integrity check failed');
+  }
   return data;
 }
 
@@ -315,7 +323,7 @@ export async function downloadBlob(ref: BlobRef): Promise<Uint8Array> {
  * Verify blob integrity: compare SHA-256 of decrypted content against stored hash.
  */
 export function verifyBlobIntegrity(data: Uint8Array, ref: BlobRef): boolean {
-  return contentHash(data) === ref.contentHash;
+  return ref.contentHash !== '' && contentHash(data) === ref.contentHash;
 }
 
 // ── Attachment refs (the shareable, message-embedded form of a BlobRef) ───────

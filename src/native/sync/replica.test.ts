@@ -5,7 +5,13 @@ import { SealSessions } from '../seal/session';
 import { initStore, setNativeIdentity, addServer } from '../state/store';
 import { registerScopeCrypto, resetScopeCrypto } from './secureEnvelope';
 import { signChannelMessageVersion } from './signedHistory';
-import { decryptHistoryReplica, encryptHistoryReplica, historyReplicaNamespace } from './replica';
+import {
+  decryptHistoryReplica,
+  encryptHistoryReplica,
+  historyReplicaNamespace,
+  registerReplicaIdentity,
+  resetReplicaIdentity,
+} from './replica';
 import type { XoreinRuntimeMessage } from '../../types';
 
 const root = btoa(String.fromCharCode(...new Uint8Array(32).fill(7)));
@@ -16,10 +22,12 @@ describe('opaque history replicas', () => {
     localStorage.clear();
     initStore();
     resetScopeCrypto();
+    resetReplicaIdentity();
   });
 
   it('round-trips through ciphertext and rejects node tampering', async () => {
     const identity = await generateIdentity();
+    registerReplicaIdentity(identity);
     setNativeIdentity({ id: identity.peerId, peer_id: identity.peerId });
     addServer({
       id: 'srv-test',

@@ -154,7 +154,7 @@ async function smokeCreateAndJoin(page) {
     });
     throw error;
   }
-  await page.getByRole('button', { name: 'Initiate Matrix' }).click();
+  await page.getByRole('button', { name: 'Create Space' }).click();
   try {
     await page.waitForSelector('[data-testid="server-rail-server-alpha-node"]', { timeout: 10000 });
   } catch (error) {
@@ -174,7 +174,7 @@ async function smokeCreateAndJoin(page) {
   await page.getByPlaceholder(/xorein:\/\/invite\/.+/).first().fill(JOIN_INVITE);
   try {
     await page.waitForFunction(() => {
-      const button = [...document.querySelectorAll('button')].find((entry) => entry.textContent?.includes('Join Server'));
+      const button = [...document.querySelectorAll('button')].find((entry) => entry.textContent?.includes('Join Space'));
       return Boolean(button) && !button.hasAttribute('disabled');
     });
   } catch (error) {
@@ -182,7 +182,7 @@ async function smokeCreateAndJoin(page) {
     console.error(await page.locator('body').innerText());
     throw error;
   }
-  await page.getByRole('button', { name: 'Join Server' }).evaluate((element) => {
+  await page.getByRole('button', { name: 'Join Space' }).evaluate((element) => {
     element.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
   });
   await page.waitForSelector('[data-testid="server-rail-server-beta-node"]');

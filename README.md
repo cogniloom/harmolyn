@@ -150,7 +150,9 @@ npm run tauri:build
 `stable`, `patch`, `minor`, or `major` version choice. It validates the exact
 candidate tree, builds every platform before promotion, signs platform packages
 and updater artifacts, atomically advances `staging` and `main` with the release
-tag, then publishes the official GitHub release.
+tag, then publishes the official GitHub release. The release tag is OpenPGP
+signed and a failed post-promotion publication can be resumed without minting a
+different version.
 
 The workflow fails closed when any updater, Apple, or Windows signing credential
 is absent. Configure these as environment secrets in the protected
@@ -168,6 +170,9 @@ is absent. Configure these as environment secrets in the protected
 | `APPLE_TEAM_ID` | Ten-character Apple Developer Team ID |
 | `WINDOWS_CERTIFICATE` | Base64 of an Authenticode certificate and private key exported together as `.pfx` |
 | `WINDOWS_CERTIFICATE_PASSWORD` | Export password of that `.pfx` |
+| `RELEASE_TAG_GPG_PRIVATE_KEY` | Complete ASCII-armored, passphrase-protected OpenPGP private key dedicated to official release tags |
+| `RELEASE_TAG_GPG_PASSPHRASE` | Non-empty passphrase protecting that OpenPGP private key |
+| `RELEASE_TAG_GPG_FINGERPRINT` | Exact 40-character uppercase hexadecimal primary-key fingerprint; register its public key on the official GitHub release identity |
 
 Do not add shell quotes or JSON wrappers to secret values. See
 [Release process](docs/RELEASES.md) for runner labels, key backup requirements,
@@ -175,9 +180,11 @@ and the complete release sequence.
 
 Native Harmolyn checks only
 `cogniloom/harmolyn` release metadata and accepts only artifacts bearing the
-public updater key compiled into the application. Auto-update is enabled by
-default and can be disabled in Settings. Browser deployments update when their
-operator deploys a new web build.
+public updater key compiled into the application. Signed native updates are
+checked and downloaded automatically by default. Installation waits for the
+user's explicit **Install & restart** action so an active call or unsaved draft
+is not terminated; account data and settings remain outside the application
+bundle. Browser deployments update when their operator deploys a new web build.
 
 ## Remaining v1.0 release gates
 

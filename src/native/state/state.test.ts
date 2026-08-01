@@ -5,7 +5,7 @@ import {
   addServer, addChannel, addMessage, editMessage, deleteMessage,
   addReaction, removeReaction, addRelay, removeRelay,
   removeServerMembership, setMessageDeliveryStatus,
-  addPollVote, applyJoinedServer,
+  addPollVote, applyJoinedServer, mergeHistoryMessages,
   toRuntimeSnapshot, setStateEncryptionKey,
 } from './store';
 import {
@@ -16,6 +16,8 @@ import {
   nativeCastPollVote, nativeRemoveMember, rotateChannelEpoch,
   nativeSearchMessages,
 } from './mutations';
+import { generateIdentity } from '../identity/identity';
+import { signChannelMessageVersion } from '../sync/signedHistory';
 const TEST_STATE_KEY = new Uint8Array(32).fill(7);
 
 // Reset store state before each test.
@@ -283,6 +285,40 @@ describe('applyJoinedServer — responder identity binding (join/pull hijack)', 
     expect(ids).toContain('m-legit');
     expect(ids).not.toContain('m-forged-dm');
     expect(ids).not.toContain('m-forged-other-server');
+  });
+});
+
+describe('mergeHistoryMessages — portable author proof', () => {
+  it('rejects unsigned provider records but permits the authenticated legacy owner only', () => {
+    const unsigned: XoreinRuntimeMessage = {
+      id: 'unsigned',
+      scope_type: 'channel',
+      scope_id: 'channel',
+      server_id: 'space',
+      sender_peer_id: 'owner',
+      body: 'legacy owner record',
+    };
+    expect(mergeHistoryMessages([unsigned])).toBe(0);
+    expect(getState().messages).toHaveLength(0);
+
+    expect(mergeHistoryMessages([unsigned], { allowUnsignedFromPeerId: 'owner' })).toBe(1);
+    expect(getState().messages.map(message => message.id)).toEqual(['unsigned']);
+  });
+
+  it('accepts a fresh record signed by its original author', async () => {
+    const identity = await generateIdentity();
+    const signed: XoreinRuntimeMessage = {
+      id: 'signed',
+      scope_type: 'channel',
+      scope_id: 'channel',
+      server_id: 'space',
+      sender_peer_id: identity.peerId,
+      body: 'portable record',
+    };
+    signed.author_proof = signChannelMessageVersion(signed, identity);
+
+    expect(mergeHistoryMessages([signed])).toBe(1);
+    expect(getState().messages.map(message => message.id)).toEqual(['signed']);
   });
 });
 

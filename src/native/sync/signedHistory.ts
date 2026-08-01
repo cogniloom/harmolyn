@@ -15,8 +15,10 @@ import { identitySigningKey } from '../identity/identity.js';
 import { hybridSign, hybridVerify, HYBRID_SIG_BYTES } from '../crypto/hybrid.js';
 import { identityKeyBlob, parseIdentityKeyBlob } from '../identity/safetyNumber.js';
 import { peerIdToEdPub } from '../delivery/offline.js';
+import { isSafeAttachment } from '../security/limits.js';
 
-const DOMAIN = 'xorein/channel-message/v1\n';
+const DOMAIN_V1 = 'xorein/channel-message/v1\n';
+const DOMAIN_V2 = 'xorein/channel-message/v2\n';
 const MAX_IDENTITY_KEY_BYTES = 32 + 1952;
 const MAX_PROOF_TEXT_BYTES = 24 * 1024;
 
@@ -58,18 +60,39 @@ function unb64url(value: unknown, expectedLength?: number): Uint8Array | null {
   }
 }
 
-function normalizedMedia(media: XoreinAttachment[] | undefined): XoreinAttachment[] | undefined {
+function normalizedMedia(
+  media: XoreinAttachment[] | undefined,
+  proofVersion: 1 | 2,
+): XoreinAttachment[] | undefined {
   if (!media?.length) return undefined;
-  return media.map(item => ({
-    id: item.id,
-    name: item.name,
-    content_type: item.content_type,
-    size: item.size,
-    key: item.key,
-    nonce: item.nonce,
-    ...(item.content_hash ? { content_hash: item.content_hash } : {}),
-    ...(item.origin ? { origin: item.origin } : {}),
-  }));
+  return media.map(item => {
+    if (!isSafeAttachment(item)) throw new Error('signed history: invalid attachment');
+    return {
+      id: item.id,
+      name: item.name,
+      content_type: item.content_type,
+      size: item.size,
+      key: item.key,
+      nonce: item.nonce,
+      ...(item.content_hash ? { content_hash: item.content_hash } : {}),
+      ...(item.origin ? { origin: item.origin } : {}),
+      ...(proofVersion >= 2 && item.swarm ? {
+        swarm: {
+          version: item.swarm.version,
+          blob_id: item.swarm.blob_id,
+          ...(item.swarm.node_namespace ? { node_namespace: item.swarm.node_namespace } : {}),
+          scope_id: item.swarm.scope_id,
+          owner_peer_id: item.swarm.owner_peer_id,
+          ciphertext_size: item.swarm.ciphertext_size,
+          chunk_size: item.swarm.chunk_size,
+          chunk_hashes: [...item.swarm.chunk_hashes],
+          ...(item.swarm.provider_peer_ids
+            ? { provider_peer_ids: [...item.swarm.provider_peer_ids] }
+            : {}),
+        },
+      } : {}),
+    };
+  });
 }
 
 /**
@@ -94,19 +117,26 @@ export function canonicalJSON(value: unknown): string {
   throw new Error('signed history: unsupported canonical value');
 }
 
-export function canonicalMessageVersion(message: XoreinRuntimeMessage): Uint8Array {
+export function canonicalMessageVersion(
+  message: XoreinRuntimeMessage,
+  proofVersion: 1 | 2 = 2,
+): Uint8Array {
   if (message.scope_type !== 'channel' || !message.server_id) {
     throw new Error('signed history: only server channel messages are supported');
   }
+  if (proofVersion === 1 && message.media?.some(item => item.swarm !== undefined)) {
+    throw new Error('signed history: v1 proof cannot authenticate a swarm manifest');
+  }
+  const media = normalizedMedia(message.media, proofVersion);
   const record = {
-    version: 1,
+    version: proofVersion,
     id: message.id,
     server_id: message.server_id,
     scope_type: 'channel',
     scope_id: message.scope_id,
     sender_peer_id: message.sender_peer_id,
     body: message.body,
-    ...(normalizedMedia(message.media) ? { media: normalizedMedia(message.media) } : {}),
+    ...(media ? { media } : {}),
     ...(message.reply_to ? { reply_to: message.reply_to } : {}),
     ...(message.forwarded_from ? { forwarded_from: message.forwarded_from } : {}),
     created_at: message.created_at ?? '',
@@ -116,7 +146,8 @@ export function canonicalMessageVersion(message: XoreinRuntimeMessage): Uint8Arr
     encrypted: message.encrypted === true,
     revision: message.author_revision ?? 0,
   };
-  return new TextEncoder().encode(DOMAIN + canonicalJSON(record));
+  const domain = proofVersion === 1 ? DOMAIN_V1 : DOMAIN_V2;
+  return new TextEncoder().encode(domain + canonicalJSON(record));
 }
 
 /** Sign the current immutable version, or return undefined outside an active engine. */
@@ -128,7 +159,7 @@ export function signChannelMessageVersion(
     || message.sender_peer_id !== identity.peerId) return undefined;
   const canonical = canonicalMessageVersion(message);
   return {
-    version: 1,
+    version: 2,
     identity_key: identityKeyBlob(identity.edPub, identity.mldsaPub),
     signature: b64url(hybridSign(canonical, identitySigningKey(identity))),
     content_hash: b64url(sha256(canonical)),
@@ -143,7 +174,7 @@ export type HistoryVerification =
 export function verifySignedHistoryMessage(message: XoreinRuntimeMessage): HistoryVerification {
   const proof = message.author_proof;
   if (!proof) return { ok: false, reason: 'missing_proof' };
-  if (proof.version !== 1
+  if ((proof.version !== 1 && proof.version !== 2)
     || typeof proof.identity_key !== 'string'
     || typeof proof.signature !== 'string'
     || typeof proof.content_hash !== 'string'
@@ -166,7 +197,7 @@ export function verifySignedHistoryMessage(message: XoreinRuntimeMessage): Histo
 
   let canonical: Uint8Array;
   try {
-    canonical = canonicalMessageVersion(message);
+    canonical = canonicalMessageVersion(message, proof.version);
   } catch {
     return { ok: false, reason: 'malformed_proof' };
   }

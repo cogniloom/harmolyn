@@ -139,11 +139,11 @@ try {
 
   // ---------- roles ----------
   await s.step('alice creates a role and assigns it to bob', async () => {
-    await alice.page.getByRole('button', { name: 'Server Settings' }).click();
+    await alice.page.getByRole('button', { name: 'Space Settings' }).click();
     await alice.page.getByRole('button', { name: /^Roles/ }).click();
     await s.aria(alice, 'roles-section');
     const add = alice.page.getByRole('button', { name: /new role|add role|create role/i }).first();
-    if (!(await add.count())) throw new Error('no create-role affordance found in Server Settings > Roles');
+    if (!(await add.count())) throw new Error('no create-role affordance found in Space Settings > Roles');
     await add.click();
     await alice.page.waitForTimeout(600);
     await s.shot(alice, 'role-created');
@@ -156,7 +156,7 @@ try {
 
   // ---------- kick + crypto lockout ----------
   await s.step('alice kicks bob', async () => {
-    await alice.page.getByRole('button', { name: 'Server Settings' }).click();
+    await alice.page.getByRole('button', { name: 'Space Settings' }).click();
     await alice.page.getByRole('button', { name: /^Members/ }).click();
     await s.aria(alice, 'members-section');
     // Exact control: the per-member remove button is named "Remove <name>".

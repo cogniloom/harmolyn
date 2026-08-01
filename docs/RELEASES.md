@@ -24,10 +24,14 @@ Harmolyn releases are built by `.github/workflows/release.yml` from the official
 | `APPLE_TEAM_ID` | Ten-character Apple Developer Team ID owning the certificate |
 | `WINDOWS_CERTIFICATE` | Base64 of an Authenticode code-signing certificate plus private key exported as one `.pfx`/PKCS#12 file |
 | `WINDOWS_CERTIFICATE_PASSWORD` | Export password of that `.pfx` file |
+| `RELEASE_TAG_GPG_PRIVATE_KEY` | Complete ASCII-armored, passphrase-protected OpenPGP private key used only for official release tags |
+| `RELEASE_TAG_GPG_PASSPHRASE` | Non-empty passphrase protecting the OpenPGP private key, stored separately offline |
+| `RELEASE_TAG_GPG_FINGERPRINT` | Exact 40-character uppercase hexadecimal fingerprint of the primary OpenPGP key; register the corresponding public key on the official GitHub release identity so GitHub can mark signatures as verified |
 
-Keep an offline backup of the updater private key and password. Losing it means
-existing clients cannot trust artifacts signed by a replacement key without a
-separately authenticated migration release.
+Keep offline backups of the updater and release-tag private keys and their
+passwords. Losing the updater key means existing clients cannot trust artifacts
+signed by a replacement key without a separately authenticated migration
+release. Losing the tag key prevents continuity of the official Git history.
 
 The public key in `src-tauri/tauri.conf.json` must match
 `TAURI_SIGNING_PRIVATE_KEY`. Do not regenerate either key during a release and
@@ -53,11 +57,19 @@ The workflow then:
    Windows packages. macOS is notarized; Windows is Authenticode-signed.
 6. Generates Tauri updater metadata from the completed platform artifacts.
 7. Rechecks that neither `main` nor `staging` moved, creates the release commit,
-   and atomically advances `staging`, `main`, and the annotated tag.
+   and atomically advances `staging`, `main`, and the OpenPGP-signed tag.
 8. Uploads a draft GitHub release and publishes it only after every asset is
    present.
 
 Failed validation/build jobs do not leave a version-only commit on `staging`.
+
+If the atomic branch/tag push succeeds but GitHub release creation or asset
+upload fails, dispatch the same workflow again with `resume_tag` set to the
+existing `vX.Y.Z` tag. The selected bump is ignored. The workflow verifies the
+tag signature, requires both `main` and `staging` to still point to that tagged
+commit, rebuilds the exact tagged tree on every platform, and creates or updates
+the release assets idempotently. `resume_tag` cannot be used to change source
+code or republish a different commit under an existing version.
 
 ## Update trust boundary
 
@@ -65,7 +77,10 @@ Failed validation/build jobs do not leave a version-only commit on `staging`.
 `latest.json` endpoint. The client verifies the signature attached to the
 platform updater archive before installation. Installation replaces application
 files only; identities, IndexedDB, local preferences, and Xorein data directories
-are outside the bundle path.
+are outside the bundle path. The client may download a verified update in the
+background, but installation requires the explicit **Install & restart** action:
+some platform installers terminate the process, so silently installing could
+interrupt a call or discard an in-memory draft.
 
 Do not publish unsigned fallback assets and do not change the updater key merely
 to recover from a missing CI secret.

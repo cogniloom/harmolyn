@@ -85,7 +85,9 @@ import { generateTheme } from '@/utils/themeGenerator';
 import {
   autoUpdateEnabled,
   checkForAppUpdate,
-  installAppUpdate,
+  downloadAppUpdate,
+  pendingUpdateRestartVersion,
+  restartAfterAppUpdate,
   setAutoUpdateEnabled,
 } from '@/lib/appUpdater';
 
@@ -2605,10 +2607,16 @@ const AboutSection: React.FC = () => {
   const [openDoc, setOpenDoc] = useState<'terms' | 'privacy' | 'guidelines' | null>(null);
   const [autoUpdate, setAutoUpdate] = useState(() => autoUpdateEnabled());
   const [updateVersion, setUpdateVersion] = useState<string | null>(null);
-  const [updateStatus, setUpdateStatus] = useState('Signed native updates are checked automatically.');
+  const [restartVersion, setRestartVersion] = useState(() => pendingUpdateRestartVersion());
+  const [updateStatus, setUpdateStatus] = useState(() => {
+    const pending = pendingUpdateRestartVersion();
+    return pending
+      ? `Signed update ${pending} is downloaded and ready to install.`
+      : 'Signed native updates are checked automatically.';
+  });
   const [updateBusy, setUpdateBusy] = useState(false);
   const legalLinks: { id: 'terms' | 'privacy' | 'guidelines'; title: string; desc: string }[] = [
-    { id: 'terms', title: 'Terms of Service', desc: 'The agreement for using this instance' },
+    { id: 'terms', title: 'Terms of Use', desc: 'Software, network, and Space responsibilities' },
     { id: 'privacy', title: 'Privacy Policy', desc: 'What is (and isn’t) collected' },
     { id: 'guidelines', title: 'Community Guidelines', desc: 'Acceptable use — the rules for everyone' },
   ];
@@ -2620,6 +2628,10 @@ const AboutSection: React.FC = () => {
       if (result.status === 'available') {
         setUpdateVersion(result.version);
         setUpdateStatus(`Signed update ${result.version} is available.`);
+      } else if (result.status === 'ready') {
+        setUpdateVersion(null);
+        setRestartVersion(result.version);
+        setUpdateStatus(`Signed update ${result.version} is downloaded. Install and restart when convenient.`);
       } else if (result.status === 'web') {
         setUpdateStatus('Browser builds update with the hosted app; installers are managed by the native app.');
       } else {
@@ -2631,16 +2643,35 @@ const AboutSection: React.FC = () => {
       setUpdateBusy(false);
     }
   };
-  const installUpdate = async () => {
+  const downloadUpdate = async () => {
     setUpdateBusy(true);
     setUpdateStatus('Downloading and verifying the signed update…');
     try {
-      const result = await installAppUpdate();
+      const result = await downloadAppUpdate();
       if (result.status === 'web') setUpdateStatus('Install updates from the native Harmolyn app.');
       else if (result.status === 'current') setUpdateStatus('Harmolyn is already up to date.');
+      else if (result.status === 'ready') {
+        setUpdateVersion(null);
+        setRestartVersion(result.version);
+        setUpdateStatus(`Signed update ${result.version} is downloaded. Install and restart when convenient.`);
+      }
     } catch (error) {
       setUpdateStatus(error instanceof Error ? `Update failed: ${error.message}` : 'Update failed.');
     } finally {
+      setUpdateBusy(false);
+    }
+  };
+  const restartUpdate = async () => {
+    setUpdateBusy(true);
+    setUpdateStatus('Restarting Harmolyn to finish the signed update…');
+    try {
+      await restartAfterAppUpdate();
+      setRestartVersion(null);
+      setUpdateStatus('Restart request completed.');
+      setUpdateBusy(false);
+    } catch (error) {
+      setRestartVersion(pendingUpdateRestartVersion());
+      setUpdateStatus(error instanceof Error ? `Restart failed: ${error.message}` : 'Restart failed.');
       setUpdateBusy(false);
     }
   };
@@ -2692,8 +2723,8 @@ const AboutSection: React.FC = () => {
         <div className="mt-4 pt-4 border-t border-white/10 space-y-3">
           <label className="flex items-center justify-between gap-4 text-[11px] text-white/60">
             <span>
-              <strong className="text-white">Automatic signed updates</strong><br />
-              Replaces application files only; accounts, settings, and node configuration stay untouched.
+              <strong className="text-white">Automatic signed update downloads</strong><br />
+              Installation waits for your safe restart; accounts, settings, and node configuration stay untouched.
             </span>
             <input
               type="checkbox"
@@ -2711,8 +2742,13 @@ const AboutSection: React.FC = () => {
               <RefreshCw size={12} className={updateBusy ? 'animate-spin' : ''} /> Check for updates
             </button>
             {updateVersion && (
-              <button type="button" disabled={updateBusy} onClick={() => void installUpdate()} className="px-4 h-9 rounded-full bg-primary text-bg-0 font-bold text-xs disabled:opacity-40 flex items-center gap-2">
-                <Download size={12} /> Install {updateVersion}
+              <button type="button" disabled={updateBusy} onClick={() => void downloadUpdate()} className="px-4 h-9 rounded-full bg-primary text-bg-0 font-bold text-xs disabled:opacity-40 flex items-center gap-2">
+                <Download size={12} /> Download {updateVersion}
+              </button>
+            )}
+            {restartVersion && (
+              <button type="button" disabled={updateBusy} onClick={() => void restartUpdate()} className="px-4 h-9 rounded-full bg-primary text-bg-0 font-bold text-xs disabled:opacity-40 flex items-center gap-2">
+                <RefreshCw size={12} /> Install &amp; restart {restartVersion}
               </button>
             )}
           </div>

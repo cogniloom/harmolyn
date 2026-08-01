@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { BlobSwarmManifest } from '../../types.js';
 import type { PeerSync } from '../sync/peersync.js';
 import {
   addServer,
@@ -8,6 +9,8 @@ import {
 } from '../state/store.js';
 import { registerPeerSync } from '../sync/registry.js';
 import { encodeBase64Chunked } from '../security/limits.js';
+import { generateIdentity } from '../identity/identity.js';
+import { registerReplicaIdentity, resetReplicaIdentity } from '../sync/replica.js';
 import {
   blobProviderHealthSnapshot,
   createLocalBlobSwarm,
@@ -55,11 +58,13 @@ describe('peer-owned encrypted blob swarm', () => {
     localStorage.clear();
     initStore();
     registerPeerSync(null as unknown as PeerSync);
+	resetReplicaIdentity();
     await resetBlobSwarmForTests();
   });
 
   afterEach(async () => {
     registerPeerSync(null as unknown as PeerSync);
+	resetReplicaIdentity();
     await resetBlobSwarmForTests();
     vi.restoreAllMocks();
   });
@@ -109,7 +114,23 @@ describe('peer-owned encrypted blob swarm', () => {
   });
 
   it('prefers support providers, then fills three remote copies through members', async () => {
-    installScope([OWNER, 'node', 'p1', 'p2', 'p3']);
+    const identity = await generateIdentity();
+    setNativeIdentity({ id: identity.peerId, peer_id: identity.peerId });
+    registerReplicaIdentity(identity);
+    addServer({
+      id: SERVER,
+      name: 'Blob swarm',
+      owner_peer_id: identity.peerId,
+      members: [identity.peerId, 'node', 'p1', 'p2', 'p3'],
+      channels: {
+        [CHANNEL]: {
+          id: CHANNEL,
+          server_id: SERVER,
+          name: 'files',
+          voice: false,
+        },
+      },
+    });
     upsertPeer({ peer_id: 'node', role: 'archivist' });
     const requestOrder: string[] = [];
     const requestPeer = vi.fn(async (
@@ -131,7 +152,7 @@ describe('peer-owned encrypted blob swarm', () => {
     const manifest = await createLocalBlobSwarm(
       crypto.getRandomValues(new Uint8Array(96)),
       CHANNEL,
-      OWNER,
+      identity.peerId,
       5,
     );
     const report = await seedBlobSwarm(manifest);
@@ -139,7 +160,38 @@ describe('peer-owned encrypted blob swarm', () => {
     expect(requestOrder[0]).toBe('node');
     expect(report.successfulProviders).toEqual(expect.arrayContaining(['p1', 'p2', 'p3']));
     expect(report.fullyReplicatedChunks).toBe(report.totalChunks);
-    expect(manifest.provider_peer_ids).toHaveLength(3);
+    expect(manifest.provider_peer_ids).toBeUndefined();
+  });
+
+  it('does not rewrite signed provider hints during a repair pass', async () => {
+    installScope([OWNER, 'p1']);
+    const manifest = await createLocalBlobSwarm(
+      crypto.getRandomValues(new Uint8Array(96)),
+      CHANNEL,
+      OWNER,
+      1,
+    );
+    manifest.provider_peer_ids = ['p1'];
+    const before = structuredClone(manifest);
+    registerPeerSync({
+      requestPeer: vi.fn(async (
+        _peerId: string,
+        _protocol: string,
+        operation: string,
+        payload: Record<string, unknown>,
+      ) => {
+        if (operation === 'sync.blob.inventory') {
+          return {
+            ok: true,
+            indices: (payload.manifest as BlobSwarmManifest).chunk_hashes.map((_hash, index) => index),
+          };
+        }
+        return { ok: false };
+      }),
+    } as unknown as PeerSync);
+
+    await seedBlobSwarm(manifest);
+    expect(manifest).toEqual(before);
   });
 
   it('round-robins missing fragments across partial providers and reconstructs them', async () => {

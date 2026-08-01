@@ -69,6 +69,7 @@ import {
   selectNewestVerifiedVersions,
   verifySignedHistoryMessage,
 } from '../sync/signedHistory.js';
+import { registerReplicaIdentity, resetReplicaIdentity } from '../sync/replica.js';
 import { fetchSwarmHistoryPage, type HistoryProviderKind } from '../sync/swarmHistory.js';
 import { registerInviteIdentity, resetInviteIdentity } from '../sync/invite.js';
 import {
@@ -412,6 +413,7 @@ export class XoreinNativeEngine {
       identity_key: identityKeyBlob(this._identity.edPub, this._identity.mldsaPub),
     });
     registerHistoryIdentity(this._identity);
+    registerReplicaIdentity(this._identity);
     registerInviteIdentity(this._identity);
     registerServerSigningIdentity(this._identity);
     registerPeerDiscoveryIdentity(this._identity);
@@ -1086,6 +1088,7 @@ export class XoreinNativeEngine {
       resetScopeCrypto();
       resetOfflineIdentity();
       resetHistoryIdentity();
+      resetReplicaIdentity();
       resetInviteIdentity();
       resetServerSigningIdentity();
       resetPeerDiscovery();
@@ -1345,7 +1348,9 @@ export class XoreinNativeEngine {
         // so a compromised/buggy responder can't smuggle records into other scopes.
         const scoped = (data.messages as XoreinRuntimeMessage[])
           .filter(m => m && m.server_id === serverId && m.scope_id === channelId);
-        const added = mergeHistoryMessages(scoped);
+        const added = mergeHistoryMessages(scoped, {
+          allowUnsignedFromPeerId: server.owner_peer_id,
+        });
         if (added > 0 || scoped.length > 0) {
           publishNativeSnapshot();
           return { added, hasMore: Boolean(data.has_more) };

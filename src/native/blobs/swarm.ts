@@ -21,6 +21,7 @@ import {
 } from '../security/limits.js';
 import { getState } from '../state/store.js';
 import { getPeerSync } from '../sync/registry.js';
+import { createReplicaUploaderProof } from '../sync/replica.js';
 import type { BlobSwarmManifest } from '../../types.js';
 
 const DB_NAME = 'harmolyn-blob-swarm-v1';
@@ -49,6 +50,11 @@ interface WireChunk {
   index: number;
   hash: string;
   data: string;
+	created_at?: string;
+	uploader_peer_id?: string;
+	uploader_ed_pub?: string;
+	uploader_mldsa_pub?: string;
+	uploader_signature?: string;
 }
 
 interface ProviderHealth {
@@ -557,6 +563,50 @@ async function sendChunkBatch(
   if (!peerSync || !usableProvider(peerId)) return [];
   const wireManifest = manifestForProvider(peerId, manifest);
   if (!wireManifest) return [];
+	const supportProvider = isSupportProvider(peerId);
+	const uploaderPeerId = getState().identity?.peer_id ?? '';
+	const wireChunks: WireChunk[] = [];
+	for (const chunk of chunks) {
+		const data = encodeBase64Chunked(chunk.data);
+		const base: WireChunk = {
+			index: chunk.index,
+			hash: manifest.chunk_hashes[chunk.index],
+			data,
+		};
+		if (!supportProvider) {
+			wireChunks.push(base);
+			continue;
+		}
+		const createdAt = new Date().toISOString();
+		const envelope = {
+			version: 1,
+			blob_id: manifest.blob_id,
+			index: chunk.index,
+			hash: base.hash,
+			data,
+			ciphertext_size: manifest.ciphertext_size,
+			chunk_size: manifest.chunk_size,
+			chunk_count: manifest.chunk_hashes.length,
+		};
+		const proof = createReplicaUploaderProof({
+			version: 1,
+			namespace: manifest.node_namespace ?? '',
+			id: `blob:${manifest.blob_id}:${chunk.index}`,
+			revision: 0,
+			created_at: createdAt,
+			content_hash: base.hash,
+			key_epoch: 0,
+			uploader_peer_id: uploaderPeerId,
+			envelope,
+		});
+		if (!proof) return [];
+		wireChunks.push({
+			...base,
+			created_at: createdAt,
+			uploader_peer_id: uploaderPeerId,
+			...proof,
+		});
+	}
   const response = await peerSync.requestPeer<{
     ok?: boolean;
     stored_indices?: number[];
@@ -567,11 +617,7 @@ async function sendChunkBatch(
     'sync.blob.store',
     {
       manifest: wireManifest,
-      chunks: chunks.map(chunk => ({
-        index: chunk.index,
-        hash: manifest.chunk_hashes[chunk.index],
-        data: encodeBase64Chunked(chunk.data),
-      })),
+		chunks: wireChunks,
     },
   );
   if (!response?.ok || !Array.isArray(response.stored_indices)) {
@@ -664,7 +710,6 @@ export async function seedBlobSwarm(manifest: BlobSwarmManifest): Promise<BlobSw
   }
 
   const providerList = [...successfulProviders].slice(0, BLOB_SWARM_MAX_PROVIDERS);
-  manifest.provider_peer_ids = providerList;
   const fullyReplicatedChunks = [...acknowledgements.values()]
     .filter(peers => peers.size >= Math.min(TARGET_REMOTE_COPIES, allCandidates.length)).length;
   return {

@@ -29,10 +29,10 @@ try {
   await page.getByRole('button', { name: 'Continue anyway' }).click();
   await page.getByRole('button', { name: 'SKIP' }).click();
   await page.waitForTimeout(300);
-  await page.getByRole('button', { name: /^Create a server/ }).click();
+  await page.getByRole('button', { name: /^Create a Space/ }).click();
   await page.waitForTimeout(400);
-  await page.getByRole('textbox', { name: 'Node Name' }).fill('Test Hub');
-  await page.getByRole('button', { name: 'Initiate Matrix' }).click();
+  await page.getByRole('textbox', { name: 'Space Name' }).fill('Test Hub');
+  await page.getByRole('button', { name: 'Create Space' }).click();
   await page.waitForTimeout(2000);
   await dump('after-server-created');
 } catch (err) {

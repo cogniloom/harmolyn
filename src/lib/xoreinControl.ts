@@ -380,7 +380,7 @@ export async function discoverServerByInvite(runtimeSnapshot: XoreinRuntimeSnaps
 export async function createServer(runtimeSnapshot: XoreinRuntimeSnapshot | null, input: { name: string; description?: string }): Promise<XoreinRuntimeSnapshot> {
   const name = input.name.trim();
   if (!name) {
-    throw new XoreinControlError('invalid_request', 'Server name is required.');
+    throw new XoreinControlError('invalid_request', 'Space name is required.');
   }
 
   const server = await requestControlApi<ControlServerRecord>(runtimeSnapshot, 'POST', '/v1/servers', {
@@ -409,7 +409,7 @@ export async function joinServerByInvite(runtimeSnapshot: XoreinRuntimeSnapshot 
   if (!endpointUrl || !isLocalControlOrigin(endpointUrl) || !shouldUseNativeControlBridge(endpoint)) {
     throw new XoreinControlError(
       'p2p_required',
-      'Server joins require the native xorein peer path; no invite capability was sent.',
+      'Space joins require the native Xorein peer path; no invite capability was sent.',
       501,
     );
   }

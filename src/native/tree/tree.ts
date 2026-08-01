@@ -24,7 +24,7 @@ export interface Member {
 
 export interface EpochState {
   epochId: number;
-  epochKey: Uint8Array; // 32 B; AES-128 uses first 16 B
+  epochKey: Uint8Array; // 32 B; used in full by AES-256-GCM
   messageCount: number;
   startedAt: number;    // unix ms
 }
@@ -41,7 +41,7 @@ export interface Ciphertext {
   epochId: number;
   senderId: string;
   nonce: Uint8Array;  // 12 B
-  ct: Uint8Array;     // AES-128-GCM ciphertext + 16-B tag
+  ct: Uint8Array;     // AES-256-GCM ciphertext + 16-B tag
 }
 
 export interface Commit {
@@ -157,8 +157,7 @@ export function treeEncrypt(g: GroupState, senderId: string, plaintext: Uint8Arr
   }
   const nonce = crypto.getRandomValues(new Uint8Array(12));
   const aad = epochAAD(g.groupId, g.currentEpoch.epochId, senderId);
-  const key16 = g.currentEpoch.epochKey.slice(0, 16);
-  const aead = aesGcm(key16, nonce, aad);
+  const aead = aesGcm(g.currentEpoch.epochKey, nonce, aad);
   const ct: Ciphertext = {
     epochId: g.currentEpoch.epochId,
     senderId,
@@ -181,8 +180,7 @@ export function treeEncryptManaged(g: GroupState, senderId: string, plaintext: U
   assertMessageInput(g, senderId, plaintext);
   const nonce = crypto.getRandomValues(new Uint8Array(12));
   const aad = epochAAD(g.groupId, g.currentEpoch.epochId, senderId);
-  const key16 = g.currentEpoch.epochKey.slice(0, 16);
-  const aead = aesGcm(key16, nonce, aad);
+  const aead = aesGcm(g.currentEpoch.epochKey, nonce, aad);
   const ct: Ciphertext = {
     epochId: g.currentEpoch.epochId,
     senderId,
@@ -199,10 +197,9 @@ export function treeDecrypt(g: GroupState, ct: Ciphertext): Uint8Array {
   if (!validCiphertext(ct)) throw new Error('tree: invalid ciphertext');
   const epoch = findEpoch(g, ct.epochId);
   if (!epoch) throw new Error('tree: epoch expired or not found');
-  const key16 = epoch.epochKey.slice(0, 16);
   if (epoch.epochKey.length !== 32) throw new Error('tree: invalid epoch key');
   const aad = epochAAD(g.groupId, ct.epochId, ct.senderId);
-  const aead = aesGcm(key16, ct.nonce, aad);
+  const aead = aesGcm(epoch.epochKey, ct.nonce, aad);
   return aead.decrypt(ct.ct);
 }
 

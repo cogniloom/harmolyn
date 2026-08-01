@@ -58,10 +58,14 @@ async function startNode(node, extra = [], log = () => {}) {
     '--ws-listen', `127.0.0.1:${node.ws}`,
     '--browser-listen', `127.0.0.1:${node.http}`,
     '--turn-listen', `127.0.0.1:${node.turn}`,
+    '--turn-tcp-listen', `127.0.0.1:${node.turn}`,
+    '--turn-tls-listen', '-',
+    '--turn-public-ip', '127.0.0.1',
     '--turn-relay-min-port', String(node.turnMin),
     '--turn-relay-max-port', String(node.turnMax),
     '--enable-mdns=false',
     '--enable-nat=false',
+    '--auto-update=false',
     ...extra,
   ], { stdio: ['ignore', 'pipe', 'pipe'] });
   child.stdout.on('data', data => log(`[${node.name}] ${data}`.trimEnd()));

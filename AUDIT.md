@@ -27,7 +27,7 @@ disclosure will be credited in this file and the relevant release notes.
 | Space channel encryption | `src/native/tree/`, `src/native/crowd/`, `src/native/sync/secureEnvelope.ts` | scope-bound AAD, mode transition, epoch rollback/reuse, removed-member access, malformed wire data |
 | Owner authority and membership | `src/native/sync/signedServer.ts`, `src/native/sync/inbound.ts`, `src/native/state/` | proof canonicalization, stale revisions, invite forgery, cross-Space substitution, offline owner behavior |
 | Recovery | `src/native/recovery/` | guardian authorization, encrypted-state confidentiality, chunk reassembly, hash/length confusion, quota exhaustion, lost-device recovery |
-| Peer routing and storage | `src/native/delivery/`, `src/native/discovery/`, `src/native/sync/` | malicious relays/providers, signed graph routes, poisoning, eclipse resistance, replica corruption and repair |
+| Peer routing and storage | `src/native/delivery/`, `src/native/discovery/`, `src/native/sync/`, `src/native/blobs/` | malicious relays/providers, signed graph routes, poisoning, eclipse resistance, replica uploader-proof substitution, corruption and repair |
 | Voice and screen sharing | `src/native/voice/` | SFrame key binding, participant churn, replay, TURN privacy, two-browser media behavior |
 | Desktop boundary and updates | `src-tauri/` | command authorization, localhost origin checks, signed-update verification, downgrade, settings preservation |
 
@@ -47,6 +47,13 @@ implementation and audit guide in
 - Live Tree/Crowd messages now require the original author's hybrid signature.
   A shared epoch key proves group access, not sender identity; unsigned channel
   ciphertext is rejected even when it arrives over an authenticated connection.
+- Tree application encryption uses the complete 32-byte AES-256-GCM epoch key;
+  regression coverage changes the final key byte to detect accidental key
+  truncation.
+- History and attachment replicas carry a portable hybrid uploader proof over
+  every replacement-relevant hint and the exact opaque envelope digest. Nodes
+  can forward a record without gaining the ability to substitute ciphertext
+  under the original uploader's identity.
 - Oversized encrypted recovery state is split into bounded, independently
   sealed chunks, durably reassembled out of order, and verified by total length
   and SHA-256 before use.

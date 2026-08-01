@@ -14,7 +14,9 @@ import {
   AUTO_UPDATE_KEY,
   autoUpdateEnabled,
   checkForAppUpdate,
-  installAppUpdate,
+  downloadAppUpdate,
+  pendingUpdateRestartVersion,
+  restartAfterAppUpdate,
   setAutoUpdateEnabled,
 } from './appUpdater.js';
 
@@ -39,19 +41,32 @@ describe('signed native application updates', () => {
     expect(mocks.check).not.toHaveBeenCalled();
   });
 
-  it('downloads, installs, and relaunches only through the signed Tauri updater', async () => {
+  it('downloads in the background and installs only after explicit restart', async () => {
     mocks.isTauri.mockReturnValue(true);
     const update = {
       version: '1.1.0',
-      downloadAndInstall: vi.fn().mockResolvedValue(undefined),
+      download: vi.fn().mockResolvedValue(undefined),
+      install: vi.fn().mockResolvedValue(undefined),
       close: vi.fn().mockResolvedValue(undefined),
     };
     mocks.check.mockResolvedValue(update);
     mocks.relaunch.mockResolvedValue(undefined);
 
-    await expect(installAppUpdate()).resolves.toEqual({ status: 'installed', version: '1.1.0' });
-    expect(update.downloadAndInstall).toHaveBeenCalledOnce();
+    await expect(downloadAppUpdate()).resolves.toEqual({ status: 'ready', version: '1.1.0' });
+    expect(update.download).toHaveBeenCalledOnce();
+    expect(update.install).not.toHaveBeenCalled();
+    expect(update.close).not.toHaveBeenCalled();
+    expect(mocks.relaunch).not.toHaveBeenCalled();
+    expect(pendingUpdateRestartVersion()).toBe('1.1.0');
+
+    await expect(downloadAppUpdate()).resolves.toEqual({ status: 'ready', version: '1.1.0' });
+    expect(mocks.check).toHaveBeenCalledOnce();
+    expect(update.download).toHaveBeenCalledOnce();
+
+    await restartAfterAppUpdate();
+    expect(update.install).toHaveBeenCalledOnce();
     expect(update.close).toHaveBeenCalledOnce();
     expect(mocks.relaunch).toHaveBeenCalledOnce();
+    expect(pendingUpdateRestartVersion()).toBeNull();
   });
 });
