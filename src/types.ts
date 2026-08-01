@@ -340,9 +340,9 @@ export interface XoreinRuntimeServer {
   /** Monotonic generation embedded in owner-signed invite capabilities. */
   invite_generation?: number;
   /**
-   * Local-only bearer capability retained after a member-served join until the
-   * owner has reconciled the admission. It is stripped from every served/server
-   * broadcast snapshot and persisted only inside encrypted account state.
+   * Local-only bearer capability retained by a joiner until convergence, or by
+   * an owner while an invite cohort is open. It is stripped from every served
+   * server snapshot and persisted only inside encrypted account state.
    */
   admission_capability?: string;
   /**
@@ -362,10 +362,16 @@ export interface XoreinRuntimeServer {
 }
 
 export interface XoreinServerOwnerProof {
-  version: 1 | 2;
+  version: 1 | 2 | 3;
   identity_key: string;
   signature: string;
   content_hash: string;
+  /** v3 binds a pre-authorized next epoch to an owner-signed invite cohort. */
+  admission_generation?: number;
+  issued_at?: number;
+  expires_at?: number;
+  transition_nonce?: string;
+  transition_ciphertext?: string;
 }
 
 export interface XoreinRuntimeDM {

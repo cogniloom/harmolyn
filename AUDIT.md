@@ -57,6 +57,23 @@ implementation and audit guide in
 - Oversized encrypted recovery state is split into bounded, independently
   sealed chunks, durably reassembled out of order, and verified by total length
   and SHA-256 before use.
+- Portable v3 invites bind an owner-signed exact future revision/epoch/root,
+  generation, mode, and profile. The transition is sealed under the current
+  root; a bearer cannot decrypt existing history or choose a different roster.
+  Revocation/removal rotates the invite generation and cached capability.
+- Proof-less security-mode, epoch, and invite-generation changes fail closed;
+  owner signatures and monotonic revisions remain authoritative across routed,
+  mailbox, and peer-restored state.
+- Remote PEX cannot induce DNS or private-network probes from a public source.
+  Local relay discovery is accepted only from an authenticated relay in the
+  same bounded loopback/private address scope.
+- Recipient-inbox delivery does not clear the sender outbox merely because an
+  unknown peer accepted storage; the holder must be a Node or share the
+  recipient's Space/DM graph. Voice presence fanout retries unanswered peers
+  without letting a fast negative response erase a later positive response.
+- Blob cache quota accounting is transactional and O(1) during normal writes;
+  sponsor identities are bounded and eviction cannot remove fragments in the
+  write currently being admitted.
 
 ## Important residual risk
 

@@ -15,6 +15,7 @@ import {
   BLOB_SWARM_MIN_CHUNK_BYTES,
   decodeBase64Strict,
   encodeBase64Chunked,
+  hasControlCharacters,
   isPlainObject,
   isSafeBlobSwarmManifest,
   MAX_ATTACHMENT_BYTES,
@@ -25,9 +26,11 @@ import { createReplicaUploaderProof } from '../sync/replica.js';
 import type { BlobSwarmManifest } from '../../types.js';
 
 const DB_NAME = 'harmolyn-blob-swarm-v1';
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 const CHUNKS_STORE = 'chunks';
 const MANIFESTS_STORE = 'manifests';
+const USAGE_STORE = 'usage';
+const USAGE_KEY = 'cache-usage';
 const MAX_LOCAL_CACHE_BYTES = 512 * 1024 * 1024;
 const MAX_REMOTE_SPONSOR_BYTES = 128 * 1024 * 1024;
 const MAX_STORE_BATCH_CHUNKS = 2;
@@ -35,6 +38,7 @@ const MAX_FETCH_BATCH_CHUNKS = 2;
 const TARGET_REMOTE_COPIES = 3;
 const MAX_PARALLEL_REQUESTS = 6;
 const MAX_PROVIDER_FAILURES = 3;
+const MAX_SPONSOR_ACCOUNTS = 8192;
 
 interface StoredChunk {
   key: string;
@@ -46,15 +50,21 @@ interface StoredChunk {
   sponsor_peer_id?: string;
 }
 
+interface CacheUsage {
+  key: typeof USAGE_KEY;
+  total_bytes: number;
+  sponsor_bytes: Array<[string, number]>;
+}
+
 interface WireChunk {
   index: number;
   hash: string;
   data: string;
-	created_at?: string;
-	uploader_peer_id?: string;
-	uploader_ed_pub?: string;
-	uploader_mldsa_pub?: string;
-	uploader_signature?: string;
+  created_at?: string;
+  uploader_peer_id?: string;
+  uploader_ed_pub?: string;
+  uploader_mldsa_pub?: string;
+  uploader_signature?: string;
 }
 
 interface ProviderHealth {
@@ -74,8 +84,10 @@ const memoryChunks = new Map<string, StoredChunk>();
 const memoryManifests = new Map<string, BlobSwarmManifest>();
 const providerHealth = new Map<string, ProviderHealth>();
 const learnedNodeProviders = new Map<string, Set<string>>();
+const memorySponsorBytes = new Map<string, number>();
 let memoryBytes = 0;
 let dbPromise: Promise<IDBDatabase> | null = null;
+let persistentWriteQueue: Promise<void> = Promise.resolve();
 let auditRemaining = randomAuditInterval();
 
 function hex(bytes: Uint8Array): string {
@@ -148,19 +160,49 @@ function openDatabase(): Promise<IDBDatabase> | null {
     const request = indexedDB.open(DB_NAME, DB_VERSION);
     request.onupgradeneeded = () => {
       const db = request.result;
+      let chunks: IDBObjectStore;
       if (!db.objectStoreNames.contains(CHUNKS_STORE)) {
-        const chunks = db.createObjectStore(CHUNKS_STORE, { keyPath: 'key' });
+        chunks = db.createObjectStore(CHUNKS_STORE, { keyPath: 'key' });
         chunks.createIndex('blob_id', 'blob_id', { unique: false });
         chunks.createIndex('stored_at', 'stored_at', { unique: false });
         chunks.createIndex('sponsor_peer_id', 'sponsor_peer_id', { unique: false });
       } else {
-        const chunks = request.transaction?.objectStore(CHUNKS_STORE);
-        if (chunks && !chunks.indexNames.contains('sponsor_peer_id')) {
+        chunks = request.transaction!.objectStore(CHUNKS_STORE);
+        if (!chunks.indexNames.contains('sponsor_peer_id')) {
           chunks.createIndex('sponsor_peer_id', 'sponsor_peer_id', { unique: false });
         }
       }
       if (!db.objectStoreNames.contains(MANIFESTS_STORE)) {
         db.createObjectStore(MANIFESTS_STORE, { keyPath: 'blob_id' });
+      }
+      if (!db.objectStoreNames.contains(USAGE_STORE)) {
+        const usage = db.createObjectStore(USAGE_STORE, { keyPath: 'key' });
+        // One-time migration reads one chunk at a time while the old database is
+        // upgraded. Normal quota checks thereafter read only this small record.
+        const totals = new Map<string, number>();
+        let totalBytes = 0;
+        const cursor = chunks.openCursor();
+        cursor.onsuccess = () => {
+          const item = cursor.result;
+          if (item) {
+            const record = item.value as StoredChunk;
+            const bytes = record.data instanceof ArrayBuffer ? record.data.byteLength : 0;
+            totalBytes += bytes;
+            if (record.sponsor_peer_id) {
+              totals.set(
+                record.sponsor_peer_id,
+                (totals.get(record.sponsor_peer_id) ?? 0) + bytes,
+              );
+            }
+            item.continue();
+            return;
+          }
+          usage.put({
+            key: USAGE_KEY,
+            total_bytes: totalBytes,
+            sponsor_bytes: [...totals],
+          } satisfies CacheUsage);
+        };
       }
     };
     request.onsuccess = () => resolve(request.result);
@@ -172,35 +214,74 @@ function openDatabase(): Promise<IDBDatabase> | null {
   return dbPromise;
 }
 
-async function persistentCacheBytes(db: IDBDatabase): Promise<number> {
-  const tx = db.transaction(CHUNKS_STORE, 'readonly');
-  const records = await requestResult(tx.objectStore(CHUNKS_STORE).getAll()) as StoredChunk[];
-  await transactionDone(tx);
-  return records.reduce((sum, record) => sum + record.data.byteLength, 0);
+function normalizeUsage(value: unknown): CacheUsage | null {
+  if (!isPlainObject(value)
+    || value.key !== USAGE_KEY
+    || !Number.isSafeInteger(value.total_bytes)
+    || Number(value.total_bytes) < 0
+    || !Array.isArray(value.sponsor_bytes)
+    || value.sponsor_bytes.length > 8192) return null;
+  const sponsors: Array<[string, number]> = [];
+  const seen = new Set<string>();
+  for (const entry of value.sponsor_bytes) {
+    if (!Array.isArray(entry) || entry.length !== 2
+      || typeof entry[0] !== 'string' || !entry[0] || entry[0].length > 256
+      || hasControlCharacters(entry[0]) || seen.has(entry[0])
+      || !Number.isSafeInteger(entry[1]) || Number(entry[1]) < 0) return null;
+    seen.add(entry[0]);
+    sponsors.push([entry[0], Number(entry[1])]);
+  }
+  return { key: USAGE_KEY, total_bytes: Number(value.total_bytes), sponsor_bytes: sponsors };
 }
 
-async function evictPersistentBytes(db: IDBDatabase, bytesNeeded: number): Promise<void> {
-  let total = await persistentCacheBytes(db);
-  if (total + bytesNeeded <= MAX_LOCAL_CACHE_BYTES) return;
-  const tx = db.transaction(CHUNKS_STORE, 'readwrite');
+async function persistentUsage(db: IDBDatabase): Promise<CacheUsage> {
+  const tx = db.transaction(USAGE_STORE, 'readonly');
+  const value = await requestResult(tx.objectStore(USAGE_STORE).get(USAGE_KEY));
+  await transactionDone(tx);
+  const usage = normalizeUsage(value);
+  if (!usage) throw new Error('blob swarm: cache accounting unavailable');
+  return usage;
+}
+
+async function evictPersistentBytes(
+  db: IDBDatabase,
+  bytesNeeded: number,
+  protectedKeys: ReadonlySet<string>,
+): Promise<void> {
+  const usage = await persistentUsage(db);
+  if (usage.total_bytes + bytesNeeded <= MAX_LOCAL_CACHE_BYTES) return;
+  const sponsorBytes = new Map(usage.sponsor_bytes);
+  const tx = db.transaction([CHUNKS_STORE, USAGE_STORE], 'readwrite');
   const store = tx.objectStore(CHUNKS_STORE);
   const cursorRequest = store.index('stored_at').openCursor();
   await new Promise<void>((resolve, reject) => {
     cursorRequest.onerror = () => reject(cursorRequest.error ?? new Error('blob swarm eviction failed'));
     cursorRequest.onsuccess = () => {
       const cursor = cursorRequest.result;
-      if (!cursor || total + bytesNeeded <= MAX_LOCAL_CACHE_BYTES) {
+      if (!cursor || usage.total_bytes + bytesNeeded <= MAX_LOCAL_CACHE_BYTES) {
         resolve();
         return;
       }
       const record = cursor.value as StoredChunk;
-      total -= record.data.byteLength;
+      if (protectedKeys.has(record.key)) {
+        cursor.continue();
+        return;
+      }
+      const bytes = record.data.byteLength;
+      usage.total_bytes -= bytes;
+      if (record.sponsor_peer_id) {
+        const remaining = Math.max(0, (sponsorBytes.get(record.sponsor_peer_id) ?? 0) - bytes);
+        if (remaining) sponsorBytes.set(record.sponsor_peer_id, remaining);
+        else sponsorBytes.delete(record.sponsor_peer_id);
+      }
       cursor.delete();
       cursor.continue();
     };
   });
+  usage.sponsor_bytes = [...sponsorBytes];
+  tx.objectStore(USAGE_STORE).put(usage);
   await transactionDone(tx);
-  if (total + bytesNeeded > MAX_LOCAL_CACHE_BYTES) {
+  if (usage.total_bytes + bytesNeeded > MAX_LOCAL_CACHE_BYTES) {
     throw new Error('blob swarm: local cache quota reached');
   }
 }
@@ -211,6 +292,14 @@ function evictMemoryBytes(bytesNeeded: number): void {
   for (const record of oldest) {
     memoryChunks.delete(record.key);
     memoryBytes -= record.data.byteLength;
+    if (record.sponsor_peer_id) {
+      const remaining = Math.max(
+        0,
+        (memorySponsorBytes.get(record.sponsor_peer_id) ?? 0) - record.data.byteLength,
+      );
+      if (remaining) memorySponsorBytes.set(record.sponsor_peer_id, remaining);
+      else memorySponsorBytes.delete(record.sponsor_peer_id);
+    }
     if (memoryBytes + bytesNeeded <= MAX_LOCAL_CACHE_BYTES) return;
   }
   if (memoryBytes + bytesNeeded > MAX_LOCAL_CACHE_BYTES) {
@@ -218,7 +307,7 @@ function evictMemoryBytes(bytesNeeded: number): void {
   }
 }
 
-async function putLocalChunks(
+async function putLocalChunksUnlocked(
   manifest: BlobSwarmManifest,
   chunks: Array<{ index: number; data: Uint8Array }>,
   options: { sponsorPeerId?: string; allowEviction?: boolean } = {},
@@ -246,9 +335,11 @@ async function putLocalChunks(
     const addedBytes = [...unique].reduce((sum, [index, data]) =>
       sum + (memoryChunks.has(chunkKey(manifest.blob_id, index)) ? 0 : data.length), 0);
     if (sponsorPeerId) {
-      const sponsoredBytes = [...memoryChunks.values()]
-        .filter(record => record.sponsor_peer_id === sponsorPeerId)
-        .reduce((sum, record) => sum + record.data.byteLength, 0);
+      const sponsoredBytes = memorySponsorBytes.get(sponsorPeerId) ?? 0;
+      if (addedBytes > 0 && sponsoredBytes === 0
+        && memorySponsorBytes.size >= MAX_SPONSOR_ACCOUNTS) {
+        throw new Error('blob swarm: remote sponsor capacity reached');
+      }
       if (sponsoredBytes + addedBytes > MAX_REMOTE_SPONSOR_BYTES) {
         throw new Error('blob swarm: remote peer storage quota reached');
       }
@@ -272,6 +363,12 @@ async function putLocalChunks(
       };
       memoryChunks.set(key, record);
       memoryBytes += data.byteLength;
+      if (sponsorPeerId) {
+        memorySponsorBytes.set(
+          sponsorPeerId,
+          (memorySponsorBytes.get(sponsorPeerId) ?? 0) + data.byteLength,
+        );
+      }
     }
     memoryManifests.set(manifest.blob_id, cloneManifest(manifest));
     return accepted;
@@ -286,24 +383,29 @@ async function putLocalChunks(
   const existingIndices = new Set(uniqueIndices.filter((_index, position) => Boolean(prior[position])));
   const addedBytes = [...unique.values()].reduce((sum, data, position) =>
     sum + (prior[position] ? 0 : data.length), 0);
+  let usage = await persistentUsage(db);
   if (sponsorPeerId) {
-    const sponsorTx = db.transaction(CHUNKS_STORE, 'readonly');
-    const sponsored = await requestResult(
-      sponsorTx.objectStore(CHUNKS_STORE).index('sponsor_peer_id').getAll(sponsorPeerId),
-    ) as StoredChunk[];
-    await transactionDone(sponsorTx);
-    const sponsoredBytes = sponsored.reduce((sum, record) => sum + record.data.byteLength, 0);
+    const sponsorBytes = new Map(usage.sponsor_bytes);
+    const sponsoredBytes = sponsorBytes.get(sponsorPeerId) ?? 0;
+    if (addedBytes > 0 && sponsoredBytes === 0 && sponsorBytes.size >= MAX_SPONSOR_ACCOUNTS) {
+      throw new Error('blob swarm: remote sponsor capacity reached');
+    }
     if (sponsoredBytes + addedBytes > MAX_REMOTE_SPONSOR_BYTES) {
       throw new Error('blob swarm: remote peer storage quota reached');
     }
   }
   if (allowEviction) {
-    await evictPersistentBytes(db, addedBytes);
-  } else if (await persistentCacheBytes(db) + addedBytes > MAX_LOCAL_CACHE_BYTES) {
+    await evictPersistentBytes(
+      db,
+      addedBytes,
+      new Set(uniqueIndices.map(index => chunkKey(manifest.blob_id, index))),
+    );
+    usage = await persistentUsage(db);
+  } else if (usage.total_bytes + addedBytes > MAX_LOCAL_CACHE_BYTES) {
     throw new Error('blob swarm: local cache quota reached');
   }
 
-  const tx = db.transaction([CHUNKS_STORE, MANIFESTS_STORE], 'readwrite');
+  const tx = db.transaction([CHUNKS_STORE, MANIFESTS_STORE, USAGE_STORE], 'readwrite');
   const store = tx.objectStore(CHUNKS_STORE);
   for (const [index, data] of unique) {
     if (existingIndices.has(index)) continue;
@@ -319,8 +421,27 @@ async function putLocalChunks(
     store.put(record);
   }
   tx.objectStore(MANIFESTS_STORE).put(cloneManifest(manifest));
+  if (addedBytes) {
+    usage.total_bytes += addedBytes;
+    if (sponsorPeerId) {
+      const sponsorBytes = new Map(usage.sponsor_bytes);
+      sponsorBytes.set(sponsorPeerId, (sponsorBytes.get(sponsorPeerId) ?? 0) + addedBytes);
+      usage.sponsor_bytes = [...sponsorBytes];
+    }
+    tx.objectStore(USAGE_STORE).put(usage);
+  }
   await transactionDone(tx);
   return accepted;
+}
+
+function putLocalChunks(
+  manifest: BlobSwarmManifest,
+  chunks: Array<{ index: number; data: Uint8Array }>,
+  options: { sponsorPeerId?: string; allowEviction?: boolean } = {},
+): Promise<number[]> {
+  const run = persistentWriteQueue.then(() => putLocalChunksUnlocked(manifest, chunks, options));
+  persistentWriteQueue = run.then(() => undefined, () => undefined);
+  return run;
 }
 
 async function getLocalChunks(
@@ -962,7 +1083,9 @@ export async function resetBlobSwarmForTests(): Promise<void> {
   memoryManifests.clear();
   providerHealth.clear();
   learnedNodeProviders.clear();
+  memorySponsorBytes.clear();
   memoryBytes = 0;
+  persistentWriteQueue = Promise.resolve();
   auditRemaining = randomAuditInterval();
   const db = await openDatabase()?.catch(() => null);
   db?.close();

@@ -90,10 +90,18 @@ Crowd. Crowd returns to Tree only at 40 or fewer members. The hysteresis avoids
 repeated transitions around the boundary. Both modes use encrypted payloads and
 hybrid author authentication; room size never enables Clear mode.
 
-Normal owner-authorized joins, leaves, and removals rotate the root. Portable
-owner-offline admission can preserve availability but does not yet provide an
-authoritative threshold/delegated key transition. That is an explicit release
-gate rather than a hidden security downgrade.
+Normal owner-authorized joins, leaves, and removals rotate the root. A portable
+v3 invite contains the owner's hybrid signature over one exact future revision,
+epoch, root commitment, invite generation, mode, and profile. Its transition is
+encrypted under the current root, so an ordinary token bearer cannot decrypt
+old/current Space traffic; an existing member can verify and enact the
+pre-authorized transition while the owner is offline. Kick, revoke, and invite
+rotation advance the generation and invalidate cached capabilities.
+
+This is bounded owner pre-authorization, not general delegation: peers cannot
+use the invite to choose another roster, issue unrelated owner decisions, or
+resolve two same-revision owner signatures. A future threshold-owner profile
+would be a separate explicitly negotiated authority model.
 
 ## TURN and media
 
@@ -107,8 +115,9 @@ TCP `5349` when TLS is enabled.
 
 The checked-in voice test creates two isolated Chromium contexts, forces
 relay-only ICE, exchanges a data payload, and verifies one remote audio track in
-each direction. This proves the local embedded TURN path, not every carrier NAT
-or firewall on the Internet.
+each direction. It can restrict both clients to TURN/TCP with
+`VOICE_TURN_TRANSPORT=tcp`; the Go suite also performs real UDP, TCP, and TLS
+allocations. These prove local paths, not every carrier NAT or firewall.
 
 ## Evidence boundary
 

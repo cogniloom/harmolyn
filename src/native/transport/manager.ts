@@ -2,7 +2,13 @@
 // relay reconnection and exponential backoff. Wraps createXoreinNode.
 import type { Libp2p } from 'libp2p';
 import type { XoreinIdentity } from '../identity/identity.js';
-import { createXoreinNode, circuitAddrs, isTrustedRelayMultiaddr } from './node.js';
+import {
+  createXoreinNode,
+  circuitAddrs,
+  isSafeRemoteRelayMultiaddr,
+  isTrustedPeerCircuitMultiaddr,
+  isTrustedRelayMultiaddr,
+} from './node.js';
 import { resolveRelayListAsync, reserveAnyRelay } from './relays.js';
 import { ExponentialBackoff, DEFAULT_BACKOFF } from './backoff.js';
 import { XOREIN_NODE_ENDPOINT_CHANGED_EVENT } from '../../lib/nodeEndpointEvents.js';
@@ -17,6 +23,9 @@ export interface TransportManagerOptions {
 }
 
 export class XoreinTransportManager {
+  private static readonly MAX_DIAL_CANDIDATES = 4096;
+  private static readonly MAX_AUTHENTICATED_PEERS = 2048;
+  private static readonly MAX_DISCOVERED_RELAYS = 512;
   private node: Libp2p | null = null;
   private state: ConnectionState = 'disconnected';
   private running = false;
@@ -32,6 +41,7 @@ export class XoreinTransportManager {
   private lastRelayPeerId: string | null = null;
   private readonly dialableCandidates = new Set<string>();
   private readonly dialableRelays = new Set<string>();
+  private readonly authenticatedPeerIds = new Set<string>();
   private readonly discoveredRelays = new Set<string>();
   private backoff = new ExponentialBackoff(DEFAULT_BACKOFF);
   private readonly opts: TransportManagerOptions;
@@ -111,21 +121,64 @@ export class XoreinTransportManager {
    * This does not make it a relay or data authority.
    */
   allowVerifiedCandidate(multiaddr: string): boolean {
-    if (!isTrustedRelayMultiaddr(multiaddr)) return false;
-    this.dialableCandidates.add(multiaddr);
-    return true;
+    if (!isTrustedRelayMultiaddr(multiaddr)
+      || (!this.dialableCandidates.has(multiaddr)
+        && !isSafeRemoteRelayMultiaddr(multiaddr, undefined, this.activeRelay ?? undefined))) return false;
+    return this.addDialCandidate(multiaddr);
+  }
+
+  /** Permit one peer-bound circuit learned from an authenticated stream or
+   * hybrid-signed peer record. The exact address is bounded and does not grant
+   * relay authority. */
+  allowVerifiedPeerAddress(address: string, peerId: string): boolean {
+    if (!isTrustedPeerCircuitMultiaddr(address, peerId)) return false;
+    const relay = address.slice(0, address.indexOf('/p2p-circuit'));
+    if (!this.dialableCandidates.has(relay)
+      && !isSafeRemoteRelayMultiaddr(relay, undefined, this.activeRelay ?? undefined)) return false;
+    return this.addDialCandidate(address);
   }
 
   /** Promote a candidate that answered peer.info as a relay and retry it. */
   addDiscoveredRelay(multiaddr: string): boolean {
     if (!this.allowVerifiedCandidate(multiaddr)) return false;
     this.dialableRelays.add(multiaddr);
-    const before = this.discoveredRelays.size;
+    const newlyAdded = !this.discoveredRelays.has(multiaddr);
+    if (newlyAdded
+      && this.discoveredRelays.size >= XoreinTransportManager.MAX_DISCOVERED_RELAYS) {
+      const oldest = this.discoveredRelays.values().next().value as string | undefined;
+      if (oldest) {
+        this.discoveredRelays.delete(oldest);
+        if (oldest !== this.activeRelay) this.dialableRelays.delete(oldest);
+      }
+    }
     this.discoveredRelays.add(multiaddr);
-    if (this.running && this.state !== 'connected' && this.discoveredRelays.size !== before) {
+    if (this.running && this.state !== 'connected' && newlyAdded) {
       void this.connectOnce();
     }
     return true;
+  }
+
+  private addDialCandidate(address: string): boolean {
+    if (this.dialableCandidates.has(address)) return true;
+    if (this.dialableCandidates.size >= XoreinTransportManager.MAX_DIAL_CANDIDATES) {
+      const evictable = [...this.dialableCandidates]
+        .find(candidate => !this.dialableRelays.has(candidate) && candidate !== this.activeRelay);
+      if (!evictable) return false;
+      this.dialableCandidates.delete(evictable);
+    }
+    this.dialableCandidates.add(address);
+    return true;
+  }
+
+  private rememberAuthenticatedPeer(peerId: string | undefined): void {
+    if (!peerId) return;
+    if (this.authenticatedPeerIds.has(peerId)) {
+      this.authenticatedPeerIds.delete(peerId);
+    } else if (this.authenticatedPeerIds.size >= XoreinTransportManager.MAX_AUTHENTICATED_PEERS) {
+      const oldest = this.authenticatedPeerIds.values().next().value as string | undefined;
+      if (oldest) this.authenticatedPeerIds.delete(oldest);
+    }
+    this.authenticatedPeerIds.add(peerId);
   }
 
   private setState(s: ConnectionState): void {
@@ -146,8 +199,8 @@ export class XoreinTransportManager {
         ...this.discoveredRelays,
       ])];
       for (const relay of relayList) {
-        this.dialableCandidates.add(relay);
         this.dialableRelays.add(relay);
+        this.addDialCandidate(relay);
       }
       // RESILIENCE: the libp2p node is created ONCE and kept alive across relay
       // loss. Rebuilding it per reconnect (the previous behavior) tore down every
@@ -161,6 +214,7 @@ export class XoreinTransportManager {
           trustedRelayMultiaddrs: relayList,
           dialableCandidateMultiaddrs: this.dialableCandidates,
           dialableRelayMultiaddrs: this.dialableRelays,
+          authenticatedPeerIds: this.authenticatedPeerIds,
           identity: this.opts.identity,
         });
 
@@ -187,7 +241,8 @@ export class XoreinTransportManager {
         node.addEventListener('peer:disconnect', (evt: CustomEvent) => {
           onPeerPathChange(evt.detail?.toString());
         });
-        node.addEventListener('peer:connect', () => {
+        node.addEventListener('peer:connect', (evt: CustomEvent) => {
+          this.rememberAuthenticatedPeer(evt.detail?.toString());
           this.opts.onStateChange?.(this.state);
         });
 

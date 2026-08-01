@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PeerSync } from '../sync/peersync.js';
 import { generateIdentity, type XoreinIdentity } from '../identity/identity.js';
-import { addServer, getState, initStore, setNativeIdentity } from '../state/store.js';
+import { addServer, getState, initStore, setNativeIdentity, upsertPeer } from '../state/store.js';
 import { registerPeerSync } from '../sync/registry.js';
 import {
   createRecipientInboxPacket,
@@ -190,6 +190,25 @@ describe('recipient-addressed durable inbox', () => {
       'peer.inbox.store',
       expect.objectContaining({ recipient_peer_id: bob.peerId }),
     );
+  });
+
+  it('keeps retrying when only a sender-private holder accepted custody', async () => {
+    setNativeIdentity({ id: alice.peerId, peer_id: alice.peerId });
+    upsertPeer({ peer_id: mallory.peerId, role: 'peer' });
+    registerRecipientInboxIdentity(alice);
+    registerPeerSync({
+      storeInboxAtRelay: vi.fn().mockResolvedValue(false),
+      activeRelayPeerId: vi.fn().mockReturnValue(null),
+      requestPeer: vi.fn().mockResolvedValue({ ok: true, queued: true }),
+    } as unknown as PeerSync);
+
+    await expect(depositRecipientInboxOperation(
+      bob.peerId,
+      '/aether/friends/0.1.0',
+      'friends.request',
+      { kind: 'request', from_peer_id: alice.peerId },
+      'sender-private-holder',
+    )).resolves.toBe(false);
   });
 
   it('stores and applies a first-contact operation through ordinary peers with every node down', async () => {

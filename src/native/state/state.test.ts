@@ -480,6 +480,8 @@ describe('channel epoch rotation on membership changes', () => {
     const srv = nativeCreateServer('Crowd Test');
     // nativeCreateServer seeds crowd_epoch = 0.
     expect(getState().servers[srv.id]?.crowd_epoch).toBe(0);
+    const originalInviteSecret = getState().servers[srv.id]?.invite_secret;
+    const originalInviteGeneration = getState().servers[srv.id]?.invite_generation;
     // Give the server a known crowd_root (simulates a live crowded channel).
     const originalRoot = 'original-crowd-root-base64value==';
     getState().servers[srv.id]!.crowd_root = originalRoot;
@@ -494,6 +496,8 @@ describe('channel epoch rotation on membership changes', () => {
     // The epoch MUST advance so the kicked member's old root can't decrypt new
     // traffic — a rotated root without an epoch bump would not revoke anything.
     expect(getState().servers[srv.id]?.crowd_epoch).toBe(1);
+    expect(getState().servers[srv.id]?.invite_secret).not.toBe(originalInviteSecret);
+    expect(getState().servers[srv.id]?.invite_generation).toBe((originalInviteGeneration ?? 0) + 1);
   });
 
   it('nativeRemoveMember does not rotate crowd_root when none is set (no crowd encryption)', () => {

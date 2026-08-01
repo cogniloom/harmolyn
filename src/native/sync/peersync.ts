@@ -185,12 +185,19 @@ export class PeerSync {
   private relayMultiaddr: string;
   // Override map: when a peer has announced a different address
   private peerAddrs = new Map<string, string>();
+  private allowDialCandidate: ((address: string, peerId: string) => boolean) | null = null;
 
   constructor(relayMultiaddr = RELAY_MULTIADDR) {
     this.relayMultiaddr = isTrustedRelayMultiaddr(relayMultiaddr) ? relayMultiaddr : RELAY_MULTIADDR;
   }
 
   setNode(node: Libp2p): void { this.node = node; }
+
+  setDialCandidateAuthorizer(
+    authorizer: ((address: string, peerId: string) => boolean) | null,
+  ): void {
+    this.allowDialCandidate = authorizer;
+  }
 
   /** Update the default relay used to derive a peer's fallback circuit address. */
   setRelay(relayMultiaddr: string): void {
@@ -251,6 +258,8 @@ export class PeerSync {
     const resolved = addr && isPeerCircuitAddress(addr, peerId)
       ? addr
       : circuitAddr(peerId, this.relayMultiaddr);
+    if (addr && resolved === addr && this.allowDialCandidate
+      && !this.allowDialCandidate(resolved, peerId)) return;
     this.peerAddrs.set(peerId, resolved);
   }
 

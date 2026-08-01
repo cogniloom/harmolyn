@@ -15,6 +15,7 @@ import { generateSigningIdentity } from '../crypto/hybrid.js';
 import { generateIdentity, type XoreinIdentity } from '../identity/identity.js';
 import { registerScopeCrypto, resetScopeCrypto, encryptChannelEnvelope, encryptDmEnvelope, applyCrowdRoot } from './secureEnvelope.js';
 import { signChannelMessageVersion } from './signedHistory.js';
+import { signServerRecord } from './signedServer.js';
 import { ingestMailboxChat, classifyChannelNotification, handleSyncRequest, reconcileFriendAcceptFromPresence } from './inbound.js';
 import type { ChannelSecurityMode } from '../security/channelMode.js';
 import type { XoreinRuntimeMessage } from '../../types.js';
@@ -118,7 +119,6 @@ describe('classifyChannelNotification', () => {
 });
 
 describe('future-epoch channel ciphertext is buffered then replayed on root install', () => {
-  const OWNER = 'owner';
   const R0 = freshRootB64();
   const R1 = freshRootB64();
 
@@ -130,8 +130,9 @@ describe('future-epoch channel ciphertext is buffered then replayed on root inst
   afterEach(() => resetScopeCrypto());
 
   it('holds a message under a not-yet-installed epoch and delivers it once the root arrives', async () => {
+    const owner = await generateIdentity();
     const alice = await generateIdentity();
-    addServer({ id: SRV, name: 'S', owner_peer_id: OWNER, members: [OWNER, ME, alice.peerId], channels: { [CHAN]: { id: CHAN, server_id: SRV, name: 'general', voice: false } } });
+    addServer({ id: SRV, name: 'S', owner_peer_id: owner.peerId, members: [owner.peerId, ME, alice.peerId], channels: { [CHAN]: { id: CHAN, server_id: SRV, name: 'general', voice: false } } });
 
     // 1) Build a genuine epoch-1 envelope with a sender crypto seeded at the NEW root.
     registerScopeCrypto({ seal: new SealSessions(ME, generateSigningIdentity()), channels: new ChannelCrypto(), fetchBundle: async () => null });
@@ -150,10 +151,17 @@ describe('future-epoch channel ciphertext is buffered then replayed on root inst
     expect(getState().messages.some(m => m.id === 'm-future')).toBe(false);
 
     // 3) The owner distributes the epoch-1 root; installing it replays the buffer.
+    const nextServer = {
+      ...getState().servers[SRV],
+      crowd_root: R1,
+      crowd_epoch: 1,
+      server_rev: 1,
+    };
+    nextServer.owner_proof = signServerRecord(nextServer, owner);
     handleSyncRequest('sync.update', {
       server_id: SRV,
-      server: { id: SRV, owner_peer_id: OWNER, members: [OWNER, ME, alice.peerId], crowd_root: R1, crowd_epoch: 1, server_rev: 1 },
-    }, OWNER);
+      server: nextServer,
+    }, owner.peerId);
 
     const stored = getState().messages.find(m => m.id === 'm-future');
     expect(stored).toBeTruthy();
@@ -161,11 +169,12 @@ describe('future-epoch channel ciphertext is buffered then replayed on root inst
     expect(stored!.security_mode).toBe('crowd');
   });
 
-  it('does NOT buffer a future-epoch message from a NON-member (anti-flood authorization)', () => {
+  it('does NOT buffer a future-epoch message from a NON-member (anti-flood authorization)', async () => {
+    const owner = await generateIdentity();
     // Server has OWNER + ME only — ALICE is NOT a member (kicked / never joined). Her
     // undecryptable "future epoch" envelope must be dropped, not buffered: otherwise any
     // authenticated non-member who knows the channel id could flood the bounded buffer.
-    addServer({ id: SRV, name: 'S', owner_peer_id: OWNER, members: [OWNER, ME], channels: { [CHAN]: { id: CHAN, server_id: SRV, name: 'general', voice: false } } });
+    addServer({ id: SRV, name: 'S', owner_peer_id: owner.peerId, members: [owner.peerId, ME], channels: { [CHAN]: { id: CHAN, server_id: SRV, name: 'general', voice: false } } });
 
     registerScopeCrypto({ seal: new SealSessions(ME, generateSigningIdentity()), channels: new ChannelCrypto(), fetchBundle: async () => null });
     updateServer(SRV, { crowd_root: R1, crowd_epoch: 1 });
@@ -180,10 +189,17 @@ describe('future-epoch channel ciphertext is buffered then replayed on root inst
     ingestMailboxChat(envelope, ALICE);
 
     // Even after the epoch-1 root arrives, nothing replays (it was never buffered).
+    const nextServer = {
+      ...getState().servers[SRV],
+      crowd_root: R1,
+      crowd_epoch: 1,
+      server_rev: 1,
+    };
+    nextServer.owner_proof = signServerRecord(nextServer, owner);
     handleSyncRequest('sync.update', {
       server_id: SRV,
-      server: { id: SRV, owner_peer_id: OWNER, members: [OWNER, ME], crowd_root: R1, crowd_epoch: 1, server_rev: 1 },
-    }, OWNER);
+      server: nextServer,
+    }, owner.peerId);
     expect(getState().messages.some(m => m.id === 'm-flood')).toBe(false);
   });
 });
@@ -223,19 +239,20 @@ describe('sync.update server_rev monotonic gate', () => {
 });
 
 describe('sync.update channel epoch immutability', () => {
-  const OWNER = 'owner';
   const ORIGINAL = freshRootB64();
   const REPLACEMENT = freshRootB64();
+  let owner: XoreinIdentity;
 
-  beforeEach(() => {
+  beforeEach(async () => {
+    owner = await generateIdentity();
     localStorage.clear();
     initStore();
     setNativeIdentity({ id: ME, peer_id: ME });
     addServer({
       id: SRV,
       name: 'S',
-      owner_peer_id: OWNER,
-      members: [OWNER, ME],
+      owner_peer_id: owner.peerId,
+      members: [owner.peerId, ME],
       channels: {},
       crowd_root: ORIGINAL,
       crowd_epoch: 3,
@@ -246,21 +263,33 @@ describe('sync.update channel epoch immutability', () => {
   });
 
   it('rejects a different root reusing an installed epoch number', () => {
+    const replacement = {
+      ...getState().servers[SRV],
+      crowd_root: REPLACEMENT,
+      crowd_epoch: 3,
+      server_rev: 2,
+    };
+    replacement.owner_proof = signServerRecord(replacement, owner);
+    const result = handleSyncRequest('sync.update', {
+      server_id: SRV,
+      server: replacement,
+    }, owner.peerId);
+    expect(result).toEqual({ ok: false, error: 'channel_epoch_reused' });
+    expect(getState().servers[SRV]?.crowd_root).toBe(ORIGINAL);
+  });
+
+  it('rejects a proof-less advancing channel epoch', () => {
     const result = handleSyncRequest('sync.update', {
       server_id: SRV,
       server: {
-        id: SRV,
-        owner_peer_id: OWNER,
-        members: [OWNER, ME],
-        channels: {},
+        ...getState().servers[SRV],
         crowd_root: REPLACEMENT,
-        crowd_epoch: 3,
-        channel_security_mode: 'crowd',
-        channel_crypto_profile: 'scope-aad-v2',
+        crowd_epoch: 4,
         server_rev: 2,
+        owner_proof: undefined,
       },
-    }, OWNER);
-    expect(result).toEqual({ ok: false, error: 'channel_epoch_reused' });
+    }, owner.peerId);
+    expect(result).toEqual({ ok: false, error: 'missing_owner_proof' });
     expect(getState().servers[SRV]?.crowd_root).toBe(ORIGINAL);
   });
 });

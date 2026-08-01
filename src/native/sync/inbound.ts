@@ -8,11 +8,22 @@ import {
 } from '../families/peerstream.js';
 import { PROTOCOLS, RECOVERY_OPS } from '../families/families.js';
 import { addMessage, editMessage as storeEditMessage, deleteMessage as storeDeleteMessage, updateMessageVersion, pinMessage as storePinMessage, updatePresenceEntry, addReaction, removeReaction, getState, updateServer, upsertPeer, addFriendRequest, acceptFriendByPeer, ensureDm, bumpUnread, getActiveScope, removeServerMembership, removeServerMember, addPollVote, memberHasPermission, isScopeMember, addReport } from '../state/store.js';
-import { nativeAnnouncePresence, broadcastServerUpdate, rotateChannelEpoch } from '../state/mutations.js';
+import {
+  nativeAnnouncePresence,
+  broadcastPortableAdmission,
+  broadcastServerUpdate,
+  rotateChannelEpoch,
+} from '../state/mutations.js';
 import { publishNativeSnapshot, schedulePublishNativeSnapshot } from '../state/snapshot.js';
 import { decryptInboundEnvelope, getScopeCrypto, applyChannelRoot, channelModeForServer, type DecryptedMessage } from './secureEnvelope.js';
 import { isChannelSecurityMode } from '../security/channelMode.js';
-import { verifyInviteToken, verifySignedInviteCapability } from './invite.js';
+import {
+  isForwardSecureInviteTransitionRecord,
+  openForwardSecureInviteTransition,
+  verifyInviteToken,
+  verifySignedInviteCapability,
+  type SignedInviteCapability,
+} from './invite.js';
 import { rekeyVoiceForServer } from '../voice/registry.js';
 import type { PeerSync } from './peersync.js';
 import { isTrustedPeerCircuitMultiaddr } from '../transport/node.js';
@@ -104,6 +115,80 @@ function applyJoinBoundary(
   const postJoin = msgs.filter(m => String(m.created_at ?? '') >= memberSince);
   const allowedPreJoin = joinWindow > 0 ? preJoin.slice(-joinWindow) : [];
   return [...allowedPreJoin, ...postJoin];
+}
+
+interface ResolvedPortableInvite {
+  capability: SignedInviteCapability;
+  /** Exact next record, or the current record when this cohort is installed. */
+  record?: XoreinRuntimeServer;
+}
+
+/**
+ * Resolve both the first admission in a forward-secure invite cohort and later
+ * concurrent admissions after that cohort's exact epoch is already installed.
+ */
+function resolvePortableInvite(
+  server: XoreinRuntimeServer,
+  token: string,
+): ResolvedPortableInvite | null {
+  const generation = server.invite_generation ?? 0;
+  const current = verifySignedInviteCapability(
+    token,
+    server.id,
+    server.owner_peer_id,
+    generation,
+  );
+  if (current?.v === 2) return { capability: current };
+  if (current?.v === 3) {
+    const record = openForwardSecureInviteTransition(server, current);
+    return record ? { capability: current, record } : null;
+  }
+  if (generation < 1) return null;
+  const previous = verifySignedInviteCapability(
+    token,
+    server.id,
+    server.owner_peer_id,
+    generation - 1,
+  );
+  return previous?.v === 3 && isForwardSecureInviteTransitionRecord(server, previous)
+    ? { capability: previous, record: server }
+    : null;
+}
+
+/** Install/merge one bearer into an independently verified invite epoch. */
+function applyForwardSecureAdmission(
+  server: XoreinRuntimeServer,
+  authorizedRecord: XoreinRuntimeServer,
+  admittedPeerId: string,
+): boolean {
+  const priorEpoch = server.crowd_epoch ?? 0;
+  const added = !server.members.includes(admittedPeerId);
+  const members = added
+    ? [...server.members, admittedPeerId]
+    : server.members;
+  const joinedAt = new Date().toISOString();
+  updateServer(server.id, {
+    crowd_root: authorizedRecord.crowd_root,
+    crowd_epoch: authorizedRecord.crowd_epoch,
+    server_rev: authorizedRecord.server_rev,
+    invite_generation: authorizedRecord.invite_generation,
+    updated_at: authorizedRecord.updated_at,
+    channel_security_mode: authorizedRecord.channel_security_mode,
+    channel_crypto_profile: authorizedRecord.channel_crypto_profile,
+    manifest: authorizedRecord.manifest,
+    owner_proof: authorizedRecord.owner_proof,
+    members,
+    member_since: server.member_since?.[admittedPeerId]
+      ? server.member_since
+      : { ...(server.member_since ?? {}), [admittedPeerId]: joinedAt },
+  });
+  if ((authorizedRecord.crowd_epoch ?? 0) > priorEpoch) {
+    applyChannelRoot(server.id);
+    replayBufferedChannelMessages(server.id);
+    rekeyVoiceForServer(server.id);
+  }
+  schedulePublishNativeSnapshot();
+  return added;
 }
 
 export function replayBufferedChannelMessages(serverId: string): void {
@@ -674,7 +759,8 @@ export function handleSyncRequest(operation: string, payload: Record<string, unk
   if (operation !== 'sync.join' && operation !== 'sync.pull'
     && operation !== 'sync.coverage' && operation !== 'sync.fetch'
     && operation !== 'sync.update' && operation !== 'sync.leave'
-    && operation !== 'sync.delete' && operation !== 'sync.remove') {
+    && operation !== 'sync.delete' && operation !== 'sync.remove'
+    && operation !== 'sync.admit') {
     return { ok: false, error: 'unsupported_operation' };
   }
 
@@ -685,16 +771,39 @@ export function handleSyncRequest(operation: string, payload: Record<string, unk
   const localPeerId = state.identity?.peer_id ?? '';
   const isOwner = server.owner_peer_id === localPeerId;
 
+  // Durable convergence for an owner-preauthorized, member-served admission.
+  // The sending member contributes no authority: every recipient decrypts the
+  // exact future record with its current epoch root and verifies the owner's
+  // hybrid signature before changing keys or membership.
+  if (operation === 'sync.admit') {
+    if (!remotePeerId || !server.members.includes(remotePeerId)) {
+      return { ok: false, error: 'member_required' };
+    }
+    const admittedPeerId = boundedPayloadString(payload.admitted_peer_id, 256);
+    const token = boundedPayloadString(payload.invite_token, 12_288, true);
+    if (!admittedPeerId || !token) return { ok: false, error: 'invalid_admission' };
+    const resolved = resolvePortableInvite(server, token);
+    if (!resolved || resolved.capability.v !== 3 || !resolved.record) {
+      return { ok: false, error: 'invalid_admission' };
+    }
+    const added = applyForwardSecureAdmission(server, resolved.record, admittedPeerId);
+    if (added) {
+      broadcastPortableAdmission(
+        serverId,
+        getState().servers[serverId]?.members ?? server.members,
+        admittedPeerId,
+        token,
+      );
+    }
+    return { ok: true };
+  }
+
   // Owner-pushed structural update (new/renamed/deleted channels, membership): a
   // member applies it only when it genuinely comes from the server's owner. This
   // is what makes owner-side channel edits show up for everyone, not just the owner.
   if (operation === 'sync.update') {
     const incoming = payload.server as Partial<XoreinRuntimeServer> | undefined;
     if (incoming && remotePeerId === server.owner_peer_id && !isOwner) {
-      if (incoming.owner_proof
-        && !verifyServerRecord(incoming as XoreinRuntimeServer)) {
-        return { ok: false, error: 'invalid_owner_proof' };
-      }
       // Reject a STALE whole snapshot: broadcastServerUpdate is fire-and-forget on
       // independent streams, so an older update can arrive after a newer one. Applying
       // it would restore roles/permissions/membership the owner just changed. Gate the
@@ -710,6 +819,9 @@ export function handleSyncRequest(operation: string, payload: Record<string, unk
       // and role changes never reached members.
       const nextRoot = typeof incoming.crowd_root === 'string' ? incoming.crowd_root : undefined;
       const nextEpoch = typeof incoming.crowd_epoch === 'number' ? incoming.crowd_epoch : undefined;
+      if ((nextRoot === undefined) !== (nextEpoch === undefined)) {
+        return { ok: false, error: 'incomplete_channel_epoch' };
+      }
       if (incoming.channel_security_mode !== undefined
         && !isChannelSecurityMode(incoming.channel_security_mode)) {
         return { ok: false, error: 'invalid_channel_security_mode' };
@@ -718,16 +830,40 @@ export function handleSyncRequest(operation: string, payload: Record<string, unk
         && incoming.channel_crypto_profile !== 'scope-aad-v2') {
         return { ok: false, error: 'unsupported_channel_crypto_profile' };
       }
+      const storedMode = channelModeForServer(serverId);
       const nextMode = isChannelSecurityMode(incoming.channel_security_mode)
         ? incoming.channel_security_mode
-        : 'crowd';
+        : storedMode;
+      const nextProfile = incoming.channel_crypto_profile
+        ?? server.channel_crypto_profile
+        ?? 'scope-aad-v2';
       // crowd_epoch is monotonic. Because broadcastServerUpdate is fire-and-forget on
       // independent streams, an OLDER update can arrive after a newer rotation — persist
       // the root/epoch only when it advances (>= stored), or the store would regress to
       // an obsolete key and fail to decrypt current-epoch traffic after a reload.
       const storedEpoch = typeof server.crowd_epoch === 'number' ? server.crowd_epoch : -1;
-      const storedMode = channelModeForServer(serverId);
       const modeChanged = nextMode !== storedMode;
+      const securityStateChanged = (nextRoot !== undefined && nextRoot !== server.crowd_root)
+        || (nextEpoch !== undefined && nextEpoch !== storedEpoch)
+        || (incoming.channel_security_mode !== undefined && modeChanged)
+        || (incoming.channel_crypto_profile !== undefined
+          && nextProfile !== (server.channel_crypto_profile ?? 'scope-aad-v2'))
+        || (typeof incoming.replica_secret === 'string'
+          && incoming.replica_secret !== server.replica_secret)
+        || (typeof incoming.invite_generation === 'number'
+          && incoming.invite_generation !== (server.invite_generation ?? 0));
+      // A Noise-authenticated owner may still be an old implementation whose
+      // proof-less snapshot can be replayed by compatibility paths. Never let
+      // such a record move keys, crypto mode/profile, replica authority, or the
+      // invite security generation. Security transitions require a durable
+      // owner proof over the complete resulting record.
+      if (securityStateChanged && !incoming.owner_proof) {
+        return { ok: false, error: 'missing_owner_proof' };
+      }
+      if (incoming.owner_proof
+        && !verifyServerRecord(incoming as XoreinRuntimeServer)) {
+        return { ok: false, error: 'invalid_owner_proof' };
+      }
       if (nextRoot !== undefined && nextEpoch === storedEpoch
         && (modeChanged || nextRoot !== server.crowd_root)) {
         return { ok: false, error: 'channel_epoch_reused' };
@@ -745,7 +881,7 @@ export function handleSyncRequest(operation: string, payload: Record<string, unk
           crowd_root: nextRoot,
           crowd_epoch: nextEpoch,
           channel_security_mode: nextMode,
-          channel_crypto_profile: incoming.channel_crypto_profile ?? 'scope-aad-v2',
+          channel_crypto_profile: nextProfile,
         } : {}),
         ...(typeof incoming.replica_secret === 'string'
           ? { replica_secret: incoming.replica_secret }
@@ -818,12 +954,8 @@ export function handleSyncRequest(operation: string, payload: Record<string, unk
   // cannot turn a valid invite into a dead link.
   const alreadyMember = !!remotePeerId && server.members.includes(remotePeerId);
 	const inviteToken = boundedPayloadString(payload.invite_token, 12_288, true) ?? '';
-  const signedInvite = verifySignedInviteCapability(
-    inviteToken,
-    serverId,
-    server.owner_peer_id,
-    server.invite_generation ?? 0,
-  );
+  const portableInvite = inviteToken ? resolvePortableInvite(server, inviteToken) : null;
+  const signedInvite = portableInvite?.capability ?? null;
   const legacyOwnerInvite = isOwner
     && verifyInviteToken(server.invite_secret, serverId, inviteToken);
 	if (!alreadyMember && !signedInvite && !legacyOwnerInvite) {
@@ -837,7 +969,8 @@ export function handleSyncRequest(operation: string, payload: Record<string, unk
 	if (!alreadyMember && operation !== 'sync.join') {
 		return { ok: false, error: 'owner_required' };
 	}
-	if (operation === 'sync.join' && !alreadyMember && !isOwner && !signedInvite) {
+	if (operation === 'sync.join' && !alreadyMember && !isOwner
+    && signedInvite?.v !== 3) {
 		return { ok: false, error: 'owner_required' };
 	}
 
@@ -865,7 +998,15 @@ export function handleSyncRequest(operation: string, payload: Record<string, unk
   // receive the fresh root via the broadcast below; the joiner gets it in this
   // response's server record. Re-pulls by existing members do NOT rotate.
   const isNewOwnerJoiner = operation === 'sync.join' && isOwner && remotePeerId && !alreadyMember;
-  if (isNewOwnerJoiner) {
+  const isForwardSecureJoin = operation === 'sync.join' && remotePeerId && !alreadyMember
+    && signedInvite?.v === 3 && portableInvite?.record;
+  if (isForwardSecureJoin) {
+    const priorMembers = [...server.members];
+    applyForwardSecureAdmission(server, portableInvite.record!, remotePeerId);
+    // Best effort and bounded by the existing membership list. Offline members
+    // also converge when the admitted client later re-presents this capability.
+    broadcastPortableAdmission(serverId, priorMembers, remotePeerId, inviteToken);
+  } else if (isNewOwnerJoiner) {
     // Record the join boundary NOW so it is enforced on every later pull, not just this
     // response — otherwise `alreadyMember` flips true and a subsequent sync.pull would
     // serve the full retention window, leaking the pre-join history the policy withheld.
@@ -876,18 +1017,6 @@ export function handleSyncRequest(operation: string, payload: Record<string, unk
     });
     rotateChannelEpoch(serverId);
     broadcastServerUpdate(serverId);
-    schedulePublishNativeSnapshot();
-  } else if (operation === 'sync.join' && signedInvite && remotePeerId && !alreadyMember) {
-    // Portable admission: the owner already delegated this decision by signing
-    // the capability. A member may add the authenticated requester to its local
-    // effective roster and serve the owner-signed snapshot. No member is allowed
-    // to rewrite channels/policy/key epochs; verifyServerRecord on the joiner
-    // keeps that authority with the owner.
-    const joinedAt = new Date().toISOString();
-    updateServer(serverId, {
-      members: [...server.members, remotePeerId],
-      member_since: { ...(server.member_since ?? {}), [remotePeerId]: joinedAt },
-    });
     schedulePublishNativeSnapshot();
   }
 

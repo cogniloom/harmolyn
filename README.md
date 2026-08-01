@@ -135,6 +135,8 @@ channel:
 
 ```bash
 VOICE_NODE_ENDPOINT=http://127.0.0.1:7711 npm run test:voice:e2e
+# Restrictive-network path: expose only TURN/TCP to both browsers.
+VOICE_NODE_ENDPOINT=http://127.0.0.1:7711 VOICE_TURN_TRANSPORT=tcp npm run test:voice:e2e
 ```
 
 Desktop checks:
@@ -192,9 +194,10 @@ bundle. Browser deployments update when their operator deploys a new web build.
   install/rollback tests on those operating systems.
 - Provision all Apple/Windows signing secrets and retain a successful signed
   release run; exact formats are documented in the release guide.
-- Resolve the authoritative epoch transition for an owner-offline portable join;
-  current owner-authorized membership changes rotate correctly, but a fully
-  decentralized threshold/delegated admission design is still required.
+- Retain a long-duration churn test for owner-issued portable invites. They now
+  seal and sign one exact future epoch transition that peers can enact while the
+  owner is offline; they do not delegate arbitrary owner powers or permit an
+  ordinary member to invent a different roster transition.
 - Perform a multi-host, real-WAN soak with churn, partitions, restrictive NATs,
   and hostile storage providers. The checked-in 1,000-peer result is a
   deterministic model, not 1,000 live browsers.

@@ -89,6 +89,8 @@ export interface XoreinNodeOptions {
   dialableCandidateMultiaddrs?: Set<string>;
   /** Mutable relay allow-list; confirmed relays may be added after node creation. */
   dialableRelayMultiaddrs?: Set<string>;
+  /** Peer IDs authenticated during this process; permits DCUtR's derived WebRTC dial. */
+  authenticatedPeerIds?: Set<string>;
   /** Use an existing identity so the libp2p PeerID is stable across sessions. */
   identity?: XoreinIdentity;
 }
@@ -132,6 +134,105 @@ export function isTrustedRelayMultiaddr(value: unknown, expectedPeerId?: string)
   }
 }
 
+function publicIPv4(host: string): boolean {
+  const octets = host.split('.');
+  if (octets.length !== 4
+    || octets.some(octet => !/^(?:0|[1-9]\d{0,2})$/.test(octet) || Number(octet) > 255)) return false;
+  const [a, b, c] = octets.map(Number);
+  return !(a === 0 || a === 10 || a === 127 || a >= 224
+    || (a === 100 && b >= 64 && b <= 127)
+    || (a === 169 && b === 254)
+    || (a === 172 && b >= 16 && b <= 31)
+    || (a === 192 && (b === 0 || (b === 168) || (b === 88 && c === 99)))
+    || (a === 198 && (b === 18 || b === 19))
+    || (a === 198 && b === 51 && c === 100)
+    || (a === 203 && b === 0 && c === 113));
+}
+
+function publicIPv6(host: string): boolean {
+  const normalized = host.toLowerCase().replace(/^\[/, '').replace(/\]$/, '');
+  // Only globally routable 2000::/3 addresses are eligible for automatic PEX
+  // probes. This excludes loopback, ULA/link-local, multicast, unspecified,
+  // IPv4-mapped/NAT64 addresses, and every other host-local special range.
+  const first = normalized.split(':', 1)[0];
+  if (!/^[0-9a-f]{1,4}$/.test(first)) return false;
+  const firstWord = Number.parseInt(first, 16);
+  if (firstWord < 0x2000 || firstWord > 0x3fff) return false;
+  if (/^2001:0?db8(?::|$)/.test(normalized)) return false; // documentation
+  if (/^2002:(?:0?a|ac1[0-9a-f]|c0a8|644[0-9a-f]|7f[0-9a-f]{2}|a9fe|c612|c613|cb00)(?::|$)/.test(normalized)) {
+    return false; // 6to4 embedding a non-public IPv4 destination
+  }
+  return true;
+}
+
+interface LiteralRelayHost {
+  family: 'ip4' | 'ip6';
+  value: string;
+}
+
+function literalRelayHost(value: string): LiteralRelayHost | null {
+  try {
+    const host = multiaddr(value).getComponents().find(component =>
+      component.name === 'ip4' || component.name === 'ip6');
+    if (!host || typeof host.value !== 'string') return null;
+    return { family: host.name as 'ip4' | 'ip6', value: host.value.toLowerCase() };
+  } catch {
+    return null;
+  }
+}
+
+function privateIPv4Scope(host: string): string | null {
+  const octets = host.split('.').map(Number);
+  if (octets.length !== 4 || octets.some(value => !Number.isInteger(value) || value < 0 || value > 255)) {
+    return null;
+  }
+  const [a, b, c] = octets;
+  if (a === 127) return 'loopback';
+  if (a === 10) return `rfc1918-10:${b}`; // same /16
+  if (a === 172 && b >= 16 && b <= 31) return `rfc1918-172:${b}`; // same /16
+  if (a === 192 && b === 168) return `rfc1918-192:${c}`; // same /24
+  if (a === 169 && b === 254) return `link-local:${c}`; // same /24
+  if (a === 100 && b >= 64 && b <= 127) return `cgnat:${b}:${c}`; // same /24
+  return null;
+}
+
+function sameLocalAddressScope(candidate: LiteralRelayHost, source: LiteralRelayHost): boolean {
+  if (candidate.family !== source.family) return false;
+  if (candidate.family === 'ip4') {
+    const candidateScope = privateIPv4Scope(candidate.value);
+    return candidateScope !== null && candidateScope === privateIPv4Scope(source.value);
+  }
+  // Keep automatic IPv6-local discovery deliberately narrow. Loopback is
+  // useful for local stacks; ULA/link-local peers remain discoverable via mDNS
+  // or explicit configuration without opening a broad browser probe surface.
+  const normalize = (host: string) => host.replace(/^0+(?=:|$)/g, '').replace(/\[|\]/g, '');
+  return normalize(candidate.value) === '::1' && normalize(source.value) === '::1';
+}
+
+/**
+ * Stricter policy for addresses learned from remote PEX. User-configured local
+ * nodes may intentionally use LAN/DNS hosts, but an arbitrary peer may not turn
+ * automatic discovery into a browser-side LAN probe or DNS-rebinding primitive.
+ * Discovered relays therefore need a literal globally routable IP. A private
+ * literal is accepted only when the currently authenticated source relay is in
+ * the same tightly bounded local address scope (loopback, /16, or /24); this
+ * preserves local/Docker failover without letting a public peer scan the LAN.
+ * Operators should advertise both DNS and IP multiaddrs for public pickup.
+ */
+export function isSafeRemoteRelayMultiaddr(
+  value: unknown,
+  expectedPeerId?: string,
+	trustedSourceRelay?: string,
+): value is string {
+  if (!isTrustedRelayMultiaddr(value, expectedPeerId)) return false;
+  const host = literalRelayHost(value);
+  if (!host) return false;
+  if (host.family === 'ip4' ? publicIPv4(host.value) : publicIPv6(host.value)) return true;
+  if (!trustedSourceRelay || !isTrustedRelayMultiaddr(trustedSourceRelay)) return false;
+  const sourceHost = literalRelayHost(trustedSourceRelay);
+  return sourceHost !== null && sameLocalAddressScope(host, sourceHost);
+}
+
 /**
  * Validate a peer-advertised circuit address before it is stored or dialed.
  * The relay prefix must itself be a trusted, authenticated relay address; the
@@ -169,6 +270,38 @@ export function isTrustedPeerCircuitMultiaddr(value: unknown, expectedPeerId?: s
 }
 
 /**
+ * Decide whether the outbound connection gater may dial an address. Exact
+ * signed/observed candidates are allowed, configured relays may carry a circuit
+ * to another peer, and DCUtR may dial a derived WebRTC address only after that
+ * final peer ID has already authenticated on a live Noise connection.
+ */
+export function isAllowedDialMultiaddr(
+  value: string,
+  exactCandidates: ReadonlySet<string>,
+  configuredRelays: ReadonlySet<string>,
+  authenticatedPeerIds: ReadonlySet<string>,
+  directOn: boolean,
+): boolean {
+  if (exactCandidates.has(value)) return true;
+  if ([...configuredRelays].some(relay =>
+    value.startsWith(`${relay}/p2p-circuit`) && /\/p2p\/[^/]+$/.test(value))) {
+    return true;
+  }
+  if (!directOn) return false;
+  try {
+    const components = multiaddr(value).getComponents();
+    if (components.some(component => component.name === 'p2p-circuit')) return false;
+    const finalPeer = components.at(-1);
+    if (!finalPeer || finalPeer.name !== 'p2p' || typeof finalPeer.value !== 'string'
+      || !authenticatedPeerIds.has(finalPeer.value)) return false;
+    const names = new Set(components.map(component => component.name));
+    return names.has('webrtc') || names.has('webrtc-direct');
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Create a browser libp2p node configured for the xorein P2P network.
  *
  * NOTE: we do NOT put the relay in `addresses.listen`. The @libp2p/circuit-relay-v2
@@ -196,6 +329,7 @@ export async function createXoreinNode(opts: XoreinNodeOptions = {}) {
   );
   const dialableCandidates = opts.dialableCandidateMultiaddrs ?? new Set<string>();
   const configuredRelays = opts.dialableRelayMultiaddrs ?? new Set<string>();
+  const authenticatedPeerIds = opts.authenticatedPeerIds ?? new Set<string>();
   for (const relay of initialRelays) {
     configuredRelays.add(relay);
     dialableCandidates.add(relay);
@@ -238,14 +372,13 @@ export async function createXoreinNode(opts: XoreinNodeOptions = {}) {
       // malicious address book entry).
       denyDialMultiaddr: (addr) => {
         const text = addr.toString();
-        const configuredRelay = dialableCandidates.has(text);
-        const circuit = [...configuredRelays].some(relay =>
-          text.startsWith(`${relay}/p2p-circuit`) && /\/p2p\/[^/]+$/.test(text),
+        return !isAllowedDialMultiaddr(
+          text,
+          dialableCandidates,
+          configuredRelays,
+          authenticatedPeerIds,
+          directOn,
         );
-        // A direct relay dial is only valid when it targets the pinned relay
-        // identity. Circuit paths may target another peer, but only through a
-        // relay that the local user/operator explicitly configured.
-        return !(configuredRelay || circuit);
       },
     },
     services: {

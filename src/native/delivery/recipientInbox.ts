@@ -306,6 +306,22 @@ function encodedPacket(packet: RecipientInboxPacket): Uint8Array | null {
 }
 
 /**
+ * A sender may know ordinary peers the recipient has never heard of. Custody on
+ * such a peer is an opportunistic extra copy, not durable delivery: the
+ * recipient cannot derive that holder from its own graph. A shared Space/DM
+ * roster is mutually derivable; dedicated nodes are continuously discovered.
+ */
+function recipientCanDiscoverProvider(targetPeerId: string, providerPeerId: string): boolean {
+  const state = getState();
+  const role = state.peers[providerPeerId]?.role;
+  if (role === 'relay' || role === 'archivist' || role === 'bootstrap') return true;
+  if (Object.values(state.servers).some(server =>
+    server.members.includes(targetPeerId) && server.members.includes(providerPeerId))) return true;
+  return Object.values(state.dms).some(dm =>
+    dm.participants.includes(targetPeerId) && dm.participants.includes(providerPeerId));
+}
+
+/**
  * Replicate a durable operation to three independently authenticated storage
  * providers. Dedicated nodes are preferred by peerServiceCandidates; ordinary
  * members take over automatically when no node is reachable.
@@ -330,6 +346,7 @@ export async function depositRecipientInboxOperation(
   if (!packet || !packetBytes || !token || !peerSync) return false;
   const body = b64url(wrapRelayBody(packetBytes));
   let acknowledgements = 0;
+  let discoverableAcknowledgements = 0;
   const acknowledged = new Set<string>();
   const activeRelay = peerSync.activeRelayPeerId?.() ?? null;
   const candidates = peerServiceCandidates(token, MAX_STORE_CANDIDATES)
@@ -338,16 +355,22 @@ export async function depositRecipientInboxOperation(
     // unavailable (the reason this path exists).
     .filter(peerId => peerId !== targetPeerId && peerId !== activeRelay);
 
-  const attempts: Array<{ providerId: string; store(): Promise<boolean> }> = [];
+  const attempts: Array<{
+    providerId: string;
+    discoverable: boolean;
+    store(): Promise<boolean>;
+  }> = [];
   if (typeof peerSync.storeInboxAtRelay === 'function') {
     attempts.push({
       providerId: activeRelay ?? `selected-relay:${deliveryId}`,
+      discoverable: true,
       store: () => peerSync.storeInboxAtRelay(targetPeerId, token, body, deliveryId),
     });
   }
   for (const peerId of candidates) {
     attempts.push({
       providerId: peerId,
+      discoverable: recipientCanDiscoverProvider(targetPeerId, peerId),
       store: async () => {
         const response = await peerSync.requestPeer<{ ok?: boolean; queued?: boolean }>(
           peerId,
@@ -371,8 +394,10 @@ export async function depositRecipientInboxOperation(
   // as one independent holder acknowledges; the bounded workers continue in
   // the background until three copies exist or every known provider was tried.
   let cursor = 0;
-  let firstAcknowledgement: ((stored: true) => void) | null = null;
-  const firstStored = new Promise<true>(resolve => { firstAcknowledgement = resolve; });
+  let firstDiscoverableAcknowledgement: ((stored: true) => void) | null = null;
+  const firstDiscoverableStored = new Promise<true>(resolve => {
+    firstDiscoverableAcknowledgement = resolve;
+  });
   const worker = async (): Promise<void> => {
     while (cursor < attempts.length && acknowledgements < TARGET_COPIES) {
       const attempt = attempts[cursor++];
@@ -385,7 +410,10 @@ export async function depositRecipientInboxOperation(
       if (!stored || acknowledged.has(attempt.providerId)) continue;
       acknowledged.add(attempt.providerId);
       acknowledgements++;
-      if (acknowledgements === 1) firstAcknowledgement?.(true);
+      if (attempt.discoverable) {
+        discoverableAcknowledgements++;
+        if (discoverableAcknowledgements === 1) firstDiscoverableAcknowledgement?.(true);
+      }
     }
   };
   const completion = Promise.all(
@@ -393,11 +421,11 @@ export async function depositRecipientInboxOperation(
       { length: Math.min(MAX_PARALLEL_REQUESTS, attempts.length) },
       () => worker(),
     ),
-  ).then(() => acknowledgements > 0);
+  ).then(() => discoverableAcknowledgements > 0);
   // Promise.race attaches handlers to completion; this explicit catch also
   // keeps the post-return three-copy repair detached and rejection-safe.
   void completion.catch(() => false);
-  return await Promise.race([firstStored, completion]);
+  return await Promise.race([firstDiscoverableStored, completion]);
 }
 
 interface FetchedRecipientInbox {

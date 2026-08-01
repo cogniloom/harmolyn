@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { generateIdentity } from '../identity/identity';
+import { generateIdentity, type XoreinIdentity } from '../identity/identity';
 import type { XoreinRuntimeMessage } from '../../types';
 import { signChannelMessageVersion } from './signedHistory';
 import {
@@ -9,19 +9,24 @@ import {
   type SwarmHistoryProvider,
 } from './swarmHistory';
 
-async function signed(id: string, body = id): Promise<XoreinRuntimeMessage> {
-  const identity = await generateIdentity();
+async function signed(
+  id: string,
+  body = id,
+  identity?: XoreinIdentity,
+  revision = 0,
+): Promise<XoreinRuntimeMessage> {
+  const author = identity ?? await generateIdentity();
   const message: XoreinRuntimeMessage = {
     id,
     scope_type: 'channel',
     scope_id: 'c',
     server_id: 's',
-    sender_peer_id: identity.peerId,
+    sender_peer_id: author.peerId,
     body,
     created_at: `2026-07-30T12:00:${id.slice(-2).padStart(2, '0')}.000Z`,
-    author_revision: 0,
+    author_revision: revision,
   };
-  message.author_proof = signChannelMessageVersion(message, identity);
+  message.author_proof = signChannelMessageVersion(message, author);
   return message;
 }
 
@@ -113,5 +118,23 @@ describe('swarm history reconstruction', () => {
     expect(result.messages).toEqual([authentic]);
     expect([a, b, c].filter(p => (p.fetch as ReturnType<typeof vi.fn>).mock.calls.length > 0))
       .toHaveLength(3);
+  });
+
+  it('fetches and returns a newer signed revision for a locally held message id', async () => {
+    const author = await generateIdentity();
+    const original = await signed('01', 'before edit', author, 0);
+    const edited = await signed('01', 'after edit', author, 1);
+    const archive = provider('archive', 'archivist', [edited]);
+
+    const result = await fetchSwarmHistoryPage({
+      providers: [archive],
+      serverId: 's',
+      channelId: 'c',
+      limit: 10,
+      existingMessageRevisions: new Map([[original.id, original.author_revision ?? 0]]),
+    });
+
+    expect(archive.fetch).toHaveBeenCalledWith(['01']);
+    expect(result.messages).toEqual([edited]);
   });
 });

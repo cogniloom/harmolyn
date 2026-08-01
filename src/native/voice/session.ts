@@ -507,18 +507,40 @@ export class VoiceSession {
       screen_sharing: false,
       ...selfProfile(),
     };
-    let responses: Array<{ peerId: string; response: VoicePresenceResponse }> = [];
+    const responsesByPeer = new Map<string, VoicePresenceResponse>();
+    const pending = new Set(members);
+    const raceRetried = new Set<string>();
     for (let attempt = 0; attempt <= VOICE_PRESENCE_RETRY_DELAYS_MS.length; attempt += 1) {
       if (this.stopped) return;
-      responses = await peerSync.requestScope<VoicePresenceResponse>(members, PROTOCOLS.voice, VOICE_OPS.presence, req);
-      const allMembersAnsweredInChannel = responses.length >= members.length
-        && responses.every(({ response }) => response.in_channel);
-      if (allMembersAnsweredInChannel || attempt === VOICE_PRESENCE_RETRY_DELAYS_MS.length) break;
+      const targets = [...pending];
+      if (!targets.length) break;
+      const responses = await peerSync.requestScope<VoicePresenceResponse>(
+        targets,
+        PROTOCOLS.voice,
+        VOICE_OPS.presence,
+        req,
+      );
+      for (const { peerId, response } of responses) {
+        if (!pending.has(peerId) || !response) continue;
+        // Never overwrite an earlier positive reply with a later timeout/false.
+        // A false reply gets one short retry to close the simultaneous-join race;
+        // after that it is a definitive "not in this channel", not a reason to
+        // fan out to the full Space two more times.
+        if (response.in_channel) {
+          responsesByPeer.set(peerId, response);
+          pending.delete(peerId);
+        } else if (raceRetried.has(peerId)
+          || attempt === VOICE_PRESENCE_RETRY_DELAYS_MS.length) {
+          pending.delete(peerId);
+        } else {
+          raceRetried.add(peerId);
+        }
+      }
+      if (!pending.size || attempt === VOICE_PRESENCE_RETRY_DELAYS_MS.length) break;
       await new Promise<void>((resolve) => setTimeout(resolve, VOICE_PRESENCE_RETRY_DELAYS_MS[attempt]));
     }
 
-    const present = responses.filter(r => r.response?.in_channel);
-    for (const { peerId, response } of present) {
+    for (const [peerId, response] of responsesByPeer) {
       storeJoinVoice(this.channelId, peerId);
       setVoiceParticipant(this.channelId, peerId, {
         muted: !!response.muted, video: !!response.video, screen_sharing: !!response.screen_sharing,
@@ -539,7 +561,7 @@ export class VoiceSession {
     // The elected coordinator is deterministic across peers (min peer-id), so both
     // ends agree without negotiation. SFrame keys are per-sender, so a coordinator
     // relaying frames only ever handles ciphertext.
-    const presentIds = present.map(p => p.peerId);
+    const presentIds = [...responsesByPeer.keys()];
     let dialTargets = presentIds;
     if (resolveFeatureFlag('voiceScaleSfu')) {
       const roster = [this.localPeerId, ...presentIds];

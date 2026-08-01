@@ -18,6 +18,10 @@ const ROOT = process.cwd();
 const EVIDENCE_DIR = path.resolve(ROOT, '.generated/voice-e2e');
 const NODE_ENDPOINT = normalizeEndpoint(process.env.VOICE_NODE_ENDPOINT ?? 'http://127.0.0.1:7711');
 const CREDENTIAL_URL = `${NODE_ENDPOINT}/v1/voice/turn-credentials`;
+const TURN_TRANSPORT = String(process.env.VOICE_TURN_TRANSPORT ?? 'auto').trim().toLowerCase();
+if (!['auto', 'udp', 'tcp', 'tls'].includes(TURN_TRANSPORT)) {
+  throw new Error(`Invalid VOICE_TURN_TRANSPORT: ${TURN_TRANSPORT}`);
+}
 
 function normalizeEndpoint(value) {
   const raw = String(value).trim();
@@ -52,20 +56,29 @@ async function waitForIceGathering(page) {
 }
 
 async function initialisePeer(page, credentialUrl, initiator) {
-  return page.evaluate(async ({ url, isInitiator }) => {
+  return page.evaluate(async ({ url, isInitiator, requiredTransport }) => {
     const response = await fetch(url, { cache: 'no-store' });
     if (!response.ok) throw new Error(`TURN credentials returned HTTP ${response.status}`);
     const credentials = await response.json();
-    if (!Array.isArray(credentials.urls) || !credentials.urls.some(value => String(value).startsWith('turn:'))) {
+    if (!Array.isArray(credentials.urls) || !credentials.urls.some(value => /^turns?:/.test(String(value)))) {
       throw new Error('Xorein returned no TURN URL');
     }
     if (!credentials.username || !credentials.credential) {
       throw new Error('Xorein returned incomplete TURN credentials');
     }
 
+    const selectedUrls = credentials.urls.filter(value => {
+      const candidate = String(value);
+      if (requiredTransport === 'auto') return candidate.startsWith('turn:') || candidate.startsWith('turns:');
+      if (requiredTransport === 'udp') return candidate.startsWith('turn:') && candidate.includes('transport=udp');
+      if (requiredTransport === 'tcp') return candidate.startsWith('turn:') && candidate.includes('transport=tcp');
+      return candidate.startsWith('turns:');
+    });
+    if (!selectedUrls.length) throw new Error(`Xorein returned no ${requiredTransport} TURN URL`);
+
     const pc = new RTCPeerConnection({
       iceServers: [{
-        urls: credentials.urls,
+        urls: selectedUrls,
         username: credentials.username,
         credential: credentials.credential,
       }],
@@ -98,8 +111,8 @@ async function initialisePeer(page, credentialUrl, initiator) {
     if (isInitiator) {
       state.dataChannel = pc.createDataChannel('harmolyn-turn-e2e');
     }
-    return { urls: credentials.urls, ttlSeconds: credentials.ttl_seconds };
-  }, { url: credentialUrl, isInitiator: initiator });
+    return { urls: selectedUrls, ttlSeconds: credentials.ttl_seconds };
+  }, { url: credentialUrl, isInitiator: initiator, requiredTransport: TURN_TRANSPORT });
 }
 
 async function selectedCandidateType(page) {
@@ -127,6 +140,7 @@ await mkdir(EVIDENCE_DIR, { recursive: true });
 const report = [
   'Harmolyn two-browser TURN E2E',
   `Node: ${NODE_ENDPOINT}`,
+  `Transport: ${TURN_TRANSPORT}`,
 ];
 let exitCode = 0;
 let viteServer;

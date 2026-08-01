@@ -43,9 +43,15 @@ import { addRelayOverride, removeRelayOverride } from '../transport/relays.js';
 import { isTrustedRelayMultiaddr } from '../transport/node.js';
 import { PROTOCOLS } from '../families/families.js';
 import { parseJoinDeepLink, buildJoinDeepLink } from '../../protocol/deeplink.js';
-import { computeInviteToken, createSignedInviteCapability } from '../sync/invite.js';
+import {
+  computeInviteToken,
+  createForwardSecureInviteCapability,
+  isForwardSecureInviteTransitionRecord,
+  openForwardSecureInviteTransition,
+  verifySignedInviteCapability,
+} from '../sync/invite.js';
 import { signChannelMessageVersion } from '../sync/signedHistory.js';
-import { signServerRecord } from '../sync/signedServer.js';
+import { signServerRecord, verifyServerRecord } from '../sync/signedServer.js';
 
 /** Generate a fresh base64 32-byte channel epoch root for a new server. */
 function freshCrowdRoot(): string {
@@ -748,6 +754,33 @@ export function broadcastServerUpdate(serverId: string): void {
   });
 }
 
+/**
+ * Replicate an owner-preauthorized portable admission to the members that held
+ * the prior epoch. The capability itself contains the encrypted next record;
+ * each recipient opens and verifies it independently instead of trusting this
+ * sender's copy of the server record or membership list.
+ */
+export function broadcastPortableAdmission(
+  serverId: string,
+  targetMemberIds: string[],
+  admittedPeerId: string,
+  capability: string,
+): void {
+  const me = localPeerId();
+  const server = getState().servers[serverId];
+  if (!server || !me || !server.members.includes(me)
+    || !admittedPeerId || admittedPeerId.length > 256 || !capability) return;
+  const targets = [...new Set(targetMemberIds)]
+    .filter(peerId => peerId && peerId !== me && peerId !== admittedPeerId
+      && server.members.includes(peerId));
+  if (!targets.length) return;
+  void getPeerSync()?.broadcastToScope(targets, PROTOCOLS.sync, 'sync.admit', {
+    server_id: serverId,
+    admitted_peer_id: admittedPeerId,
+    invite_token: capability,
+  });
+}
+
 export function nativeCreateChannel(
   serverId: string,
   name: string,
@@ -826,6 +859,18 @@ export function nativeRemoveMember(serverId: string, peerId: string): void {
   if (!server || server.owner_peer_id !== me) return; // owner-only
   if (!peerId || peerId === me) return; // owner can't kick self — use delete
   removeServerMember(serverId, peerId);
+  // Revoke every bearer invite minted before this moderation decision. A kicked
+  // client may still hold the admission capability it originally joined with;
+  // without a generation/secret rotation its reconnect loop can present that
+  // still-valid token and silently add itself back before sync.remove arrives.
+  // Existing share links intentionally become invalid and the owner can mint a
+  // fresh cohort after the kick.
+  updateServer(serverId, {
+    invite_secret: freshCrowdRoot(),
+    invite_generation: (server.invite_generation ?? 0) + 1,
+    admission_capability: undefined,
+    updated_at: nowISO(),
+  });
   // Rotate the channel epoch so the removed member's root no longer decrypts new
   // traffic. Remaining members receive the fresh root via broadcastServerUpdate.
   rotateChannelEpoch(serverId);
@@ -891,12 +936,59 @@ export function nativeInviteLink(serverId: string): string | null {
   if (!server.invite_secret) return null;
   // Ensure the snapshot carried by current members is portable even when this
   // server has not yet had a broadcast-worthy mutation.
-  const proof = signServerRecord(server);
-  if (proof) {
+  const proof = verifyServerRecord(server) ? server.owner_proof : signServerRecord(server);
+  if (proof && server.owner_proof !== proof) {
     updateServer(serverId, { owner_proof: proof });
     server = getState().servers[serverId];
   }
-  const portable = createSignedInviteCapability(serverId, server.invite_generation ?? 0);
+  let portable = '';
+  // Reuse a still-valid pending cohort so repeatedly opening the Share dialog
+  // cannot mint competing next epochs. Any intervening structural owner update
+  // changes the canonical record and makes this cached transition fail closed.
+  if (server.admission_capability) {
+    let cached = verifySignedInviteCapability(
+      server.admission_capability,
+      server.id,
+      server.owner_peer_id,
+      server.invite_generation ?? 0,
+    );
+    if (cached?.v === 3 && openForwardSecureInviteTransition(server, cached)) {
+      portable = server.admission_capability;
+    } else if ((server.invite_generation ?? 0) > 0) {
+      cached = verifySignedInviteCapability(
+        server.admission_capability,
+        server.id,
+        server.owner_peer_id,
+        (server.invite_generation ?? 0) - 1,
+      );
+      if (cached?.v === 3 && isForwardSecureInviteTransitionRecord(server, cached)) {
+        portable = server.admission_capability;
+      }
+    }
+  }
+  if (!portable && proof) {
+    // A reusable bearer link has no globally enforceable one-use counter while
+    // the network is partitioned. Pre-authorize Crowd for its admission cohort
+    // so concurrent joiners can never push a Tree epoch beyond its 50-member
+    // protocol ceiling. A later owner rotation can automatically re-enter Tree
+    // once the converged roster is at or below the hysteresis threshold.
+    const nextMode = 'crowd' as const;
+    const next: XoreinRuntimeServer = {
+      ...server,
+      crowd_root: freshCrowdRoot(),
+      crowd_epoch: (server.crowd_epoch ?? 0) + 1,
+      server_rev: (server.server_rev ?? 0) + 1,
+      invite_generation: (server.invite_generation ?? 0) + 1,
+      updated_at: nowISO(),
+      channel_security_mode: nextMode,
+      channel_crypto_profile: CHANNEL_CRYPTO_PROFILE,
+      ...(server.manifest ? {
+        manifest: { ...server.manifest, security_mode: nextMode },
+      } : {}),
+    };
+    portable = createForwardSecureInviteCapability(server, next);
+    if (portable) updateServer(serverId, { admission_capability: portable });
+  }
   const token = portable || computeInviteToken(server.invite_secret, serverId);
   return buildJoinDeepLink(
     serverId,
@@ -914,6 +1006,7 @@ export function nativeRotateInvite(serverId: string): string | null {
   updateServer(serverId, {
     invite_secret: secret,
     invite_generation: (server.invite_generation ?? 0) + 1,
+    admission_capability: undefined,
     updated_at: nowISO(),
   });
   broadcastServerUpdate(serverId);
@@ -931,6 +1024,7 @@ export function nativeRevokeInvite(serverId: string): void {
   updateServer(serverId, {
     invite_secret: undefined,
     invite_generation: (server.invite_generation ?? 0) + 1,
+    admission_capability: undefined,
     updated_at: nowISO(),
   });
   broadcastServerUpdate(serverId);

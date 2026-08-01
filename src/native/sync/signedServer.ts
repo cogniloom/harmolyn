@@ -17,6 +17,7 @@ import { canonicalJSON } from './signedHistory.js';
 
 const DOMAIN_V1 = 'xorein/server-record/v1\n';
 const DOMAIN_V2 = 'xorein/server-record/v2\n';
+const DOMAIN_INVITE_TRANSITION_V3 = 'xorein/invite-transition/v3\n';
 let activeIdentity: XoreinIdentity | null = null;
 
 export function registerServerSigningIdentity(identity: XoreinIdentity): void {
@@ -95,6 +96,30 @@ export function canonicalServerRecord(server: XoreinRuntimeServer): Uint8Array {
   return new TextEncoder().encode(DOMAIN_V2 + canonicalJSON(record));
 }
 
+export interface InviteTransitionProofPayload {
+  v: 3;
+  server_id: string;
+  owner_peer_id: string;
+  generation: number;
+  issued_at: number;
+  expires_at: number;
+  identity_key: string;
+  transition_nonce: string;
+  transition_ciphertext: string;
+  content_hash: string;
+}
+
+/** Canonical owner authorization shared by the invite token and resulting
+ * server-record proof. One hybrid signature therefore authenticates both the
+ * bearer capability and the exact pre-authorized post-join epoch. */
+export function canonicalInviteTransitionProof(
+  payload: InviteTransitionProofPayload,
+): Uint8Array {
+  return new TextEncoder().encode(
+    DOMAIN_INVITE_TRANSITION_V3 + canonicalJSON(payload),
+  );
+}
+
 export function signServerRecord(
   server: XoreinRuntimeServer,
   identity: XoreinIdentity | null = activeIdentity,
@@ -111,7 +136,7 @@ export function signServerRecord(
 
 export function verifyServerRecord(server: XoreinRuntimeServer): boolean {
   const proof = server.owner_proof;
-  if (!proof || (proof.version !== 1 && proof.version !== 2)) return false;
+  if (!proof || (proof.version !== 1 && proof.version !== 2 && proof.version !== 3)) return false;
   // A v1 proof predates crypto-profile authentication. Never let one authorize
   // an explicitly supplied profile field.
   if (proof.version === 1 && server.channel_crypto_profile !== undefined) return false;
@@ -127,7 +152,31 @@ export function verifyServerRecord(server: XoreinRuntimeServer): boolean {
     canonical = proof.version === 1 ? canonicalServerRecordV1(server) : canonicalServerRecord(server);
   } catch { return false; }
   if (!equal(sha256(canonical), expectedHash)) return false;
-  return hybridVerify(canonical, signature, {
+  let signedPayload = canonical;
+  if (proof.version === 3) {
+    if (!Number.isSafeInteger(proof.admission_generation)
+      || Number(proof.admission_generation) < 0
+      || !Number.isSafeInteger(proof.issued_at)
+      || !Number.isSafeInteger(proof.expires_at)
+      || Number(proof.expires_at) <= Number(proof.issued_at)
+      || typeof proof.transition_nonce !== 'string'
+      || typeof proof.transition_ciphertext !== 'string'
+      || proof.transition_nonce.length > 64
+      || proof.transition_ciphertext.length > 4096) return false;
+    signedPayload = canonicalInviteTransitionProof({
+      v: 3,
+      server_id: server.id,
+      owner_peer_id: server.owner_peer_id,
+      generation: Number(proof.admission_generation),
+      issued_at: Number(proof.issued_at),
+      expires_at: Number(proof.expires_at),
+      identity_key: proof.identity_key,
+      transition_nonce: proof.transition_nonce,
+      transition_ciphertext: proof.transition_ciphertext,
+      content_hash: proof.content_hash,
+    });
+  }
+  return hybridVerify(signedPayload, signature, {
     edPublic: identity.ed25519,
     mldsaPublic: identity.mldsa65,
   });

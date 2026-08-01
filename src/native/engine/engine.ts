@@ -556,6 +556,8 @@ export class XoreinNativeEngine {
         publishNativeSnapshot();
       },
     });
+    this.peerSync.setDialCandidateAuthorizer((address, peerId) =>
+      this._transport?.allowVerifiedPeerAddress(address, peerId) ?? false);
     await this._transport.start();
     // Ensure the data plane is wired even if 'connected' was emitted before we
     // got here (idempotent — wireDataPlane no-ops on an already-wired node).
@@ -788,8 +790,9 @@ export class XoreinNativeEngine {
           last_seen_at: new Date().toISOString(),
         });
 
-        // Direct WSS/WebTransport addresses are safe to probe only because the
-        // record is hybrid-signed and the final /p2p id pins the Noise identity.
+        // A signature and final peer ID authenticate the eventual Noise peer,
+        // but do not make the host safe to CONTACT. The manager separately
+        // rejects private/DNS PEX targets before adding an exact dial candidate.
         for (const address of record.addresses) {
           if (!isTrustedRelayMultiaddr(address, record.peer_id)
             || !this._transport.allowVerifiedCandidate(address)) continue;
@@ -1322,7 +1325,10 @@ export class XoreinNativeEngine {
       serverId,
       channelId,
       limit: 50,
-      existingMessageIds: new Set(scopeMsgs.map(message => message.id)),
+      existingMessageRevisions: new Map(scopeMsgs.map(message => [
+        message.id,
+        message.author_revision ?? 0,
+      ])),
       maxProviders: 16,
       maxIDsPerFetch: 25,
     });

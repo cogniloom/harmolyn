@@ -123,7 +123,10 @@ export interface SwarmFetchOptions {
   serverId: string;
   channelId: string;
   limit: number;
+  /** Legacy compatibility for callers that know only presence, not revision. */
   existingMessageIds?: ReadonlySet<string>;
+  /** Highest locally held author revision for each message id. */
+  existingMessageRevisions?: ReadonlyMap<string, number>;
   /** Bounds discovery fan-out. A later page rotates providers at the caller. */
   maxProviders?: number;
   /** Bounds each provider request even if a malicious inventory is huge. */
@@ -152,6 +155,7 @@ export async function fetchSwarmHistoryPage(options: SwarmFetchOptions): Promise
   const maxProviders = Math.max(1, Math.min(32, options.maxProviders ?? 16));
   const maxIDs = Math.max(1, Math.min(100, options.maxIDsPerFetch ?? 50));
   const existing = options.existingMessageIds ?? new Set<string>();
+  const existingRevisions = options.existingMessageRevisions;
   const providers = [...new Map(options.providers.map(p => [p.peerId, p])).values()]
     .filter(p => providerScore(p) > Number.NEGATIVE_INFINITY)
     .sort((a, b) => providerScore(b) - providerScore(a))
@@ -177,17 +181,22 @@ export async function fetchSwarmHistoryPage(options: SwarmFetchOptions): Promise
   }));
   const answered = coverageResults.filter((v): v is NonNullable<typeof v> => v !== null);
 
-  // id -> providers that claim it, and the highest advertised revision/time hint.
-  const holders = new Map<string, SwarmHistoryProvider[]>();
+  // id -> providers that claim it (with their claimed revision), and the highest
+  // advertised revision/time hint. Coverage is untrusted, but retaining the
+  // claim lets the planner avoid assigning a known-new revision to a holder that
+  // advertised only an older copy.
+  const holders = new Map<string, Map<string, {
+    provider: SwarmHistoryProvider;
+    entry: HistoryCoverageEntry;
+  }>>();
   const inventory = new Map<string, HistoryCoverageEntry>();
   for (const response of answered) {
     for (const entry of response.entries) {
-      if (existing.has(entry.id)) continue;
-      const list = holders.get(entry.id) ?? [];
-      if (!list.some(provider => provider.peerId === response.provider.peerId)) {
-        list.push(response.provider);
-        holders.set(entry.id, list);
-      }
+      const localRevision = existingRevisions?.get(entry.id);
+      if (localRevision !== undefined ? entry.revision <= localRevision : existing.has(entry.id)) continue;
+      const claims = holders.get(entry.id) ?? new Map();
+      claims.set(response.provider.peerId, { provider: response.provider, entry });
+      holders.set(entry.id, claims);
       const prior = inventory.get(entry.id);
       if (!prior || entry.revision > prior.revision
         || (entry.revision === prior.revision && messageOrder(prior, entry) < 0)) {
@@ -200,8 +209,10 @@ export async function fetchSwarmHistoryPage(options: SwarmFetchOptions): Promise
   const assignments = new Map<string, string[]>();
   let rr = 0;
   for (const entry of wanted) {
-    const candidates = (holders.get(entry.id) ?? [])
-      .filter(provider => providerScore(provider) > Number.NEGATIVE_INFINITY)
+    const candidates = [...(holders.get(entry.id)?.values() ?? [])]
+      .filter(claim => claim.entry.revision >= entry.revision
+        && providerScore(claim.provider) > Number.NEGATIVE_INFINITY)
+      .map(claim => claim.provider)
       .sort((a, b) => providerScore(b) - providerScore(a));
     if (!candidates.length) continue;
     // Stay in the best available provider tier (nodes before clients), then
@@ -231,6 +242,13 @@ export async function fetchSwarmHistoryPage(options: SwarmFetchOptions): Promise
       const verified = verifySignedHistoryMessage(message);
       if (!verified.ok) {
         recordInvalid(provider.peerId);
+        continue;
+      }
+      const advertised = inventory.get(message.id);
+      if (advertised && (message.author_revision ?? 0) < advertised.revision) {
+        // The provider advertised a newer author revision but returned an old
+        // copy. Do not let that stale response suppress retrying another holder.
+        recordFailure(provider.peerId);
         continue;
       }
       recordSuccess(provider.peerId);
@@ -270,8 +288,11 @@ export async function fetchSwarmHistoryPage(options: SwarmFetchOptions): Promise
   const retries = new Map<string, string[]>();
   for (const id of unresolved) {
     const tried = attemptedByID.get(id) ?? new Set<string>();
-    const alternate = (holders.get(id) ?? []).find(provider =>
-      !tried.has(provider.peerId) && providerScore(provider) > Number.NEGATIVE_INFINITY);
+    const wantedRevision = inventory.get(id)?.revision ?? 0;
+    const alternate = [...(holders.get(id)?.values() ?? [])].find(claim =>
+      claim.entry.revision >= wantedRevision
+      && !tried.has(claim.provider.peerId)
+      && providerScore(claim.provider) > Number.NEGATIVE_INFINITY)?.provider;
     if (alternate) retries.set(alternate.peerId, [...(retries.get(alternate.peerId) ?? []), id]);
   }
   await Promise.all([...retries].flatMap(([providerId, ids]) => {
@@ -292,7 +313,8 @@ export async function fetchSwarmHistoryPage(options: SwarmFetchOptions): Promise
     auditRemaining--;
     if (auditRemaining > 0) continue;
     auditRemaining = randomAuditInterval();
-    const alternates = (holders.get(id) ?? [])
+    const alternates = [...(holders.get(id)?.values() ?? [])]
+      .map(claim => claim.provider)
       .filter(provider => provider.peerId !== acceptedRecord.providerId)
       .slice(0, 2);
     const copies = await Promise.all(alternates.map(async provider => {
