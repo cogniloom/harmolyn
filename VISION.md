@@ -11,14 +11,15 @@ gone.
 
 Clients retain encrypted state, exchange signed reachability records, route
 bounded destination-sealed packets, and help reconstruct history and attachments.
-A relay is an addressable bandwidth/storage contributor, not a central server.
+A Xorein Node is an addressable bandwidth/storage contributor, not a central
+server.
 
 ### Nodes are preferred accelerators
 
-Relays and archivists should automatically discover peers and one another,
-provide first contact, circuit relay, TURN, mailbox holding, and opaque storage,
-and continuously repair replica placement. Clients prefer them for bulk traffic
-so ordinary users are not needlessly consumed as infrastructure.
+Xorein Nodes should automatically discover peers and one another, provide first
+contact, circuit relay, TURN, mailbox holding, and opaque storage, and
+continuously repair replica placement. Clients prefer them for bulk traffic so
+ordinary users are not needlessly consumed as infrastructure.
 
 ### Zero trust is a protocol property
 

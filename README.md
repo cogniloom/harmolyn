@@ -57,7 +57,7 @@ The JavaScript still runs in the user's browser when the site is served from a
 container. Therefore `localhost` and `127.0.0.1` in the node picker refer to the
 browser's machine, not to the Nginx container.
 
-## Run a local Xorein support node
+## Run a local Xorein Node
 
 From the sibling Xorein repository:
 

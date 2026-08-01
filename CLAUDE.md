@@ -18,14 +18,14 @@ Runtime facade           src/hooks/runtime/useRuntimeMutations.ts
 Peer-owned engine        src/native/engine/, state/, sync/, delivery/
 Transport/discovery      src/native/transport/, peerServices/
 Security modes           src/native/seal/, tree/, crowd/, voice/
-Support-node client      src/lib/xoreinControl.ts, src/native/nodeOrigin.ts
+Xorein Node client       src/lib/xoreinControl.ts, src/native/nodeOrigin.ts
 Desktop boundary         src-tauri/src/lib.rs
 ```
 
-The support node is an untrusted helper for first contact, circuit relay,
+The Xorein Node is an untrusted helper for first contact, circuit relay,
 rendezvous, opaque replication/blob service, mailbox holding, and TURN. It is
 not a message authority. Direct and routed peer operations must continue when a
-support node disappears.
+Xorein Node disappears.
 
 ## Important implementation rules
 

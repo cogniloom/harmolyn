@@ -39,7 +39,7 @@ hand. The checked-in npm scripts and `package-lock.json` are authoritative.
 - `src/config/featureFlags.ts` is the feature registry. Unsupported actions stay
   disabled; do not ship local-only UI pretending a network mutation succeeded.
 - Components do not bypass the runtime mutation facade.
-- Support nodes receive ciphertext and public routing material only. Never send
+- Xorein Nodes receive ciphertext and public routing material only. Never send
   identity private keys, recovery passwords, invite capabilities, plaintext
   messages, or local bearer tokens to a remote endpoint.
 - A local runtime being alive is not a connected peer path. UI connectivity must

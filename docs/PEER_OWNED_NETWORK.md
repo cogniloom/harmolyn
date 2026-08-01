@@ -64,7 +64,7 @@ Sybil or slander campaign could manipulate.
 
 ## Node replication
 
-Harmolyn targets three opaque copies across support nodes or eligible peers.
+Harmolyn targets three opaque copies across Xorein Nodes or eligible peers.
 Xorein Node anti-entropy uses rendezvous placement, bounded batches,
 quotas, authenticated forwarding peers, and replacement repair when the live
 node set changes. A node may point a client at holders for missing records, but
