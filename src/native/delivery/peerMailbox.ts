@@ -203,25 +203,30 @@ export async function handlePeerMailboxRequest(
 
     try {
       await pruneDatabase(db, now);
-      const readTx = db.transaction([STORE, USAGE_STORE], 'readonly');
-      const store = readTx.objectStore(STORE);
+      // IndexedDB serializes readwrite transactions. Keep existence checks,
+      // quota reads, insertion, and accounting in this one transaction so
+      // parallel streams cannot all validate against the same stale totals.
+      const writeTx = db.transaction([STORE, USAGE_STORE], 'readwrite');
+      const store = writeTx.objectStore(STORE);
       const [existing, usage, source, tokenEntries] = await Promise.all([
         requestResult(store.get(key)) as Promise<PeerMailboxEntry | undefined>,
-        requestResult(readTx.objectStore(USAGE_STORE).get(TOTAL_USAGE_KEY)) as Promise<MailboxUsage | undefined>,
+        requestResult(writeTx.objectStore(USAGE_STORE).get(TOTAL_USAGE_KEY)) as Promise<MailboxUsage | undefined>,
         requestResult(store.index('source_peer_id').getAll(remotePeerId)) as Promise<PeerMailboxEntry[]>,
         requestResult(store.index('token').getAll(token)) as Promise<PeerMailboxEntry[]>,
       ]);
-      await transactionDone(readTx);
-      if (existing) return { ok: true, queued: true, duplicate: true };
+      if (existing) {
+        await transactionDone(writeTx);
+        return { ok: true, queued: true, duplicate: true };
+      }
       const totalBytes = usage?.bytes ?? 0;
       const sourceBytes = source.reduce((sum, candidate) => sum + candidate.size, 0);
       if (totalBytes + size > MAX_TOTAL_BYTES
         || sourceBytes + size > MAX_SOURCE_BYTES
         || tokenEntries.length >= MAX_TOKEN_ENTRIES) {
+        await transactionDone(writeTx);
         return { ok: false, error: 'mailbox_quota' };
       }
-      const writeTx = db.transaction([STORE, USAGE_STORE], 'readwrite');
-      writeTx.objectStore(STORE).put(entry);
+      store.put(entry);
       writeTx.objectStore(USAGE_STORE).put({ key: TOTAL_USAGE_KEY, bytes: totalBytes + size } satisfies MailboxUsage);
       await transactionDone(writeTx);
       return { ok: true, queued: true };

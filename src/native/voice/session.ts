@@ -520,8 +520,10 @@ export class VoiceSession {
         VOICE_OPS.presence,
         req,
       );
+      const responders = new Set<string>();
       for (const { peerId, response } of responses) {
         if (!pending.has(peerId) || !response) continue;
+        responders.add(peerId);
         // Never overwrite an earlier positive reply with a later timeout/false.
         // A false reply gets one short retry to close the simultaneous-join race;
         // after that it is a definitive "not in this channel", not a reason to
@@ -535,6 +537,12 @@ export class VoiceSession {
         } else {
           raceRetried.add(peerId);
         }
+      }
+      // A missing response means the peer is unreachable, not that it lost the
+      // simultaneous-join race. Only an explicit in_channel:false reply earns
+      // the short retry; otherwise one timeout must not delay reachable peers.
+      for (const peerId of targets) {
+        if (!responders.has(peerId)) pending.delete(peerId);
       }
       if (!pending.size || attempt === VOICE_PRESENCE_RETRY_DELAYS_MS.length) break;
       await new Promise<void>((resolve) => setTimeout(resolve, VOICE_PRESENCE_RETRY_DELAYS_MS[attempt]));

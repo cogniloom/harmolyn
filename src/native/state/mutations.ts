@@ -73,7 +73,13 @@ export function rotateChannelEpoch(serverId: string): boolean {
   if (!server.crowd_root) return false; // no channel key to rotate
   const nextEpoch = (server.crowd_epoch ?? 0) + 1;
   const currentMode = recordedChannelSecurityMode(server.channel_security_mode);
-  const nextMode = selectChannelSecurityMode(server.members.length, currentMode);
+  // Existing Crowd members may be running pre-Tree clients. The roster has no
+  // authenticated per-member capability record, so member count alone cannot
+  // prove a Crowd -> Tree transition is safe. New Tree spaces may still grow to
+  // Crowd; a Crowd space remains there until capability-aware admission lands.
+  const nextMode = currentMode === 'crowd'
+    ? 'crowd'
+    : selectChannelSecurityMode(server.members.length, currentMode);
   updateServer(serverId, {
     crowd_root: freshCrowdRoot(),
     crowd_epoch: nextEpoch,

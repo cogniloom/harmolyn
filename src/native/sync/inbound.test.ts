@@ -16,9 +16,11 @@ import { generateIdentity, type XoreinIdentity } from '../identity/identity.js';
 import { registerScopeCrypto, resetScopeCrypto, encryptChannelEnvelope, encryptDmEnvelope, applyCrowdRoot } from './secureEnvelope.js';
 import { signChannelMessageVersion } from './signedHistory.js';
 import { signServerRecord } from './signedServer.js';
-import { ingestMailboxChat, classifyChannelNotification, handleSyncRequest, reconcileFriendAcceptFromPresence } from './inbound.js';
+import { ingestMailboxChat, classifyChannelNotification, dispatchAuthenticatedOperation, handleSyncRequest, reconcileFriendAcceptFromPresence } from './inbound.js';
 import type { ChannelSecurityMode } from '../security/channelMode.js';
 import type { XoreinRuntimeMessage } from '../../types.js';
+import type { PeerSync } from './peersync.js';
+import { PROTOCOLS } from '../families/families.js';
 
 const ME = 'me';
 const ALICE = 'alice';
@@ -115,6 +117,28 @@ describe('classifyChannelNotification', () => {
 
   it('treats ordinary channel text as the plain channel kind', () => {
     expect(classifyChannelNotification(server, ME, 'Me', 'just chatting')).toBe('channel');
+  });
+});
+
+describe('durable inbox chat dispatch', () => {
+  it('propagates a rejected chat operation instead of acknowledging it', async () => {
+    setNativeIdentity({ id: ME, peer_id: ME });
+    seedServerWithRoot();
+
+    await expect(dispatchAuthenticatedOperation({
+      protocol: PROTOCOLS.chat,
+      operation: 'chat.send',
+      payload: {
+        message_id: 'future-message',
+        scope_id: CHAN,
+        scope_type: 'channel',
+        sender_id: ALICE,
+        // No decryptable current-epoch envelope: this must remain retryable.
+      },
+    }, ALICE, {} as PeerSync)).resolves.toEqual({
+      ok: false,
+      error: 'chat_rejected',
+    });
   });
 });
 

@@ -635,7 +635,7 @@ export function readBrowserChatActionSupport(): BrowserChatActionSupport {
   // that a peer path is alive, so keep the action path available for local
   // queueing while describing the actual transport state precisely.
   if ((window as unknown as Record<string, unknown>).__HARMOLYN_NATIVE_ACTIVE__ === true) {
-    const transportState = runtime?.transport_state ?? "connected";
+    const transportState = runtime?.transport_state ?? "disconnected";
     return {
       mode: "connected",
       canPersistLocally: true,
