@@ -246,10 +246,22 @@ export async function handleRecoveryStore(payload: Record<string, unknown>, remo
     ...(state !== undefined ? { state } : {}),
     receivedAt: new Date().toISOString(),
   };
-  await storeCustody(entry);
   if (manifest) {
+    // Install the refreshed identity/base packet first, but carry forward the
+    // last verified state until this transfer authenticates. Doing this before
+    // consuming chunks also orders a concurrent final-chunk handler after the
+    // preservation write instead of allowing the old state to overwrite it.
+    const previous = await getCustody(remotePeerId);
+    await storeCustody({
+      ...entry,
+      ...(previous?.state !== undefined ? { state: previous.state } : {}),
+    });
     const assembled = await consumeRecoveryState('store', remotePeerId, manifest);
-    if (assembled) await storeCustody({ ...entry, state: assembled });
+    if (assembled) {
+      await storeCustody({ ...entry, state: assembled });
+    }
+  } else {
+    await storeCustody(entry);
   }
   return { ok: true };
 }

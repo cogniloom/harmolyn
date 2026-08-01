@@ -231,6 +231,17 @@ describe("readBrowserChatActionSupport", () => {
     });
   });
 
+  it("treats a missing initial native transport snapshot as disconnected", () => {
+    vi.stubGlobal("__HARMOLYN_NATIVE_ACTIVE__", true);
+    vi.stubGlobal("__HARMOLYN_XOREIN_RUNTIME__", {
+      identity: { peer_id: "peer-local" },
+    });
+
+    expect(readBrowserChatActionSupport().detail).toBe(
+      "Native engine active locally — no xorein peer path is connected; chat mutations remain local or queued until a peer path is available.",
+    );
+  });
+
   it("falls back to nested settings when the top-level control endpoint is malformed", () => {
     vi.stubGlobal("__HARMOLYN_XOREIN_RUNTIME__", {
       identity: { peer_id: "peer-local" },

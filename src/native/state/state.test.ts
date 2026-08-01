@@ -456,7 +456,7 @@ describe('polls — P2P poll vote accumulation (Goal 9)', () => {
 });
 
 describe('channel epoch rotation on membership changes', () => {
-  it('automatically transitions at 51 members and uses re-entry hysteresis', () => {
+  it('transitions Tree to Crowd but does not downgrade legacy members back to Tree', () => {
     setNativeIdentity({ id: 'owner', peer_id: 'owner' });
     const srv = nativeCreateServer('Mode Test');
     expect(getState().servers[srv.id]?.channel_security_mode).toBe('tree');
@@ -472,7 +472,7 @@ describe('channel epoch rotation on membership changes', () => {
 
     getState().servers[srv.id]!.members = getState().servers[srv.id]!.members.slice(0, 40);
     rotateChannelEpoch(srv.id);
-    expect(getState().servers[srv.id]?.channel_security_mode).toBe('tree');
+    expect(getState().servers[srv.id]?.channel_security_mode).toBe('crowd');
   });
 
   it('nativeRemoveMember rotates crowd_root AND bumps crowd_epoch when one is set', () => {

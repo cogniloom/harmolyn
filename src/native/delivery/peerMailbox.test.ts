@@ -88,6 +88,20 @@ describe('peer mailbox storage', () => {
     }, 'sender')).resolves.toEqual({ ok: false, error: 'invalid_mailbox_entry' });
   });
 
+  it('serializes parallel quota checks with their inserts', async () => {
+    const token = currentMailboxToken(crypto.getRandomValues(new Uint8Array(32)));
+    const body = b64url(new Uint8Array(1024 * 1024));
+    const responses = await Promise.all(Array.from({ length: 25 }, () =>
+      handlePeerMailboxRequest('peer.mailbox.store', {
+        token,
+        id: crypto.randomUUID(),
+        body,
+      }, 'sender')));
+
+    expect(responses.some(response => response.error === 'mailbox_quota')).toBe(true);
+    expect(responses.filter(response => response.ok === true).length).toBeLessThan(25);
+  });
+
   it('stores and drains through ordinary peers when every node path is down', async () => {
     installPeers('sender');
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('node down')));

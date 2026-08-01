@@ -159,6 +159,31 @@ describe('durable social recovery delivery', () => {
     expect(custody?.state).toBeUndefined();
   });
 
+  it('preserves the last complete snapshot while a chunked refresh is incomplete', async () => {
+    const previousState = {
+      v: 1 as const,
+      nonce: '00'.repeat(12),
+      ciphertext: encodeBase64Chunked(new Uint8Array(16).fill(1)),
+    };
+    const refreshedState = {
+      v: 1 as const,
+      nonce: '11'.repeat(12),
+      ciphertext: encodeBase64Chunked(new Uint8Array(700_000)),
+    };
+    const transfer = buildRecoveryStateTransfer(refreshedState)!;
+
+    await handleRecoveryStore({ blob: { v: 1 }, state: previousState }, 'owner-1');
+    await handleRecoveryStore({
+      blob: { v: 2 },
+      state_manifest: transfer.manifest,
+    }, 'owner-1');
+
+    await expect(getCustody('owner-1')).resolves.toMatchObject({
+      blob: { v: 2 },
+      state: previousState,
+    });
+  });
+
   it('queues a recovery request for an offline guardian', async () => {
     const peerSync = peerSyncWith(null);
     depositRecipientInboxOperation.mockResolvedValue(true);

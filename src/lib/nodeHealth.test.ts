@@ -189,6 +189,16 @@ describe('nodeHealth', () => {
       expect(getNodeHealthState()).toBe('offline');
     });
 
+    it('does not turn an invalid saved origin into a relative health probe', async () => {
+      localStorage.setItem('harmolyn:xorein:selected-control-endpoint', 'http://public.example');
+      reportNodeRequestFailure(new TypeError('Failed to fetch'));
+
+      await vi.advanceTimersByTimeAsync(5_000);
+
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(getNodeHealthState()).toBe('offline');
+    });
+
     it('repeated failure reports do not stack extra probes', async () => {
       fetchMock.mockRejectedValue(new TypeError('Failed to fetch'));
       reportNodeRequestFailure(new TypeError('a'));

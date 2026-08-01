@@ -156,8 +156,10 @@ async function runProbe(): Promise<void> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS);
   try {
+    const origin = supportNodeOrigin();
+    if (!origin) throw new Error('support node origin unavailable');
     // Any response — even an error status — means the node is reachable again.
-    await fetch(`${supportNodeOrigin()}/v1/state`, {
+    await fetch(`${origin}/v1/state`, {
       method: 'GET',
       cache: 'no-store',
       signal: controller.signal,

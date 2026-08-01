@@ -555,8 +555,12 @@ function handleChatDelete(payload: Record<string, unknown>, remotePeerId: string
   schedulePublishNativeSnapshot();
 }
 
-/** Route an inbound chat family message by operation type. */
-function handleChatOp(payload: Record<string, unknown>, remotePeerId: string, operation: string): void {
+/** Route an inbound chat family message and report whether it reached durable state. */
+function handleChatOp(payload: Record<string, unknown>, remotePeerId: string, operation: string): boolean {
+  const messageId = boundedPayloadString(payload.message_id, 256);
+  const before = messageId
+    ? getState().messages.find(message => message.id === messageId)
+    : undefined;
   if (operation === 'chat.edit') {
     handleChatEdit(payload, remotePeerId);
   } else if (operation === 'chat.delete') {
@@ -564,7 +568,16 @@ function handleChatOp(payload: Record<string, unknown>, remotePeerId: string, op
   } else if (operation === 'chat.send') {
     // Default / 'chat.send'
     handleChatSend(payload, remotePeerId);
+  } else {
+    return false;
   }
+  const after = messageId
+    ? getState().messages.find(message => message.id === messageId)
+    : undefined;
+  // A send whose message already exists is an idempotent success. Edits and
+  // deletes must actually replace the stored version; a stale roster/key epoch
+  // therefore propagates as a retryable rejection to durable-inbox draining.
+  return operation === 'chat.send' ? after !== undefined : after !== undefined && after !== before;
 }
 
 // ── Presence/typing inbound ────────────────────────────────────────────────
@@ -1323,8 +1336,9 @@ export async function dispatchAuthenticatedOperation(
     return handleSealBundle();
   }
   if (inner.protocol === PROTOCOLS.chat) {
-    handleChatOp(inner.payload, originPeerId, inner.operation);
-    return { ok: true };
+    return handleChatOp(inner.payload, originPeerId, inner.operation)
+      ? { ok: true }
+      : { ok: false, error: 'chat_rejected' };
   }
   if (inner.protocol === PROTOCOLS.friends) {
     handleFriendOp(inner.payload, originPeerId, inner.operation);
