@@ -22,22 +22,22 @@ function renderModal(overrides: Partial<React.ComponentProps<typeof CreateServer
 describe("CreateServerModal", () => {
   it("auto-focuses the name input on mount", () => {
     renderModal();
-    expect(screen.getByLabelText(/node name/i)).toHaveFocus();
+    expect(screen.getByLabelText(/space name/i)).toHaveFocus();
   });
 
   it("disables the create button while the name is blank and enables it once filled", async () => {
     const user = userEvent.setup();
     renderModal();
 
-    const createButton = screen.getByRole("button", { name: /initiate matrix/i });
+    const createButton = screen.getByRole("button", { name: /create space/i });
     expect(createButton).toBeDisabled();
 
-    await user.type(screen.getByLabelText(/node name/i), "Hub");
+    await user.type(screen.getByLabelText(/space name/i), "Hub");
     expect(createButton).toBeEnabled();
 
     // A whitespace-only name must not be considered fillable.
-    await user.clear(screen.getByLabelText(/node name/i));
-    await user.type(screen.getByLabelText(/node name/i), "   ");
+    await user.clear(screen.getByLabelText(/space name/i));
+    await user.type(screen.getByLabelText(/space name/i), "   ");
     expect(createButton).toBeDisabled();
   });
 
@@ -45,7 +45,7 @@ describe("CreateServerModal", () => {
     const user = userEvent.setup();
     const { onCreate } = renderModal();
 
-    await user.type(screen.getByLabelText(/node name/i), "{Enter}");
+    await user.type(screen.getByLabelText(/space name/i), "{Enter}");
     expect(onCreate).not.toHaveBeenCalled();
   });
 
@@ -53,8 +53,8 @@ describe("CreateServerModal", () => {
     const user = userEvent.setup();
     const { onCreate } = renderModal();
 
-    await user.type(screen.getByLabelText(/node name/i), "  Cyber Devs  ");
-    await user.click(screen.getByRole("button", { name: /initiate matrix/i }));
+    await user.type(screen.getByLabelText(/space name/i), "  Cyber Devs  ");
+    await user.click(screen.getByRole("button", { name: /create space/i }));
 
     expect(onCreate).toHaveBeenCalledWith({ name: "Cyber Devs", description: "" });
   });

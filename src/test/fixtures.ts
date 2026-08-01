@@ -76,6 +76,7 @@ export function createHappyRuntime(): XoreinRuntimeSnapshot {
     role: "client",
     peer_id: "peer-local",
     control_endpoint: CONTROL_ENDPOINT,
+    transport_state: "connected",
     identity: {
       id: "identity-local",
       peer_id: "peer-local",

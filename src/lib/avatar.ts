@@ -1,6 +1,5 @@
-import { safeParseUrl } from './browserLocation';
-
-const EXPLICIT_SCHEME_REGEX = /^[a-zA-Z][a-zA-Z0-9+.-]*:/;
+const MAX_LOCAL_AVATAR_DATA_URI_LENGTH = 512 * 1024;
+const LOCAL_RASTER_AVATAR_REGEX = /^data:image\/(?:png|jpe?g|gif|webp|avif|bmp);base64,[A-Za-z0-9+/]+={0,2}$/i;
 
 export function resolveAvatarSrc(source: unknown, fallbackLabel: unknown): string {
   const trimmed = typeof source === 'string' ? source.trim() : '';
@@ -11,20 +10,11 @@ export function resolveAvatarSrc(source: unknown, fallbackLabel: unknown): strin
 }
 
 export function isSafeAvatarSource(value: string): boolean {
-  if (/^data:image\/(png|jpe?g|gif|webp|avif|bmp)(?:;|,)/i.test(value)) {
-    return true;
-  }
-
-  if (!EXPLICIT_SCHEME_REGEX.test(value)) {
-    return false;
-  }
-
-  try {
-    const url = safeParseUrl(value);
-    return url ? (url.protocol === 'http:' || url.protocol === 'https:') : false;
-  } catch {
-    return false;
-  }
+  // Avatars are peer-controlled profile data. Never turn one into a browser
+  // network request: that would disclose the viewer's IP, timing, and page
+  // context to an arbitrary peer-selected host. Only the bounded, local raster
+  // data URI produced by the file picker is renderable.
+  return value.length <= MAX_LOCAL_AVATAR_DATA_URI_LENGTH && LOCAL_RASTER_AVATAR_REGEX.test(value);
 }
 
 function buildFallbackAvatarDataUri(label: unknown): string {

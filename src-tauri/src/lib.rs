@@ -4,50 +4,18 @@ use std::{
     net::{IpAddr, SocketAddr, TcpStream, ToSocketAddrs},
     path::{Path, PathBuf},
     sync::Mutex,
-    thread,
-    time::{Duration, Instant},
+    time::Duration,
 };
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_deep_link::DeepLinkExt;
-use tauri_plugin_shell::{
-    process::{CommandChild, CommandEvent},
-    ShellExt,
-};
 
 const MAX_CONTROL_REQUEST_BODY_BYTES: usize = 8 * 1024 * 1024;
 const MAX_CONTROL_RESPONSE_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_CONTROL_ERROR_MESSAGE_BYTES: usize = 1024;
-const SIDECAR_GRACEFUL_SHUTDOWN_WAIT: Duration = Duration::from_millis(750);
-const SIDECAR_READY_EVENT_WAIT: Duration = Duration::from_secs(2);
 const RUNTIME_UPDATED_EVENT: &str = "xorein://runtime-updated";
 
-#[derive(Clone, serde::Serialize)]
-struct XoreinSidecarStatus {
-    managed: bool,
-    running: bool,
-    pid: Option<u32>,
-    data_dir: Option<String>,
-    control_endpoint: String,
-    last_error: Option<String>,
-}
-
-impl Default for XoreinSidecarStatus {
-    fn default() -> Self {
-        Self {
-            managed: false,
-            running: false,
-            pid: None,
-            data_dir: xorein_data_dir().map(|p| p.to_string_lossy().to_string()),
-            control_endpoint: String::new(),
-            last_error: None,
-        }
-    }
-}
-
 #[derive(Default)]
-struct XoreinSidecarState {
-    child: Mutex<Option<CommandChild>>,
-    status: Mutex<XoreinSidecarStatus>,
+struct XoreinRuntimeState {
     pending_deeplink: Mutex<VecDeque<String>>,
 }
 
@@ -91,7 +59,6 @@ struct XoreinRuntimeConfig {
     control_endpoint: String,
     control_ready: bool,
     data_dir: Option<String>,
-    sidecar: XoreinSidecarStatus,
 }
 
 #[derive(serde::Serialize)]
@@ -116,15 +83,12 @@ fn read_xorein_control_endpoint() -> String {
 }
 
 fn xorein_control_ready(endpoint: &str) -> bool {
-	xorein_control_ready_with_token(endpoint, "")
+    let token = read_xorein_control_token();
+    xorein_control_ready_with_token(endpoint, &token)
 }
 
 fn xorein_control_ready_with_token(endpoint: &str, token: &str) -> bool {
     control_endpoint_accepts_token(endpoint, token)
-}
-
-fn should_reuse_existing_xorein_endpoint(endpoint: &str, token: &str) -> bool {
-    xorein_control_ready_with_token(endpoint, token)
 }
 
 fn control_endpoint_accepts_token(endpoint: &str, token: &str) -> bool {
@@ -239,275 +203,27 @@ fn trusted_control_endpoint(raw: &str) -> Option<String> {
 }
 
 impl XoreinRuntimeConfig {
-    fn from_status(sidecar: XoreinSidecarStatus) -> Self {
-        Self::from_status_with_endpoint(sidecar, read_xorein_control_endpoint())
-    }
-
-    fn from_status_with_endpoint(mut sidecar: XoreinSidecarStatus, endpoint: String) -> Self {
-        let endpoint = resolve_runtime_control_endpoint(endpoint, sidecar.control_endpoint.clone());
-        if !endpoint.is_empty() && sidecar.control_endpoint != endpoint {
-            sidecar.control_endpoint = endpoint.clone();
-        }
-        if sidecar.data_dir.is_none() {
-            sidecar.data_dir = xorein_data_dir().map(|p| p.to_string_lossy().to_string());
-        }
-
+    fn from_endpoint(endpoint: String) -> Self {
+        let endpoint = trusted_control_endpoint(&endpoint).unwrap_or_default();
         Self {
             control_ready: xorein_control_ready(&endpoint),
             control_endpoint: endpoint,
             data_dir: xorein_data_dir().map(|p| p.to_string_lossy().to_string()),
-            sidecar,
         }
     }
 }
 
-fn resolve_runtime_control_endpoint(primary: String, secondary: String) -> String {
-    if let Some(endpoint) = trusted_control_endpoint(&primary) {
-        return endpoint;
-    }
-    if let Some(endpoint) = trusted_control_endpoint(&secondary) {
-        return endpoint;
-    }
-    String::new()
+fn resolve_runtime_control_endpoint(_primary: String, secondary: String) -> String {
+    // Never let webview-controlled data choose where the private control token
+    // is sent. The endpoint persisted by the local xorein runtime is the only
+    // authenticated destination; an arbitrary loopback service is not trusted
+    // merely because it is local.
+    trusted_control_endpoint(&secondary).unwrap_or_default()
 }
 
 #[tauri::command]
-fn read_xorein_runtime_status(state: State<'_, XoreinSidecarState>) -> XoreinRuntimeConfig {
-    let status = state
-        .status
-        .lock()
-        .map(|status| status.clone())
-        .unwrap_or_default();
-    XoreinRuntimeConfig::from_status(status)
-}
-
-fn start_or_reuse_xorein_sidecar(app: &tauri::App) -> XoreinSidecarStatus {
-    let Some(data_dir) = xorein_data_dir() else {
-        return XoreinSidecarStatus {
-            last_error: Some("Unable to resolve xorein data directory.".to_string()),
-            ..XoreinSidecarStatus::default()
-        };
-    };
-    if let Err(err) = std::fs::create_dir_all(&data_dir) {
-        return XoreinSidecarStatus {
-            data_dir: Some(data_dir.to_string_lossy().to_string()),
-            last_error: Some(format!("Unable to create xorein data directory: {err}")),
-            ..XoreinSidecarStatus::default()
-        };
-    }
-
-    let existing_endpoint = read_xorein_control_endpoint();
-    let existing_token = read_xorein_control_token();
-    if should_reuse_existing_xorein_endpoint(&existing_endpoint, &existing_token) {
-        return XoreinSidecarStatus {
-            managed: false,
-            running: true,
-            pid: None,
-            data_dir: Some(data_dir.to_string_lossy().to_string()),
-            control_endpoint: existing_endpoint,
-            last_error: None,
-        };
-    }
-
-    let state = app.state::<XoreinSidecarState>();
-    let mut child_guard = match state.child.lock() {
-        Ok(guard) => guard,
-        Err(_) => {
-            return XoreinSidecarStatus {
-                data_dir: Some(data_dir.to_string_lossy().to_string()),
-                last_error: Some("Unable to lock xorein sidecar state.".to_string()),
-                ..XoreinSidecarStatus::default()
-            };
-        }
-    };
-
-    if child_guard.is_some() {
-        let status = state
-            .status
-            .lock()
-            .map(|status| status.clone())
-            .unwrap_or_default();
-        return status;
-    }
-
-    let command = match app.shell().sidecar("xorein").map(|cmd| {
-        cmd.args([
-            "--data-dir",
-            data_dir.to_string_lossy().as_ref(),
-            "--control",
-            "127.0.0.1:0",
-            "--listen",
-            "127.0.0.1:0",
-        ])
-    }) {
-        Ok(command) => command,
-        Err(err) => {
-            return XoreinSidecarStatus {
-                data_dir: Some(data_dir.to_string_lossy().to_string()),
-                last_error: Some(format!("Unable to resolve packaged xorein sidecar: {err}")),
-                ..XoreinSidecarStatus::default()
-            };
-        }
-    };
-
-    let (mut rx, child) = match command.spawn() {
-        Ok(spawned) => spawned,
-        Err(err) => {
-            return XoreinSidecarStatus {
-                data_dir: Some(data_dir.to_string_lossy().to_string()),
-                last_error: Some(format!("Unable to start xorein sidecar: {err}")),
-                ..XoreinSidecarStatus::default()
-            };
-        }
-    };
-
-    let pid = child.pid();
-    *child_guard = Some(child);
-    drop(child_guard);
-
-    let app_handle = app.handle().clone();
-    tauri::async_runtime::spawn(async move {
-        while let Some(event) = rx.recv().await {
-            match event {
-                CommandEvent::Stdout(line) | CommandEvent::Stderr(line) => {
-                    let text = String::from_utf8_lossy(&line);
-                    if text.contains("xorein runtime ready") {
-                        if let Some(endpoint) = authenticated_runtime_ready_endpoint() {
-                            let _ = app_handle.emit("xorein://runtime-ready", endpoint);
-                        }
-                    }
-                }
-                CommandEvent::Terminated(payload) => {
-                    if let Some(state) = app_handle.try_state::<XoreinSidecarState>() {
-                        if let Ok(mut status) = state.status.lock() {
-                            status.running = false;
-                            status.last_error = Some(format!(
-                                "xorein sidecar exited with code {:?}",
-                                payload.code
-                            ));
-                        }
-                        if let Ok(mut child) = state.child.lock() {
-                            child.take();
-                        }
-                    }
-                    let _ = app_handle.emit("xorein://runtime-exit", payload.code);
-                    break;
-                }
-                CommandEvent::Error(error) => {
-                    if let Some(state) = app_handle.try_state::<XoreinSidecarState>() {
-                        if let Ok(mut status) = state.status.lock() {
-                            status.last_error = Some(error.clone());
-                        }
-                    }
-                    let _ = app_handle.emit("xorein://runtime-error", error);
-                }
-                _ => {}
-            }
-        }
-    });
-
-    let endpoint = wait_for_authenticated_control_endpoint(Duration::from_secs(6));
-    let status = XoreinSidecarStatus {
-        managed: true,
-        running: true,
-        pid: Some(pid),
-        data_dir: Some(data_dir.to_string_lossy().to_string()),
-        control_endpoint: endpoint.clone(),
-        last_error: if endpoint.is_empty() {
-            Some(
-                "xorein sidecar started but did not become authenticated-ready before timeout."
-                    .to_string(),
-            )
-        } else {
-            None
-        },
-    };
-    if let Ok(mut stored) = state.status.lock() {
-        *stored = status.clone();
-    }
-    status
-}
-
-fn stop_xorein_sidecar(app: &AppHandle) {
-    let Some(state) = app.try_state::<XoreinSidecarState>() else {
-        return;
-    };
-    if let Ok(mut child) = state.child.lock() {
-        if let Some(child) = child.take() {
-            if signal_xorein_sidecar_for_shutdown(child.pid()) {
-                thread::sleep(SIDECAR_GRACEFUL_SHUTDOWN_WAIT);
-            }
-            let _ = child.kill();
-        }
-    }
-    if let Ok(mut status) = state.status.lock() {
-        status.running = false;
-        status.pid = None;
-    };
-}
-
-#[cfg(unix)]
-fn signal_xorein_sidecar_for_shutdown(pid: u32) -> bool {
-    if pid == 0 || pid > libc::pid_t::MAX as u32 {
-        return false;
-    }
-    let result = unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
-    result == 0
-}
-
-#[cfg(not(unix))]
-fn signal_xorein_sidecar_for_shutdown(_pid: u32) -> bool {
-    false
-}
-
-fn wait_for_authenticated_control_endpoint(timeout: Duration) -> String {
-    wait_for_authenticated_control_endpoint_with(
-        timeout,
-        read_xorein_control_endpoint,
-        read_xorein_control_token,
-    )
-}
-
-fn wait_for_authenticated_control_endpoint_with(
-    timeout: Duration,
-    mut read_endpoint: impl FnMut() -> String,
-    mut read_token: impl FnMut() -> String,
-) -> String {
-    let started = Instant::now();
-    loop {
-        let endpoint = read_endpoint();
-        let token = read_token();
-        if should_reuse_existing_xorein_endpoint(&endpoint, &token) {
-            return endpoint;
-        }
-        if started.elapsed() >= timeout {
-            return String::new();
-        }
-        thread::sleep(Duration::from_millis(100));
-    }
-}
-
-fn authenticated_runtime_ready_endpoint() -> Option<String> {
-    let endpoint = wait_for_authenticated_control_endpoint(SIDECAR_READY_EVENT_WAIT);
-    if endpoint.is_empty() {
-        None
-    } else {
-        Some(endpoint)
-    }
-}
-
-#[cfg(test)]
-fn authenticated_runtime_ready_endpoint_with(
-    timeout: Duration,
-    read_endpoint: impl FnMut() -> String,
-    read_token: impl FnMut() -> String,
-) -> Option<String> {
-    let endpoint = wait_for_authenticated_control_endpoint_with(timeout, read_endpoint, read_token);
-    if endpoint.is_empty() {
-        None
-    } else {
-        Some(endpoint)
-    }
+fn read_xorein_runtime_status() -> XoreinRuntimeConfig {
+    XoreinRuntimeConfig::from_endpoint(read_xorein_control_endpoint())
 }
 
 fn endpoint_socket_addr(endpoint: &str) -> Option<SocketAddr> {
@@ -559,6 +275,9 @@ fn request_xorein_control_api_inner_with_timeout(
         .ok_or_else(|| "xorein control endpoint is unavailable".to_string())?;
     let method = normalized_control_method(method)?;
     let path = normalized_control_path(path)?;
+    if !is_usable_control_token(token) {
+        return Err("xorein control token is unavailable or invalid".to_string());
+    }
     if method == "GET" && body.is_some() {
         return Err("xorein control GET requests cannot include a body".to_string());
     }
@@ -588,6 +307,9 @@ fn request_xorein_control_api_inner_with_timeout(
         "{method} {path} HTTP/1.1\r\nHost: {host}\r\nAccept: application/json\r\nConnection: close\r\nContent-Length: {}\r\n",
         body_bytes.len()
     );
+    request.push_str("Authorization: Bearer ");
+    request.push_str(token);
+    request.push_str("\r\n");
     if !body_bytes.is_empty() {
         request.push_str("Content-Type: application/json\r\n");
     }
@@ -827,13 +549,8 @@ fn decode_chunked_body(raw: &[u8]) -> Result<Vec<u8>, String> {
 }
 
 #[tauri::command]
-fn read_xorein_runtime_config(state: State<'_, XoreinSidecarState>) -> XoreinRuntimeConfig {
-    let status = state
-        .status
-        .lock()
-        .map(|status| status.clone())
-        .unwrap_or_default();
-    XoreinRuntimeConfig::from_status_with_endpoint(status, read_xorein_control_endpoint())
+fn read_xorein_runtime_config() -> XoreinRuntimeConfig {
+    XoreinRuntimeConfig::from_endpoint(read_xorein_control_endpoint())
 }
 
 #[tauri::command]
@@ -845,7 +562,8 @@ fn request_xorein_control_api(
     body: Option<serde_json::Value>,
 ) -> Result<XoreinControlApiResponse, String> {
     let endpoint = resolve_runtime_control_endpoint(endpoint, read_xorein_control_endpoint());
-    let response = request_xorein_control_api_inner(&endpoint, "", &method, &path, body)
+    let token = read_xorein_control_token();
+    let response = request_xorein_control_api_inner(&endpoint, &token, &method, &path, body)
         .map_err(|error| error.to_string())?;
     if should_emit_runtime_updated(&method, &path, response.status) {
         let _ = app.emit(RUNTIME_UPDATED_EVENT, path.trim());
@@ -854,7 +572,7 @@ fn request_xorein_control_api(
 }
 
 fn should_emit_runtime_updated(method: &str, path: &str, status: u16) -> bool {
-    if status < 200 || status >= 300 {
+    if !(200..300).contains(&status) {
         return false;
     }
     let Ok(method) = normalized_control_method(method) else {
@@ -879,7 +597,7 @@ fn should_emit_runtime_updated(method: &str, path: &str, status: u16) -> bool {
 }
 
 #[tauri::command]
-fn consume_pending_deeplink(state: State<'_, XoreinSidecarState>) -> Vec<String> {
+fn consume_pending_deeplink(state: State<'_, XoreinRuntimeState>) -> Vec<String> {
     state
         .pending_deeplink
         .lock()
@@ -889,7 +607,7 @@ fn consume_pending_deeplink(state: State<'_, XoreinSidecarState>) -> Vec<String>
 
 /// Forwards an aether:// deep-link URL received by the OS to the webview.
 fn forward_deeplink(app: &AppHandle, url: &str) {
-    if let Some(state) = app.try_state::<XoreinSidecarState>() {
+    if let Some(state) = app.try_state::<XoreinRuntimeState>() {
         if let Ok(mut pending) = state.pending_deeplink.lock() {
             pending.push_back(url.to_string());
         }
@@ -900,7 +618,7 @@ fn forward_deeplink(app: &AppHandle, url: &str) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .manage(XoreinSidecarState::default())
+        .manage(XoreinRuntimeState::default())
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             // When a second instance is launched with a deeplink arg, forward it.
             let url = args.get(1).cloned().unwrap_or_default();
@@ -913,10 +631,7 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .plugin(tauri_plugin_shell::init())
-        .on_window_event(|_window, _event| {
-            // Sidecar removed: no cleanup required on window close.
-        })
+        .plugin(tauri_plugin_process::init())
         .setup(|app| {
             // Register aether:// scheme for deep links.
             #[cfg(any(target_os = "linux", target_os = "windows"))]
@@ -931,7 +646,7 @@ pub fn run() {
                     if let Some(window) = app_handle.get_webview_window("main") {
                         let _ = window.set_focus();
                     }
-                    forward_deeplink(&app_handle, &url.to_string());
+                    forward_deeplink(&app_handle, url.as_ref());
                 }
             });
 
@@ -953,14 +668,11 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        authenticated_runtime_ready_endpoint_with, endpoint_socket_addr,
-        is_trusted_data_dir_for_reads, is_usable_control_token, normalized_control_method,
-        normalized_control_path, parse_control_http_response, read_regular_utf8_file,
-        request_xorein_control_api_inner_with_timeout, should_emit_runtime_updated,
-        resolve_runtime_control_endpoint, should_reuse_existing_xorein_endpoint,
-        signal_xorein_sidecar_for_shutdown, trusted_control_endpoint,
-        wait_for_authenticated_control_endpoint_with, xorein_control_ready_with_token,
-        XoreinRuntimeConfig, XoreinSidecarStatus,
+        endpoint_socket_addr, is_trusted_data_dir_for_reads, is_usable_control_token,
+        normalized_control_method, normalized_control_path, parse_control_http_response,
+        read_regular_utf8_file, request_xorein_control_api_inner_with_timeout,
+        resolve_runtime_control_endpoint, should_emit_runtime_updated, trusted_control_endpoint,
+        xorein_control_ready_with_token, XoreinRuntimeConfig,
     };
     use std::io::{Read, Write};
     use std::net::TcpListener;
@@ -991,7 +703,7 @@ mod tests {
             let request = String::from_utf8_lossy(&buf[..n]);
             let expected_auth = format!("Authorization: Bearer {expected_token}\r\n");
             let has_auth = request.contains("Authorization: Bearer ");
-            let (status, body) = if !has_auth || request.contains(&expected_auth) {
+            let (status, body) = if has_auth && request.contains(&expected_auth) {
                 ("200 OK", "{}")
             } else {
                 (
@@ -1064,14 +776,42 @@ mod tests {
     #[test]
     fn native_control_request_emits_runtime_updates_only_for_mutations() {
         assert!(!should_emit_runtime_updated("GET", "/v1/state", 200));
-        assert!(!should_emit_runtime_updated("POST", "/v1/servers/discover", 200));
-        assert!(!should_emit_runtime_updated("POST", "/v1/messages/search", 200));
-        assert!(!should_emit_runtime_updated("POST", "/v1/notifications/search", 200));
-        assert!(!should_emit_runtime_updated("POST", "/v1/mentions/search", 200));
-        assert!(!should_emit_runtime_updated("POST", "/v1/identities/backup", 200));
+        assert!(!should_emit_runtime_updated(
+            "POST",
+            "/v1/servers/discover",
+            200
+        ));
+        assert!(!should_emit_runtime_updated(
+            "POST",
+            "/v1/messages/search",
+            200
+        ));
+        assert!(!should_emit_runtime_updated(
+            "POST",
+            "/v1/notifications/search",
+            200
+        ));
+        assert!(!should_emit_runtime_updated(
+            "POST",
+            "/v1/mentions/search",
+            200
+        ));
+        assert!(!should_emit_runtime_updated(
+            "POST",
+            "/v1/identities/backup",
+            200
+        ));
         assert!(should_emit_runtime_updated("POST", "/v1/servers", 200));
-        assert!(should_emit_runtime_updated("PATCH", "/v1/messages/123", 200));
-        assert!(should_emit_runtime_updated("DELETE", "/v1/messages/123", 200));
+        assert!(should_emit_runtime_updated(
+            "PATCH",
+            "/v1/messages/123",
+            200
+        ));
+        assert!(should_emit_runtime_updated(
+            "DELETE",
+            "/v1/messages/123",
+            200
+        ));
         assert!(!should_emit_runtime_updated("POST", "/v1/servers", 500));
     }
 
@@ -1192,7 +932,6 @@ mod tests {
             control_endpoint: "http://127.0.0.1:7711".to_string(),
             control_ready: true,
             data_dir: Some("/tmp/xorein".to_string()),
-            sidecar: XoreinSidecarStatus::default(),
         })
         .expect("runtime config should serialize");
 
@@ -1202,49 +941,27 @@ mod tests {
     }
 
     #[test]
-    fn runtime_config_uses_sidecar_endpoint_when_primary_is_missing() {
-        let config = XoreinRuntimeConfig::from_status_with_endpoint(
-            XoreinSidecarStatus {
-                managed: true,
-                running: true,
-                pid: Some(42),
-                data_dir: Some("/tmp/xorein".to_string()),
-                control_endpoint: "http://127.0.0.1:7811".to_string(),
-                last_error: None,
-            },
-            String::new(),
-        );
+    fn runtime_config_accepts_only_loopback_control_endpoints() {
+        let config = XoreinRuntimeConfig::from_endpoint("http://127.0.0.1:7811".to_string());
 
         assert_eq!(config.control_endpoint, "http://127.0.0.1:7811");
-        assert_eq!(config.sidecar.control_endpoint, "http://127.0.0.1:7811");
     }
 
     #[test]
-    fn runtime_config_normalizes_stale_sidecar_endpoint_to_resolved_primary() {
-        let config = XoreinRuntimeConfig::from_status_with_endpoint(
-            XoreinSidecarStatus {
-                managed: true,
-                running: true,
-                pid: Some(42),
-                data_dir: Some("/tmp/xorein".to_string()),
-                control_endpoint: "http://127.0.0.1:1234".to_string(),
-                last_error: None,
-            },
-            "http://127.0.0.1:7711".to_string(),
-        );
+    fn runtime_config_rejects_non_loopback_control_endpoints() {
+        let config = XoreinRuntimeConfig::from_endpoint("http://192.0.2.1:7711".to_string());
 
-        assert_eq!(config.control_endpoint, "http://127.0.0.1:7711");
-        assert_eq!(config.sidecar.control_endpoint, "http://127.0.0.1:7711");
+        assert_eq!(config.control_endpoint, "");
     }
 
     #[test]
-    fn resolve_runtime_control_endpoint_prefers_primary_then_sidecar() {
+    fn resolve_runtime_control_endpoint_uses_only_the_authenticated_runtime_endpoint() {
         assert_eq!(
             resolve_runtime_control_endpoint(
                 "http://127.0.0.1:7711".to_string(),
                 "http://127.0.0.1:7811".to_string()
             ),
-            "http://127.0.0.1:7711"
+            "http://127.0.0.1:7811"
         );
         assert_eq!(
             resolve_runtime_control_endpoint(String::new(), "http://127.0.0.1:7811".to_string()),
@@ -1266,81 +983,16 @@ mod tests {
     }
 
     #[test]
-    fn native_runtime_readiness_accepts_loopback_without_token() {
+    fn native_runtime_readiness_accepts_loopback_with_valid_token() {
         let token = "abcdefghijklmnopqrstuvwxyzABCDEF_0123456789-";
         let endpoint = spawn_control_probe_server(token);
-        assert!(xorein_control_ready_with_token(&endpoint, ""));
         assert!(xorein_control_ready_with_token(&endpoint, token));
 
         let endpoint = spawn_control_probe_server(token);
-        assert!(xorein_control_ready_with_token(
+        assert!(!xorein_control_ready_with_token(
             &endpoint,
             "abcdefghijklmnopqrstuvwxyzABCDEF_0123456789_"
         ));
-    }
-
-    #[test]
-    fn sidecar_reuse_accepts_loopback_without_token() {
-        let token = "abcdefghijklmnopqrstuvwxyzABCDEF_0123456789-";
-        let endpoint = spawn_control_probe_server(token);
-
-        assert!(should_reuse_existing_xorein_endpoint(&endpoint, token));
-        assert!(should_reuse_existing_xorein_endpoint(&endpoint, ""));
-        assert!(!should_reuse_existing_xorein_endpoint("127.0.0.1:9", token));
-    }
-
-    #[test]
-    fn sidecar_wait_returns_loopback_endpoint_without_token() {
-        let token = "abcdefghijklmnopqrstuvwxyzABCDEF_0123456789-";
-        let endpoint = spawn_control_probe_server(token);
-        assert_eq!(
-            wait_for_authenticated_control_endpoint_with(
-                Duration::from_millis(10),
-                || endpoint.clone(),
-                || String::new()
-            ),
-            endpoint
-        );
-
-        let endpoint = spawn_control_probe_server(token);
-        assert_eq!(
-            wait_for_authenticated_control_endpoint_with(
-                Duration::from_millis(10),
-                || endpoint.clone(),
-                || token.to_string()
-            ),
-            endpoint
-        );
-    }
-
-    #[test]
-    fn runtime_ready_event_payload_accepts_loopback_without_token() {
-        let token = "abcdefghijklmnopqrstuvwxyzABCDEF_0123456789-";
-        let endpoint = spawn_control_probe_server(token);
-        assert_eq!(
-            authenticated_runtime_ready_endpoint_with(
-                Duration::from_millis(10),
-                || endpoint.clone(),
-                || String::new()
-            )
-            .as_deref(),
-            Some(endpoint.as_str())
-        );
-
-        let endpoint = spawn_control_probe_server(token);
-        assert_eq!(
-            authenticated_runtime_ready_endpoint_with(
-                Duration::from_millis(10),
-                || endpoint.clone(),
-                || token.to_string()
-            ),
-            Some(endpoint.as_str())
-        );
-    }
-
-    #[test]
-    fn sidecar_shutdown_signal_rejects_invalid_pid() {
-        assert!(!signal_xorein_sidecar_for_shutdown(0));
     }
 
     #[test]

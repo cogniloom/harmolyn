@@ -2,8 +2,17 @@ import { describe, expect, it } from 'vitest';
 import { resolveAvatarSrc } from './avatar';
 
 describe('resolveAvatarSrc', () => {
-  it('keeps safe remote raster avatars', () => {
-    expect(resolveAvatarSrc('https://example.com/avatar.png', 'Neo')).toBe('https://example.com/avatar.png');
+  it('rejects remote raster avatars so peer profile data cannot trigger network requests', () => {
+    expect(resolveAvatarSrc('https://example.com/avatar.png', 'Neo')).toMatch(/^data:image\/svg\+xml;utf8,/);
+  });
+
+  it('keeps bounded local raster data avatars', () => {
+    expect(resolveAvatarSrc('data:image/png;base64,AA==', 'Neo')).toBe('data:image/png;base64,AA==');
+  });
+
+  it('rejects oversized local avatar data', () => {
+    const oversized = `data:image/png;base64,${'A'.repeat(512 * 1024)}`;
+    expect(resolveAvatarSrc(oversized, 'Neo')).toMatch(/^data:image\/svg\+xml;utf8,/);
   });
 
   it('falls back for blob and svg avatars', () => {

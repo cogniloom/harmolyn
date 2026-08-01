@@ -147,22 +147,22 @@ try {
     console.log('  NOTE: announce group aborted — remaining announce assertions skipped');
   }
 
-  // ── 4. Server rename via Server Settings gear ────────────────────────────
+  // ── 4. Space rename via Space Settings gear ──────────────────────────────
   let serverName = 'Test Hub';
   try {
-    await s.step('alice renames server to "Test Hub 2" in Server Settings', async () => {
-      await rail(alice).getByRole('button', { name: 'Server Settings' }).click();
+    await s.step('alice renames the Space to "Test Hub 2" in Space Settings', async () => {
+      await rail(alice).getByRole('button', { name: 'Space Settings' }).click();
       const nameInput = alice.page.locator('#server-name-input');
       await nameInput.waitFor({ timeout: 10000 });
       await nameInput.fill('Test Hub 2');
       await alice.page.getByRole('button', { name: 'Save changes' }).click();
       await alice.page.keyboard.press('Escape');
-      await present(alice.page.getByRole('button', { name: 'Server: Test Hub 2' }), 'alice rail server rename', 10000);
+      await present(alice.page.getByRole('button', { name: 'Space: Test Hub 2' }), 'alice rail Space rename', 10000);
     });
     serverName = 'Test Hub 2';
     await s.step('bob sees new server name "Test Hub 2" (<10s)', async () => {
       const t0 = Date.now();
-      await present(bob.page.getByRole('button', { name: 'Server: Test Hub 2' }), 'bob rail server rename', 10000);
+      await present(bob.page.getByRole('button', { name: 'Space: Test Hub 2' }), 'bob rail Space rename', 10000);
       console.log(`  server-rename propagation A->B: ${Date.now() - t0}ms`);
     });
     await s.shot(bob, 'bob-server-renamed');
@@ -191,10 +191,10 @@ try {
   // ── 6. Bob leaves the server (browser confirm) ───────────────────────────
   let bobLeft = false;
   try {
-    await s.step('bob leaves the server (Server menu > Leave Server + confirm)', async () => {
-      await rail(bob).getByRole('button', { name: 'Server menu' }).click();
-      await bob.page.getByRole('menuitem', { name: 'Leave Server' }).click();
-      await absent(bob.page.getByRole('button', { name: `Server: ${serverName}` }), 'bob server rail entry', 15000);
+    await s.step('bob leaves the Space (Space menu > Leave Space + confirm)', async () => {
+      await rail(bob).getByRole('button', { name: 'Space menu' }).click();
+      await bob.page.getByRole('menuitem', { name: 'Leave Space' }).click();
+      await absent(bob.page.getByRole('button', { name: `Space: ${serverName}` }), 'bob Space rail entry', 15000);
     });
     bobLeft = true;
     await s.shot(bob, 'bob-after-leave');

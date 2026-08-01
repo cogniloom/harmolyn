@@ -36,10 +36,12 @@ import {
   clearPreferredControlEndpoint,
   connectToControlEndpoint,
   connectToDefaultRuntime,
+  type ControlEndpointTestResult,
   DEFAULT_CONTROL_ENDPOINT,
   normalizeLaunchControlEndpoint,
   readPreferredControlEndpoint,
   storePreferredControlEndpoint,
+  testControlEndpoint,
 } from '@/lib/xoreinControl';
 import { consumePendingNativeDeepLinks } from '@/lib/xoreinControl';
 import { useRuntimeMutations } from '@/hooks/runtime/useRuntimeMutations';
@@ -336,6 +338,9 @@ export const Layout: React.FC = () => {
   const [nodeEndpointDraft, setNodeEndpointDraft] = useState(() => initialPreferredEndpoint || DEFAULT_CONTROL_ENDPOINT || 'http://127.0.0.1:7711');
   const [nodeLaunchFeedback, setNodeLaunchFeedback] = useState<string | null>(null);
   const [nodeLaunchBusy, setNodeLaunchBusy] = useState(false);
+  const [nodeTestResult, setNodeTestResult] = useState<ControlEndpointTestResult | null>(null);
+  const [nodeTestBusy, setNodeTestBusy] = useState(false);
+  const nodeLaunchInteractionRef = useRef(false);
 
   useEffect(() => {
     setVoiceUi((prev) => ({
@@ -350,23 +355,22 @@ export const Layout: React.FC = () => {
   }, [state.connectedVoiceChannelId]);
 
   useEffect(() => {
-    if (shellData.runtimeSnapshot) {
-      setShowNodeLaunch(false);
-    }
-  }, [shellData.runtimeSnapshot]);
-
-  useEffect(() => {
     if (bootstrapState.status !== 'failed' || shellData.runtimeSnapshot) {
       return;
     }
     setShowNodeLaunch(true);
-    setNodeLaunchFeedback(bootstrapState.message);
-    setNodeEndpointDraft(
-      readPreferredControlEndpoint()
-      || shellData.runtimeSnapshot?.control_endpoint
-      || DEFAULT_CONTROL_ENDPOINT
-      || 'http://127.0.0.1:7711',
-    );
+    // Bootstrap retries may emit several failure snapshots. Once the user has
+    // opened or edited this screen, never replace their draft/feedback from a
+    // background retry. In particular, a newly arrived runtime snapshot must
+    // not dismiss the manually opened Switch Node screen.
+    if (!nodeLaunchInteractionRef.current) {
+      setNodeLaunchFeedback(bootstrapState.message);
+      setNodeEndpointDraft(
+        readPreferredControlEndpoint()
+        || DEFAULT_CONTROL_ENDPOINT
+        || 'http://127.0.0.1:7711',
+      );
+    }
   }, [bootstrapState.message, bootstrapState.status, shellData.runtimeSnapshot]);
 
   useEffect(() => {
@@ -565,14 +569,14 @@ export const Layout: React.FC = () => {
 
   const handleCopyInvite = useCallback(async () => {
     const serverId = state.activeServerId;
-    if (!serverId || serverId === 'home' || serverId === 'explore') { toast.error('No server selected.'); return; }
+    if (!serverId || serverId === 'home' || serverId === 'explore') { toast.error('No Space selected.'); return; }
     // Mint from the live native store — the runtime snapshot strips invite_secret,
     // so a snapshot-derived link would carry no capability token and be rejected.
     const link = runtimeMutations.inviteLink?.(serverId) ?? '';
     if (link && await copyTextToClipboardSafely(link)) {
       toast.success('Invite link copied to clipboard.', 'Invite');
     } else {
-      toast.error('Only the server owner can mint invite links (or invites are revoked).');
+      toast.error('Only the Space Owner can create invite links (or invites are revoked).');
     }
   }, [state.activeServerId, runtimeMutations, toast]);
 
@@ -580,7 +584,7 @@ export const Layout: React.FC = () => {
     const serverId = state.activeServerId;
     if (serverId === 'home' || serverId === 'explore') return;
     await runtimeMutations.leaveServer?.(serverId);
-    toast.success('You left the server.', 'Left server');
+    toast.success('You left the Space.', 'Left Space');
     setState((prev) => ({ ...prev, activeServerId: 'home', activeChannelId: resolveDefaultChannelId('home', shellData), viewMode: 'chat', mobileMenuOpen: false }));
   }, [runtimeMutations, state.activeServerId, shellData, toast]);
 
@@ -588,7 +592,7 @@ export const Layout: React.FC = () => {
     const serverId = state.activeServerId;
     if (serverId === 'home' || serverId === 'explore') return;
     await runtimeMutations.deleteServer?.(serverId);
-    toast.success('Server deleted.', 'Deleted');
+    toast.success('Space deleted.', 'Deleted');
     setState((prev) => ({ ...prev, activeServerId: 'home', activeChannelId: resolveDefaultChannelId('home', shellData), viewMode: 'chat', mobileMenuOpen: false }));
   }, [runtimeMutations, state.activeServerId, shellData, toast]);
 
@@ -613,30 +617,70 @@ export const Layout: React.FC = () => {
   };
 
   const openNodeLaunch = useCallback(() => {
+    nodeLaunchInteractionRef.current = true;
     setShowNodeLaunch(true);
+    setNodeLaunchFeedback(null);
+    setNodeTestResult(null);
   }, []);
+
+  const handleNodeEndpointChange = useCallback((value: string) => {
+    nodeLaunchInteractionRef.current = true;
+    setNodeEndpointDraft(value);
+    setNodeTestResult(null);
+    setNodeLaunchFeedback(null);
+  }, []);
+
+  const handleTestNode = useCallback(async () => {
+    setNodeTestBusy(true);
+    setNodeTestResult(null);
+    try {
+      setNodeTestResult(await testControlEndpoint(nodeEndpointDraft));
+    } finally {
+      setNodeTestBusy(false);
+    }
+  }, [nodeEndpointDraft]);
 
   const handleConnectNode = useCallback(async () => {
     const normalized = normalizeLaunchControlEndpoint(nodeEndpointDraft);
     if (!normalized) {
-      setNodeLaunchFeedback('Enter a trusted local endpoint such as http://127.0.0.1:7711.');
+      setNodeTestResult(await testControlEndpoint(nodeEndpointDraft));
       return;
     }
 
     setNodeLaunchBusy(true);
-    storePreferredControlEndpoint(normalized);
-    setNodeLaunchFeedback(`Connecting to ${normalized} via the local bridge...`);
+    setNodeTestResult(null);
+    setNodeLaunchFeedback(null);
+    const previousEndpoint = readPreferredControlEndpoint();
 
     try {
+      // The native bridge authorizes the selected loopback endpoint. Stage the
+      // selection before probing so first-time local connections are checked
+      // through that authenticated bridge, then restore the previous choice if
+      // the probe fails.
+      storePreferredControlEndpoint(normalized);
+      const testResult = await testControlEndpoint(normalized);
+      setNodeTestResult(testResult);
+      if (testResult.status !== 'reachable') {
+        if (previousEndpoint) storePreferredControlEndpoint(previousEndpoint);
+        else clearPreferredControlEndpoint();
+        return;
+      }
+
+      setNodeLaunchFeedback(`Connecting to ${normalized}...`);
       const snapshot = await connectToControlEndpoint(normalized);
       if (snapshot) {
+        nodeLaunchInteractionRef.current = false;
         setShowNodeLaunch(false);
         setShowWelcome(false);
         setState((prev) => ({ ...prev, showSettings: false }));
         return;
       }
+      if (previousEndpoint) storePreferredControlEndpoint(previousEndpoint);
+      else clearPreferredControlEndpoint();
       setNodeLaunchFeedback(`Unable to reach ${normalized}. Check the node and try again.`);
     } catch (error) {
+      if (previousEndpoint) storePreferredControlEndpoint(previousEndpoint);
+      else clearPreferredControlEndpoint();
       setNodeLaunchFeedback(
         error instanceof Error && error.message.trim()
           ? error.message.trim()
@@ -650,11 +694,13 @@ export const Layout: React.FC = () => {
   const handleUseDefaultNode = useCallback(async () => {
     setNodeLaunchBusy(true);
     setNodeLaunchFeedback(null);
+    setNodeTestResult(null);
     clearPreferredControlEndpoint();
 
     try {
       const snapshot = await connectToDefaultRuntime();
       if (snapshot) {
+        nodeLaunchInteractionRef.current = false;
         setShowNodeLaunch(false);
         setShowWelcome(false);
         setState((prev) => ({ ...prev, showSettings: false }));
@@ -669,8 +715,10 @@ export const Layout: React.FC = () => {
   }, []);
 
   const handleContinueOffline = useCallback(() => {
+    nodeLaunchInteractionRef.current = false;
     setShowNodeLaunch(false);
     setNodeLaunchFeedback(null);
+    setNodeTestResult(null);
   }, []);
 
   const showMemberSidebar = !isDM && Boolean(activeServer) && !isExplore;
@@ -958,8 +1006,11 @@ export const Layout: React.FC = () => {
           endpoint={nodeEndpointDraft}
           feedback={nodeLaunchFeedback}
           busy={nodeLaunchBusy}
+          testBusy={nodeTestBusy}
+          testResult={nodeTestResult}
           currentNodeLabel={shellData.runtimeSnapshot?.control_endpoint || initialPreferredEndpoint || DEFAULT_CONTROL_ENDPOINT || ''}
-          onEndpointChange={setNodeEndpointDraft}
+          onEndpointChange={handleNodeEndpointChange}
+          onTest={() => { void handleTestNode(); }}
           onConnect={() => { void handleConnectNode(); }}
           onUseDefault={() => { void handleUseDefaultNode(); }}
           onContinueOffline={handleContinueOffline}
@@ -1045,7 +1096,7 @@ export const Layout: React.FC = () => {
 
       {!hasIdentity && (
         <div className="fixed bottom-0 left-0 right-0 z-[100] flex items-center justify-between gap-4 px-6 py-3 bg-bg-1/95 backdrop-blur-sm border-t border-white/10">
-          <span className="text-xs text-white/60 tracking-wide">You're browsing as a guest. Create a free account to post, react and join servers.</span>
+          <span className="text-xs text-white/60 tracking-wide">You're browsing as a guest. Create a free account to post, react, and join Spaces.</span>
           <div className="flex items-center gap-2 flex-shrink-0">
             <button
               onClick={() => setAuthScreen('login')}
@@ -1216,7 +1267,7 @@ export const Layout: React.FC = () => {
                       onToggleMemberList={() => setState((s) => ({ ...s, memberListCollapsed: !s.memberListCollapsed }))}
                       onToggleLayout={toggleMessageLayout}
                       isDM={isDM}
-                      securityMode={shellData.sessionSnapshot?.securityMode}
+                      securityMode={isDM ? shellData.sessionSnapshot?.securityMode : activeServer?.securityMode}
                       headerControl={kindSwitcher}
                       hasIdentity={hasIdentity}
                       onOpenAuth={() => setAuthScreen('register')}

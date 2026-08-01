@@ -89,11 +89,15 @@ describe('voice presence handshake roster symmetry', () => {
   });
 
   it('a responder who is NOT in the channel is not added to the roster', async () => {
-    registerPeerSync(fakePeerSync({ ok: true, in_channel: false, muted: false, video: false, screen_sharing: false }));
+    const peerSync = fakePeerSync({ ok: true, in_channel: false, muted: false, video: false, screen_sharing: false });
+    registerPeerSync(peerSync);
     const session = new VoiceSession(CHAN, {} as never, ME, {});
     await session.start();
     try {
       expect(Object.keys(voiceParticipants(CHAN))).toEqual([ME]);
+      // One initial request plus one race-closing retry; a stable non-participant
+      // is not probed in every retry round.
+      await vi.waitFor(() => expect(peerSync.requestScope).toHaveBeenCalledTimes(2));
     } finally {
       await session.stop();
     }

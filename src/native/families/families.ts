@@ -5,7 +5,7 @@ export const PROTOCOLS = {
   peer:     '/aether/peer/0.1.0',
   identity: '/aether/identity/0.1.0',
   presence: '/aether/presence/0.2.0',
-  chat:     '/aether/chat/0.1.0',
+  chat:     '/aether/chat/0.2.0',
   dm:       '/aether/dm/0.1.0',
   friends:  '/aether/friends/0.1.0',
   notify:   '/aether/notify/0.1.0',
@@ -24,6 +24,10 @@ export const RECOVERY_OPS = {
   request: 'recovery.request',
   // guardian → requester (after manual consent): the backup blob.
   deliver: 'recovery.deliver',
+  // Bounded fragments of an encrypted account-state snapshot. Identity blobs
+  // remain in store/deliver so a missing fragment never destroys key recovery.
+  storeChunk: 'recovery.store.chunk.v1',
+  deliverChunk: 'recovery.deliver.chunk.v1',
 } as const;
 
 // ── Presence ───────────────────────────────────────────────────────────────

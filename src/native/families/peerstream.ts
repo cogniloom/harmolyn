@@ -43,6 +43,45 @@ import {
 import { muxRequest, openFamilyStream, MuxStreamError } from './streammux.js';
 import { resolveFeatureFlag } from '../../config/featureFlags.js';
 
+// The mux path has its own response deadline. Its one-shot compatibility retry
+// needs an independent deadline too: a connected process can be suspended,
+// partitioned, or maliciously remain silent after accepting a stream. Without
+// this bound, callers never reach peer routing or durable inbox fallback.
+export const SINGLE_SHOT_RESPONSE_TIMEOUT_MS = 6_000;
+
+// The browser runtime is a full client role. Xorein's Go handlers negotiate
+// operations from this field before dispatch; omitting it made browser→native
+// requests look like a peer with zero capabilities and fail before the payload
+// reached peer.exchange/sync/etc.
+const CLIENT_CAPABILITIES = [
+  'cap.chat',
+  'cap.dm',
+  'cap.voice',
+  'cap.identity',
+  'cap.manifest',
+  'cap.friends',
+  'cap.presence',
+  'cap.notify',
+  'cap.group-dm',
+  'cap.sync',
+  'cap.tree',
+  'cap.crowd',
+  'cap.channel-aad-v2',
+  'cap.mediashield',
+  'cap.rbac',
+  'cap.moderation',
+  'cap.peer.transport',
+  // Capability to USE a relay's opaque store-and-forward service. The browser
+  // does not claim the relay role; the receiving node still advertises and
+  // enforces that role independently through peer.info and its wired queue.
+  'cap.peer.relay',
+  'mode.seal',
+  'mode.tree',
+  'mode.crowd',
+  'mode.channel',
+  'mode.mediashield',
+] as const;
+
 /**
  * Send one request to a peer on a given protocol and read its response.
  *
@@ -76,7 +115,12 @@ export async function callFamily(
 ): Promise<PeerStreamResponse> {
   const ma = typeof peer === 'string' ? multiaddr(peer) : peer;
   const reqId = requestId ?? crypto.randomUUID();
-  const reqBytes = encodePeerStreamRequest({ operation, payload, requestId: reqId });
+  const reqBytes = encodePeerStreamRequest({
+    operation,
+    payload,
+    advertisedCaps: [...CLIENT_CAPABILITIES],
+    requestId: reqId,
+  });
   const framed = frameMessage(reqBytes);
   const t0 = debugLatency() ? performance.now() : 0;
 
@@ -96,11 +140,27 @@ export async function callFamily(
 
   // Legacy single-shot: open, send, half-close, read one framed response.
   const stream = await openFamilyStream(node, ma, protocol);
-  stream.send(framed);
-  await stream.sendCloseWrite();
+  let timeout: ReturnType<typeof setTimeout> | null = null;
+  try {
+    stream.send(framed);
+    await stream.sendCloseWrite();
 
-  const msg = await readFramedMessage(stream);
-  if (!msg) throw new Error('peerstream: empty or malformed response');
-  if (t0) console.debug(`[lat] call ${operation} oneshot rtt=${(performance.now() - t0).toFixed(1)}ms at=${Date.now()}`);
-  return decodePeerStreamResponse(msg);
+    const msg = await Promise.race([
+      readFramedMessage(stream),
+      new Promise<never>((_resolve, reject) => {
+        timeout = setTimeout(() => {
+          const error = new Error(
+            `peerstream: no single-shot response within ${SINGLE_SHOT_RESPONSE_TIMEOUT_MS}ms`,
+          );
+          try { stream.abort?.(error); } catch { /* already closed */ }
+          reject(error);
+        }, SINGLE_SHOT_RESPONSE_TIMEOUT_MS);
+      }),
+    ]);
+    if (!msg) throw new Error('peerstream: empty or malformed response');
+    if (t0) console.debug(`[lat] call ${operation} oneshot rtt=${(performance.now() - t0).toFixed(1)}ms at=${Date.now()}`);
+    return decodePeerStreamResponse(msg);
+  } finally {
+    if (timeout !== null) clearTimeout(timeout);
+  }
 }

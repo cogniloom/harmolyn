@@ -80,9 +80,16 @@ import i18n, { SUPPORTED_LANGUAGES, isRtlLocale } from '@/i18n';
 import { canCopyTextToClipboardSafely, copyTextToClipboardSafely } from '@/components/contextMenuUtils';
 import { resolveAvatarSrc } from '@/lib/avatar';
 import { useEscapeKey } from '@/hooks/useEscapeKey';
-import { safeParseUrl } from '@/lib/browserLocation';
 import type { XoreinRuntimeSnapshot } from '@/types';
 import { generateTheme } from '@/utils/themeGenerator';
+import {
+  autoUpdateEnabled,
+  checkForAppUpdate,
+  downloadAppUpdate,
+  pendingUpdateRestartVersion,
+  restartAfterAppUpdate,
+  setAutoUpdateEnabled,
+} from '@/lib/appUpdater';
 
 // Minimal Web Speech API typings (not part of the standard DOM lib).
 interface SpeechRecognitionResultLike {
@@ -119,7 +126,7 @@ interface SettingsScreenProps {
   onSetBgSeed?: (seed: string) => void;
 }
 
-type SettingsSection = 'account' | 'privacy' | 'mfa' | 'authorized' | 'network' | 'appearance' | 'notifications' | 'accessibility' | 'mobile' | 'streamer' | 'audio-video' | 'about';
+type SettingsSection = 'account' | 'privacy' | 'recovery' | 'authorized' | 'network' | 'appearance' | 'notifications' | 'accessibility' | 'mobile' | 'streamer' | 'audio-video' | 'about';
 type FeedbackTone = 'error' | 'info' | 'success';
 
 interface FeedbackState {
@@ -155,7 +162,7 @@ const AUTH_TOKEN_STORAGE_KEYS = [
   'xorein:control-token',
 ] as const;
 
-const SOURCE_URL = import.meta.env.VITE_SOURCE_URL ?? 'https://github.com/xorein/hybrid';
+const SOURCE_URL = import.meta.env.VITE_SOURCE_URL ?? 'https://github.com/cogniloom/harmolyn';
 const APP_VERSION = __APP_VERSION__;
 const LICENSE_URL = 'https://www.gnu.org/licenses/agpl-3.0.html';
 const SPEC_LICENSE_URL = 'https://creativecommons.org/licenses/by-sa/4.0/';
@@ -251,7 +258,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
           <div className="micro-label text-white/20 px-3 mb-3">User settings</div>
           <SettingsItem icon={<User size={16} />} label="My Account" active={activeSection === 'account'} onClick={() => setActiveSection('account')} />
           <SettingsItem icon={<Shield size={16} />} label="Privacy & Safety" active={activeSection === 'privacy'} onClick={() => setActiveSection('privacy')} />
-          <SettingsItem icon={<Lock size={16} />} label="Security (MFA)" active={activeSection === 'mfa'} onClick={() => setActiveSection('mfa')} />
+          <SettingsItem icon={<Lock size={16} />} label="Backup & Recovery" active={activeSection === 'recovery'} onClick={() => setActiveSection('recovery')} />
           <SettingsItem icon={<Key size={16} />} label="Authorized Hubs" active={activeSection === 'authorized'} onClick={() => setActiveSection('authorized')} />
           <SettingsItem icon={<Globe size={16} />} label="Network" active={activeSection === 'network'} onClick={() => setActiveSection('network')} />
 
@@ -281,9 +288,9 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
       <div className="flex-1 overflow-y-auto bg-bg-2 relative">
         <div className="absolute inset-0 grid-overlay opacity-30 pointer-events-none" />
         <div className="max-w-[640px] mx-auto py-12 px-6 md:px-10">
-          {activeSection === 'account' && <AccountSection user={user} showFeedback={showFeedback} onOpenMfa={() => setActiveSection('mfa')} />}
+          {activeSection === 'account' && <AccountSection user={user} showFeedback={showFeedback} onOpenRecovery={() => setActiveSection('recovery')} />}
           {activeSection === 'privacy' && <PrivacySection showFeedback={showFeedback} />}
-          {activeSection === 'mfa' && <MFASection showFeedback={showFeedback} />}
+          {activeSection === 'recovery' && <RecoverySection showFeedback={showFeedback} />}
           {activeSection === 'authorized' && <AuthorizedSection user={user} showFeedback={showFeedback} />}
           {activeSection === 'network' && <NetworkSection runtimeSnapshot={runtimeSnapshot} showFeedback={showFeedback} registerRelayMutation={registerRelayMutation} removeRelayMutation={removeRelayMutation} onOpenNodeLaunch={onOpenNodeLaunch} />}
           {activeSection === 'appearance' && (
@@ -438,7 +445,7 @@ async function fileToAvatarDataUri(file: File, size = 256): Promise<string> {
   return canvas.toDataURL('image/jpeg', 0.85);
 }
 
-const AccountSection: React.FC<{ user: UserType; showFeedback: (tone: FeedbackTone, message: string) => void; onOpenMfa: () => void }> = ({ user, showFeedback, onOpenMfa }) => {
+const AccountSection: React.FC<{ user: UserType; showFeedback: (tone: FeedbackTone, message: string) => void; onOpenRecovery: () => void }> = ({ user, showFeedback, onOpenRecovery }) => {
   const snapshot = useRuntimeSnapshot();
   const peerId = snapshot?.identity?.peer_id?.trim() ?? '';
   // Prefer the native engine's display_name as the source of truth for the nickname
@@ -461,7 +468,6 @@ const AccountSection: React.FC<{ user: UserType; showFeedback: (tone: FeedbackTo
   const [draft, setDraft] = useState('');
   const [editBusy, setEditBusy] = useState(false);
   const [avatarEditOpen, setAvatarEditOpen] = useState(false);
-  const [avatarUrlInput, setAvatarUrlInput] = useState('');
   const [avatarBusy, setAvatarBusy] = useState(false);
   const avatarFileRef = useRef<HTMLInputElement>(null);
 
@@ -497,9 +503,8 @@ const AccountSection: React.FC<{ user: UserType; showFeedback: (tone: FeedbackTo
     try {
       await createIdentityMutation.mutateAsync({ displayName, bio: bioText, avatar });
       updateProfile({ avatarUrl: avatar });
-      showFeedback('success', 'Avatar updated — it’s now visible to everyone you talk to.');
+      showFeedback('success', 'Avatar updated — it is now visible to everyone you talk to.');
       setAvatarEditOpen(false);
-      setAvatarUrlInput('');
     } catch (e) {
       showFeedback('error', e instanceof Error ? e.message : 'Failed to update avatar.');
     } finally {
@@ -525,13 +530,6 @@ const AccountSection: React.FC<{ user: UserType; showFeedback: (tone: FeedbackTo
     }
   };
 
-  const saveAvatarUrl = async () => {
-    const trimmed = avatarUrlInput.trim();
-    if (!trimmed) { showFeedback('error', 'Enter an image URL.'); return; }
-    if (!isValidImageUrl(trimmed)) { showFeedback('error', 'Enter a valid https:// image URL or data:image/ URL. SVG is not accepted.'); return; }
-    await commitAvatar(trimmed);
-  };
-
   return (
     <>
       <header className="mb-10">
@@ -545,7 +543,7 @@ const AccountSection: React.FC<{ user: UserType; showFeedback: (tone: FeedbackTo
         </div>
         <div className="px-6 pb-6 -mt-10 flex flex-col md:flex-row items-start md:items-end justify-between gap-5">
           <div className="flex flex-col md:flex-row items-center md:items-end gap-5">
-            <button type="button" aria-label="Change avatar image" className="w-[100px] h-[100px] rounded-r2 border-[6px] border-bg-2 bg-bg-1 overflow-hidden relative group cursor-pointer shadow-xl p-0" onClick={() => { setAvatarUrlInput(''); setAvatarEditOpen((v) => !v); }}>
+            <button type="button" aria-label="Change avatar image" className="w-[100px] h-[100px] rounded-r2 border-[6px] border-bg-2 bg-bg-1 overflow-hidden relative group cursor-pointer shadow-xl p-0" onClick={() => setAvatarEditOpen((v) => !v)}>
               <img src={avatarSrc} className="w-full h-full object-cover group-hover:opacity-40 transition-all duration-500" alt="" />
               <div className="absolute inset-0 flex flex-col items-center justify-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                 <Camera size={18} className="text-white" />
@@ -563,7 +561,7 @@ const AccountSection: React.FC<{ user: UserType; showFeedback: (tone: FeedbackTo
 
         <input ref={avatarFileRef} type="file" accept="image/png,image/jpeg,image/gif,image/webp" className="hidden" onChange={(e) => { void onPickAvatarFile(e); }} />
 
-        {/* Avatar editor: pick a local file (primary) or paste a URL */}
+        {/* Avatar editor: local files only so peer profile data never causes a network request. */}
         {avatarEditOpen && (
           <div className="border-t border-white/5 px-6 py-5 space-y-3 bg-bg-1/40">
             <div className="flex items-center justify-between">
@@ -578,18 +576,7 @@ const AccountSection: React.FC<{ user: UserType; showFeedback: (tone: FeedbackTo
             >
               {avatarBusy ? <><RefreshCw size={13} className="animate-spin" /> Updating…</> : <><Upload size={13} /> Choose image from your device</>}
             </button>
-            <div className="text-[10px] text-white/35 text-center">Downscaled and shared with everyone you talk to. PNG, JPG, GIF or WebP.</div>
-            <div className="flex items-center gap-2 pt-1">
-              <input
-                type="url"
-                value={avatarUrlInput}
-                onChange={e => setAvatarUrlInput(e.target.value)}
-                placeholder="…or paste an https:// image URL"
-                onKeyDown={e => { if (e.key === 'Enter') void saveAvatarUrl(); }}
-                className="flex-1 h-10 px-4 rounded-full bg-surface-dark border border-stroke-subtle text-white text-xs placeholder:text-white/20 focus:border-primary focus:outline-none transition-colors"
-              />
-              <button type="button" onClick={() => void saveAvatarUrl()} disabled={avatarBusy || !avatarUrlInput.trim()} className="px-4 h-10 rounded-full border border-white/10 text-white/70 text-xs hover:bg-white/5 transition-all disabled:opacity-40">Use URL</button>
-            </div>
+            <div className="text-[10px] text-white/35 text-center">Downscaled, kept as local encrypted profile data, and shared with everyone you talk to. PNG, JPG, GIF or WebP.</div>
           </div>
         )}
 
@@ -678,7 +665,7 @@ const AccountSection: React.FC<{ user: UserType; showFeedback: (tone: FeedbackTo
 
       <section className="space-y-5">
         <h3 className="micro-label text-white/40 border-b border-white/5 pb-2">Data encryption & authentication</h3>
-        <button type="button" onClick={onOpenMfa} className="glass-card rounded-r2 p-5 flex items-center justify-between group hover:border-primary/30 transition-all cursor-pointer text-left w-full">
+        <button type="button" onClick={onOpenRecovery} className="glass-card rounded-r2 p-5 flex items-center justify-between group hover:border-primary/30 transition-all cursor-pointer text-left w-full">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center text-primary group-hover:shadow-glow transition-all">
               <Shield size={18} />
@@ -1097,7 +1084,7 @@ const PrivacySection: React.FC<{ showFeedback: (tone: FeedbackTone, message: str
   );
 };
 
-const MFASection: React.FC<{ showFeedback: (tone: FeedbackTone, message: string) => void }> = ({ showFeedback }) => {
+const RecoverySection: React.FC<{ showFeedback: (tone: FeedbackTone, message: string) => void }> = ({ showFeedback }) => {
   const snapshot = useRuntimeSnapshot();
   const { engine } = useNativeEngine();
   const peerId = snapshot?.identity?.peer_id?.trim() ?? '';
@@ -1131,7 +1118,7 @@ const MFASection: React.FC<{ showFeedback: (tone: FeedbackTone, message: string)
     // device brings back your servers/DMs/profile, not just the keypair.
     const state = engine?.encryptedStateForBackup() ?? undefined;
     const ok = await downloadActiveIdentityBackup(peerId, state);
-    if (ok) showFeedback('success', 'Encrypted backup downloaded — includes your servers & profile.');
+    if (ok) showFeedback('success', 'Encrypted backup downloaded — includes your Spaces and profile.');
     else showFeedback('error', 'No identity to back up — register an account first.');
   };
 
@@ -1151,8 +1138,8 @@ const MFASection: React.FC<{ showFeedback: (tone: FeedbackTone, message: string)
   return (
     <>
       <header className="mb-10">
-        <h2 className="text-[26px] font-bold text-white mb-2 font-display tracking-tight">Security</h2>
-        <p className="micro-label text-white/30">Backup and extra protection</p>
+        <h2 className="text-[26px] font-bold text-white mb-2 font-display tracking-tight">Backup & Recovery</h2>
+        <p className="micro-label text-white/30">Password-encrypted identity recovery — not MFA</p>
       </header>
 
       <div className="space-y-5">
@@ -1218,7 +1205,7 @@ const MFASection: React.FC<{ showFeedback: (tone: FeedbackTone, message: string)
           </div>
         </div>
 
-        {/* Security model explanation — why TOTP doesn't apply */}
+        {/* Security model explanation — recovery is not another authentication factor. */}
         <div className="glass-card rounded-r2 p-5 border border-white/10">
           <div className="flex items-center gap-3 mb-3">
             <div className="w-10 h-10 rounded-full bg-accent-success/10 flex items-center justify-center text-accent-success">
@@ -1267,11 +1254,14 @@ const RecoveryContactsSection: React.FC<{ showFeedback: (tone: FeedbackTone, mes
     if (!engine || list.length === 0) return;
     setBusy(true);
     try {
-      const { delivered } = await engine.distributeRecovery(list);
-      showFeedback(delivered.length ? 'success' : 'info',
-        delivered.length
-          ? `Backup secured with ${delivered.length} of ${list.length} contact${list.length > 1 ? 's' : ''}.`
-          : 'Contacts saved. They’ll receive your backup the next time they’re online.');
+      const { delivered, queued, identityOnly, failed } = await engine.distributeRecovery(list);
+      const secured = delivered.length + queued.length;
+      showFeedback(secured === list.length ? 'success' : secured > 0 ? 'info' : 'error',
+        secured > 0
+          ? `Encrypted key backup secured for ${secured} of ${list.length} contact${list.length > 1 ? 's' : ''}`
+            + `${queued.length ? ` (${queued.length} queued across the storage mesh)` : ''}`
+            + `${identityOnly.length ? '; the latest account snapshot will follow when a live path is available' : ''}.`
+          : `No recovery copy could be secured yet${failed.length ? '; automatic re-sync will keep retrying' : ''}.`);
     } catch (e) {
       showFeedback('error', e instanceof Error ? e.message : 'Could not distribute backup.');
     } finally {
@@ -1303,7 +1293,7 @@ const RecoveryContactsSection: React.FC<{ showFeedback: (tone: FeedbackTone, mes
       </div>
 
       <p className="text-[11px] text-white/55 leading-relaxed">
-        Your identity is shared with these friends <strong>encrypted with your password</strong> — they can never read or use it. To recover on a new device, you ask one of them and they approve the transfer; then your <strong>password</strong> unlocks it. (If you forget your password, the account still can’t be recovered — that’s the point.)
+        Each chosen guardian receives a copy encrypted with your password. Offline transfers are additionally sealed to that guardian and replicated across up to three available nodes or peers, so storage providers cannot inspect or password-test it. Use a <strong>strong, unique password</strong>: a guardian eventually holds the password-encrypted copy. Recovery still requires their approval and your password.
       </p>
 
       {!peerId && <p className="text-[11px] text-accent-warning">Set a password for your identity first (Saved identities → set a password) before adding recovery contacts.</p>}
@@ -1791,17 +1781,6 @@ const AccessibilitySection: React.FC = () => {
     );
   }, [fontSize, highContrast, reducedMotion, dyslexicFont, simpleMode, saturation]);
 
-  // Dyslexic font CDN load
-  useEffect(() => {
-    if (!preferences.dyslexicFont) return;
-    if (document.getElementById('dyslexic-font-link')) return;
-    const link = document.createElement('link');
-    link.id = 'dyslexic-font-link';
-    link.rel = 'stylesheet';
-    link.href = 'https://fonts.cdnfonts.com/css/opendyslexic';
-    document.head.appendChild(link);
-  }, [preferences.dyslexicFont]);
-
   // Color-blind filter on body
   useEffect(() => {
     applyCbFilter(preferences.colorBlindMode);
@@ -1861,11 +1840,11 @@ const AccessibilitySection: React.FC = () => {
           <div className="space-y-3">
             <div className="glass-card rounded-r2 p-4 border border-white/10 flex items-center justify-between">
               <div>
-                <div className="text-white font-bold text-sm" style={preferences.dyslexicFont ? { fontFamily: "'OpenDyslexic', sans-serif" } : undefined}>
-                  OpenDyslexic Font
+                <div className="text-white font-bold text-sm" style={preferences.dyslexicFont ? { fontFamily: "'Trebuchet MS', Arial, sans-serif" } : undefined}>
+                  Dyslexia-friendly font stack
                 </div>
-                <div className="text-[10px] text-white/40">A typeface designed to increase readability for readers with dyslexia</div>
-                {preferences.dyslexicFont && <div className="text-[9px] text-primary/70 mt-0.5" style={{ fontFamily: "'OpenDyslexic', sans-serif" }}>Active — you're reading this in OpenDyslexic</div>}
+                <div className="text-[10px] text-white/40">Uses a local, spacious font stack with increased spacing and line height</div>
+                {preferences.dyslexicFont && <div className="text-[9px] text-primary/70 mt-0.5" style={{ fontFamily: "'Trebuchet MS', Arial, sans-serif" }}>Active — using a local accessible font stack</div>}
               </div>
               <button type="button" onClick={() => set('dyslexicFont', !preferences.dyslexicFont)}
                 className={`w-11 h-6 rounded-full transition-all relative flex-shrink-0 ${preferences.dyslexicFont ? 'bg-primary/40' : 'bg-white/10'}`}>
@@ -2132,7 +2111,7 @@ const StreamerSection: React.FC<{ showFeedback: (tone: FeedbackTone, message: st
             {[
               'All toast notifications and pop-ups',
               'Your display name and avatar in the user bar',
-              'Channel and server names (replaced with neutral labels)',
+              'Channel and Space names (replaced with neutral labels)',
               'Message contents — blurred until you hover',
               'Peer IDs and cryptographic fingerprints',
               'Invite links and connection info',
@@ -2145,7 +2124,7 @@ const StreamerSection: React.FC<{ showFeedback: (tone: FeedbackTone, message: st
           </ul>
           <SecurityNote tone="info">
             Streamer mode is a local UI overlay only. It does not affect what is transmitted over the network.
-            Others on the server can still see your messages and presence normally.
+            Other members of the Space can still see your messages and presence normally.
           </SecurityNote>
         </div>
       </div>
@@ -2550,9 +2529,9 @@ const NetworkSection: React.FC<{
         <div className="glass-card rounded-r2 p-5 border border-white/10">
           <div className="flex items-center justify-between gap-4">
             <div>
-              <div className="text-white font-bold text-sm">Control node</div>
+              <div className="text-white font-bold text-sm">Preferred node</div>
               <div className="text-[10px] text-white/40 break-all">
-                {runtimeSnapshot?.control_endpoint || 'No control endpoint is active in this session.'}
+                {runtimeSnapshot?.control_endpoint || 'No preferred node is active in this session.'}
               </div>
             </div>
             <button
@@ -2626,11 +2605,76 @@ function normalizeRelayAddrs(value: unknown): string[] {
 
 const AboutSection: React.FC = () => {
   const [openDoc, setOpenDoc] = useState<'terms' | 'privacy' | 'guidelines' | null>(null);
+  const [autoUpdate, setAutoUpdate] = useState(() => autoUpdateEnabled());
+  const [updateVersion, setUpdateVersion] = useState<string | null>(null);
+  const [restartVersion, setRestartVersion] = useState(() => pendingUpdateRestartVersion());
+  const [updateStatus, setUpdateStatus] = useState(() => {
+    const pending = pendingUpdateRestartVersion();
+    return pending
+      ? `Signed update ${pending} is downloaded and ready to install.`
+      : 'Signed native updates are checked automatically.';
+  });
+  const [updateBusy, setUpdateBusy] = useState(false);
   const legalLinks: { id: 'terms' | 'privacy' | 'guidelines'; title: string; desc: string }[] = [
-    { id: 'terms', title: 'Terms of Service', desc: 'The agreement for using this instance' },
+    { id: 'terms', title: 'Terms of Use', desc: 'Software, network, and Space responsibilities' },
     { id: 'privacy', title: 'Privacy Policy', desc: 'What is (and isn’t) collected' },
     { id: 'guidelines', title: 'Community Guidelines', desc: 'Acceptable use — the rules for everyone' },
   ];
+  const checkUpdate = async () => {
+    setUpdateBusy(true);
+    setUpdateStatus('Checking the official Cogniloom release…');
+    try {
+      const result = await checkForAppUpdate();
+      if (result.status === 'available') {
+        setUpdateVersion(result.version);
+        setUpdateStatus(`Signed update ${result.version} is available.`);
+      } else if (result.status === 'ready') {
+        setUpdateVersion(null);
+        setRestartVersion(result.version);
+        setUpdateStatus(`Signed update ${result.version} is downloaded. Install and restart when convenient.`);
+      } else if (result.status === 'web') {
+        setUpdateStatus('Browser builds update with the hosted app; installers are managed by the native app.');
+      } else {
+        setUpdateStatus('Harmolyn is up to date.');
+      }
+    } catch (error) {
+      setUpdateStatus(error instanceof Error ? `Update check failed: ${error.message}` : 'Update check failed.');
+    } finally {
+      setUpdateBusy(false);
+    }
+  };
+  const downloadUpdate = async () => {
+    setUpdateBusy(true);
+    setUpdateStatus('Downloading and verifying the signed update…');
+    try {
+      const result = await downloadAppUpdate();
+      if (result.status === 'web') setUpdateStatus('Install updates from the native Harmolyn app.');
+      else if (result.status === 'current') setUpdateStatus('Harmolyn is already up to date.');
+      else if (result.status === 'ready') {
+        setUpdateVersion(null);
+        setRestartVersion(result.version);
+        setUpdateStatus(`Signed update ${result.version} is downloaded. Install and restart when convenient.`);
+      }
+    } catch (error) {
+      setUpdateStatus(error instanceof Error ? `Update failed: ${error.message}` : 'Update failed.');
+    } finally {
+      setUpdateBusy(false);
+    }
+  };
+  const restartUpdate = async () => {
+    setUpdateBusy(true);
+    setUpdateStatus('Restarting Harmolyn to finish the signed update…');
+    try {
+      await restartAfterAppUpdate();
+      setRestartVersion(null);
+      setUpdateStatus('Restart request completed.');
+      setUpdateBusy(false);
+    } catch (error) {
+      setRestartVersion(pendingUpdateRestartVersion());
+      setUpdateStatus(error instanceof Error ? `Restart failed: ${error.message}` : 'Restart failed.');
+      setUpdateBusy(false);
+    }
+  };
   return (
   <>
     <header className="mb-10">
@@ -2676,6 +2720,39 @@ const AboutSection: React.FC = () => {
           Harmolyn is free software, licensed under the GNU Affero General Public License,
           version 3 or later (AGPL-3.0-or-later).
         </p>
+        <div className="mt-4 pt-4 border-t border-white/10 space-y-3">
+          <label className="flex items-center justify-between gap-4 text-[11px] text-white/60">
+            <span>
+              <strong className="text-white">Automatic signed update downloads</strong><br />
+              Installation waits for your safe restart; accounts, settings, and node configuration stay untouched.
+            </span>
+            <input
+              type="checkbox"
+              checked={autoUpdate}
+              onChange={(event) => {
+                setAutoUpdate(event.target.checked);
+                setAutoUpdateEnabled(event.target.checked);
+              }}
+              className="accent-primary"
+            />
+          </label>
+          <div className="text-[10px] text-white/40">{updateStatus}</div>
+          <div className="flex flex-wrap gap-2">
+            <button type="button" disabled={updateBusy} onClick={() => void checkUpdate()} className="px-4 h-9 rounded-full border border-white/10 text-white/70 text-xs hover:border-primary/40 disabled:opacity-40 flex items-center gap-2">
+              <RefreshCw size={12} className={updateBusy ? 'animate-spin' : ''} /> Check for updates
+            </button>
+            {updateVersion && (
+              <button type="button" disabled={updateBusy} onClick={() => void downloadUpdate()} className="px-4 h-9 rounded-full bg-primary text-bg-0 font-bold text-xs disabled:opacity-40 flex items-center gap-2">
+                <Download size={12} /> Download {updateVersion}
+              </button>
+            )}
+            {restartVersion && (
+              <button type="button" disabled={updateBusy} onClick={() => void restartUpdate()} className="px-4 h-9 rounded-full bg-primary text-bg-0 font-bold text-xs disabled:opacity-40 flex items-center gap-2">
+                <RefreshCw size={12} /> Install &amp; restart {restartVersion}
+              </button>
+            )}
+          </div>
+        </div>
       </div>
 
       <a href={SOURCE_URL} target="_blank" rel="noreferrer noopener" className="glass-card rounded-r2 p-5 border border-white/10 flex items-center justify-between group hover:border-primary/30 transition-all">
@@ -2754,22 +2831,3 @@ function isValidIdentityLink(value: string): boolean {
     return false;
   }
 }
-
-function isValidImageUrl(value: string): boolean {
-  if (/^data:image\//.test(value)) {
-    return !/^data:image\/svg\+xml(?:;|,)/i.test(value);
-  }
-
-  if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(value)) {
-    return false;
-  }
-
-  const url = safeParseUrl(value);
-  if (!url || (url.protocol !== 'http:' && url.protocol !== 'https:')) {
-    return false;
-  }
-
-  const path = `${url.pathname}${url.search}`.toLowerCase();
-  return !/\.(svgz?|svg\+xml)(?:$|[?#])/i.test(path);
-}
-

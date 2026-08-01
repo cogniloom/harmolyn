@@ -51,6 +51,13 @@ function readVarint(buf: Uint8Array, off: number): [number, number] {
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 
+// Envelope fields are deliberately much smaller than the 8 MiB payload cap.
+// An attacker must not be able to turn an operation/request-id string into a
+// large allocation or a high-cardinality map key while still sending a valid
+// frame. Payloads carry their own family-specific limits.
+export const MAX_OPERATION_BYTES = 128;
+export const MAX_REQUEST_ID_BYTES = 128;
+
 function pbField(fieldNum: number, wireType: number): Uint8Array {
   return varint((fieldNum << 3) | wireType);
 }
@@ -75,15 +82,29 @@ function concat(...arrays: Uint8Array[]): Uint8Array {
 // ── PeerStreamRequest encoder / decoder ───────────────────────────────────
 // field 1: operation (string)
 // field 2: payload (bytes)
+// field 3: advertised_caps (repeated string)
 // field 7: request_id (string)
 
 export function encodePeerStreamRequest(req: {
   operation: string;
   payload?: Uint8Array;
+  advertisedCaps?: string[];
   requestId?: string;
 }): Uint8Array {
+  if (enc.encode(req.operation).length > MAX_OPERATION_BYTES) {
+    throw new RangeError('peerstream: operation exceeds limit');
+  }
+  if (req.requestId && enc.encode(req.requestId).length > MAX_REQUEST_ID_BYTES) {
+    throw new RangeError('peerstream: request id exceeds limit');
+  }
   const parts: Uint8Array[] = [pbString(1, req.operation)];
   if (req.payload?.length) parts.push(pbBytes(2, req.payload));
+  for (const capability of req.advertisedCaps ?? []) {
+    if (enc.encode(capability).length > MAX_OPERATION_BYTES) {
+      throw new RangeError('peerstream: capability exceeds limit');
+    }
+    parts.push(pbString(3, capability));
+  }
   if (req.requestId) parts.push(pbString(7, req.requestId));
   return concat(...parts);
 }
@@ -91,7 +112,10 @@ export function encodePeerStreamRequest(req: {
 export interface PeerStreamRequest {
   operation: string;
   payload?: Uint8Array;
+  advertisedCaps?: string[];
   requestId?: string;
+  /** Local decoder marker; never serialized on the wire. */
+  malformed?: boolean;
 }
 
 export function decodePeerStreamRequest(buf: Uint8Array): PeerStreamRequest {
@@ -100,23 +124,36 @@ export function decodePeerStreamRequest(buf: Uint8Array): PeerStreamRequest {
   while (off < buf.length) {
     let tag: number;
     [tag, off] = readVarint(buf, off);
+    if (tag === VARINT_INVALID) return { operation: '', malformed: true };
     const fieldNum = tag >>> 3;
     const wireType = tag & 0x7;
     if (wireType === 2) {
       let len: number;
       [len, off] = readVarint(buf, off);
-      if (len < 0 || off + len > buf.length) break; // malformed or truncated field
+      if (len < 0 || off + len > buf.length) return { operation: '', malformed: true };
       const value = buf.subarray(off, off + len);
       off += len;
-      if (fieldNum === 1) req.operation = dec.decode(value);
+      if (fieldNum === 1) {
+        if (value.length > MAX_OPERATION_BYTES) return { operation: '', malformed: true };
+        req.operation = dec.decode(value);
+      }
       else if (fieldNum === 2) req.payload = value;
-      else if (fieldNum === 7) req.requestId = dec.decode(value);
+      else if (fieldNum === 3) {
+        if (value.length > MAX_OPERATION_BYTES) return { operation: '', malformed: true };
+        const capability = dec.decode(value);
+        req.advertisedCaps = [...(req.advertisedCaps ?? []), capability];
+        if (req.advertisedCaps.length > 128) return { operation: '', malformed: true };
+      }
+      else if (fieldNum === 7) {
+        if (value.length > MAX_REQUEST_ID_BYTES) return { operation: '', malformed: true };
+        req.requestId = dec.decode(value);
+      }
     } else if (wireType === 0) {
       let v: number;
       [v, off] = readVarint(buf, off);
-      if (v < 0) break;
+      if (v < 0) return { operation: '', malformed: true };
     } else {
-      break;
+      return { operation: '', malformed: true };
     }
   }
   return req;
@@ -154,6 +191,7 @@ export function decodePeerStreamResponse(buf: Uint8Array): PeerStreamResponse {
   while (off < buf.length) {
     let tag: number;
     [tag, off] = readVarint(buf, off);
+    if (tag === VARINT_INVALID) break;
     const fieldNum = tag >>> 3;
     const wireType = tag & 0x7;
     if (wireType === 2) {
@@ -181,6 +219,7 @@ function decodeError(buf: Uint8Array): PeerStreamError {
   while (off < buf.length) {
     let tag: number;
     [tag, off] = readVarint(buf, off);
+    if (tag === VARINT_INVALID) break;
     const fieldNum = tag >>> 3;
     const wireType = tag & 0x7;
     if (wireType === 0) {
@@ -203,6 +242,9 @@ function decodeError(buf: Uint8Array): PeerStreamError {
 // ── 4-byte length framing ──────────────────────────────────────────────────
 
 export function frameMessage(msg: Uint8Array): Uint8Array {
+  if (msg.length > MAX_FRAME_BYTES) {
+    throw new RangeError(`peerstream: frame length ${msg.length} exceeds cap`);
+  }
   const out = new Uint8Array(4 + msg.length);
   new DataView(out.buffer).setUint32(0, msg.length, false);
   out.set(msg, 4);
@@ -212,6 +254,7 @@ export function frameMessage(msg: Uint8Array): Uint8Array {
 export function unframeMessage(buf: Uint8Array): Uint8Array | null {
   if (buf.length < 4) return null;
   const len = new DataView(buf.buffer, buf.byteOffset).getUint32(0, false);
+  if (len > MAX_FRAME_BYTES) return null;
   if (buf.length < 4 + len) return null;
   return buf.subarray(4, 4 + len);
 }
@@ -237,6 +280,9 @@ export class FrameDecoder {
 
   /** Feed one chunk; returns all frames completed by it (possibly none). */
   push(chunk: Uint8Array): Uint8Array[] {
+    if (chunk.length > 4 + MAX_FRAME_BYTES) {
+      throw new Error(`peerstream: input chunk exceeds cap`);
+    }
     this.buf = this.buf.length === 0 ? chunk : concat(this.buf, chunk);
     const frames: Uint8Array[] = [];
     let off = 0;
@@ -288,9 +334,15 @@ export async function readFramedMessage(
     const bytes = chunkBytes(chunk);
     chunks.push(bytes);
     size += bytes.length;
+    if (size > 4 + MAX_FRAME_BYTES) {
+      throw new Error(`peerstream: frame input exceeds cap`);
+    }
     if (size < 4) continue;
     joined = assemble();
     const len = new DataView(joined.buffer, joined.byteOffset).getUint32(0, false);
+    if (len > MAX_FRAME_BYTES) {
+      throw new Error(`peerstream: frame length ${len} exceeds cap`);
+    }
     if (size >= 4 + len) return joined.subarray(4, 4 + len);
   }
   // Stream ended: fall back to whatever arrived (handles a peer that closed
@@ -306,6 +358,11 @@ export interface InboundFamilyStream extends AsyncIterable<StreamChunk> {
   close(): Promise<void>;
   abort?(err: Error): void;
 }
+
+// A remote peer can pipeline requests on a persistent stream. Keep the number
+// of handlers retained by one connection bounded so an authenticated but
+// abusive peer cannot exhaust the browser with concurrent JSON/crypto work.
+const MAX_INFLIGHT_REQUESTS = 64;
 
 /**
  * Serve framed PeerStream requests off one stream until the peer closes it.
@@ -337,8 +394,9 @@ export async function serveFamilyStream(
   const decoder = new FrameDecoder();
   const inflight = new Set<Promise<void>>();
 
-  const dispatch = (frame: Uint8Array): void => {
+  const dispatch = (frame: Uint8Array): Promise<void> | void => {
     const req = decodePeerStreamRequest(frame);
+    if (req.malformed) return;
     const t0 = debugLatency() ? performance.now() : 0;
     if (t0) console.debug(`[lat] serve ${req.operation} arrived at=${Date.now()}`);
     const p = Promise.resolve()
@@ -350,11 +408,20 @@ export async function serveFamilyStream(
       .catch(() => { /* per-request failure: no response; peer's timeout covers it */ });
     inflight.add(p);
     void p.finally(() => inflight.delete(p));
+    return p;
   };
 
   try {
     for await (const chunk of stream) {
-      for (const frame of decoder.push(chunkBytes(chunk))) dispatch(frame);
+      for (const frame of decoder.push(chunkBytes(chunk))) {
+        // Apply backpressure before admitting another handler. The stream
+        // iterator is not advanced while the cap is full, so the transport
+        // cannot accumulate an unbounded request queue in this tab.
+        while (inflight.size >= MAX_INFLIGHT_REQUESTS) {
+          await Promise.race(inflight);
+        }
+        dispatch(frame);
+      }
     }
     // Peer closed its write side. Let in-flight handlers finish so their
     // responses reach a one-shot caller that is still reading, then close.

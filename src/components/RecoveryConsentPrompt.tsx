@@ -35,7 +35,7 @@ export function RecoveryConsentPrompt() {
     setBusy(true);
     try {
       const ok = await engine.approveRecovery(current.id);
-      toast?.[ok ? 'success' : 'error'](ok ? 'Backup released to your friend.' : 'Could not deliver the backup — they may be offline.');
+      toast?.[ok ? 'success' : 'error'](ok ? 'Backup released or securely queued for your friend.' : 'Could not secure a delivery copy yet; try again when a peer is reachable.');
     } finally {
       setBusy(false);
       dismiss();

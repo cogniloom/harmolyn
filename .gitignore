@@ -14,6 +14,8 @@ lerna-debug.log*
 node_modules
 dist
 dist-ssr
+/.generated/browser-evidence/
+/.generated/voice-e2e/
 *.local
 .env
 

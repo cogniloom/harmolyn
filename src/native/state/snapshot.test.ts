@@ -1,13 +1,7 @@
-// Round-9 P1 + metadata-minimization follow-up: the PLAINTEXT localStorage mirror
-// of the runtime snapshot must not carry decrypted communication content (message
-// bodies, DM threads, the social graph, abuse reports) NOR account metadata beyond
-// the minimal pre-unlock bootstrap paint (identity display name, server names,
-// joined ids, control endpoint). Everything else — member rosters, roles, channel
-// names/topics, presence, known peers, unread counts, profile bio/avatar — is
-// protected at rest only inside the encrypted native-state blob; a plaintext copy
-// would let anyone reading the browser profile recover it without the account
-// password or state key. The full snapshot still lives in the in-memory global
-// for React. Guests write NO localStorage mirror at all (sessionStorage only).
+// The plaintext runtime mirror is intentionally empty of account and network
+// metadata. The full snapshot remains only in memory while the engine is live;
+// durable registered state is encrypted in the native-state blob. Guests get no
+// durable native state and do not serialize native state before unlock.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import {
   initStore,
@@ -20,6 +14,7 @@ import {
   updatePresenceEntry,
   bumpUnread,
   setMemberRoles,
+  setStateEncryptionKey,
 } from './store';
 import { publishNativeSnapshot } from './snapshot';
 import { saveGuestIdentity, clearGuestIdentity } from '../identity/storage';
@@ -38,6 +33,7 @@ describe('publishNativeSnapshot — at-rest content and metadata stripping', () 
     localStorage.clear();
     sessionStorage.clear();
     clearGuestIdentity();
+    setStateEncryptionKey(null);
     for (const k of GLOBAL_KEYS) delete (window as unknown as Record<string, unknown>)[k];
     initStore();
     setNativeIdentity({ id: ME, peer_id: ME, profile: { display_name: 'Me', bio: SECRET_BIO, avatar: 'data:image/png;base64,AVATARDATA' } });
@@ -60,6 +56,7 @@ describe('publishNativeSnapshot — at-rest content and metadata stripping', () 
 
   afterEach(() => {
     clearGuestIdentity();
+    setStateEncryptionKey(null);
   });
 
   it('omits message bodies, DMs, friends, and reports from every plaintext localStorage key', () => {
@@ -97,19 +94,10 @@ describe('publishNativeSnapshot — at-rest content and metadata stripping', () 
         presence?: Record<string, unknown>;
         unread?: Record<string, unknown>;
       };
-      // What the pre-unlock paint legitimately needs is kept…
-      expect(parsed.identity?.peer_id).toBe(ME);
-      expect(parsed.identity?.profile?.display_name).toBe('Me');
-      expect(parsed.joined_server_ids).toEqual(['srv1']);
-      expect(parsed.servers?.length).toBe(1);
-      expect(parsed.servers?.[0].name).toBe('S');
-      // …and everything else is stripped.
-      expect(parsed.servers?.[0].members).toEqual([]);
-      expect(parsed.servers?.[0].channels).toEqual({});
-      expect(parsed.servers?.[0].owner_peer_id).toBe('');
-      expect(parsed.servers?.[0].roles).toBeUndefined();
-      expect(parsed.servers?.[0].member_roles).toBeUndefined();
-      expect(parsed.servers?.[0].description).toBeUndefined();
+      // No account or network metadata is copied into plaintext storage.
+      expect(parsed.identity).toBeUndefined();
+      expect(parsed.joined_server_ids).toEqual([]);
+      expect(parsed.servers).toEqual([]);
       expect(parsed.known_peers).toEqual([]);
       expect(parsed.presence).toEqual({});
       expect(parsed.unread).toEqual({});
@@ -154,8 +142,9 @@ describe('publishNativeSnapshot — at-rest content and metadata stripping', () 
       expect(sessionRaw, `sessionStorage ${key}`).toBeTruthy();
       expect(sessionRaw).not.toContain(SECRET);
       expect(sessionRaw).not.toContain(ALICE);
-      const parsed = JSON.parse(sessionRaw as string) as { servers?: Array<{ members: unknown[] }> };
-      expect(parsed.servers?.[0]?.members).toEqual([]);
+      const parsed = JSON.parse(sessionRaw as string) as { servers?: unknown[]; identity?: unknown };
+      expect(parsed.servers).toEqual([]);
+      expect(parsed.identity).toBeUndefined();
     }
   });
 

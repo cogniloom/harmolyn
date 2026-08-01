@@ -42,7 +42,7 @@ export const VoiceTextChat: React.FC<VoiceTextChatProps> = ({ channelId, channel
     setMessages(prev => [...prev, {
       id: createCollisionResistantId('vt'),
       username: 'You',
-      avatar: 'https://api.dicebear.com/7.x/avataaars/svg?seed=me',
+      avatar: '',
       content,
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
     }]);

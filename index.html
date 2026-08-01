@@ -6,6 +6,9 @@
          maximum-scale/user-scalable=no — it blocks low-vision users from zooming. -->
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="theme-color" content="#0d1a1b" />
+    <!-- frame-ancestors is enforced by the HTTP response header in nginx and by
+         the Tauri shell CSP; browsers ignore it when supplied through <meta>. -->
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'self'; object-src 'none'; frame-src 'self' https://www.youtube-nocookie.com; manifest-src 'self'; connect-src 'self' http: https: ws: wss:; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data: blob: https:; media-src 'self' blob:; worker-src 'self' blob:;" />
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="icon" type="image/svg+xml" href="/icon.svg" />
     <link rel="apple-touch-icon" href="/icon.svg" />
@@ -13,13 +16,10 @@
     <meta name="apple-mobile-web-app-title" content="Harmolyn" />
     <title>Harmolyn</title>
     <meta name="description" content="Harmolyn — Aether Chat">
-    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
     <meta property="og:title" content="Harmolyn">
   <meta name="twitter:title" content="Harmolyn">
   <meta property="og:description" content="Harmolyn — Aether Chat">
   <meta name="twitter:description" content="Harmolyn — Aether Chat">
-  <meta property="og:image" content="https://pub-bb2e103a32db4e198524a2e9ed8f35b4.r2.dev/45929098-ac18-4e3c-99a6-83268523126e/id-preview-e180f037--00efd5d1-9c79-43bc-85ad-92526cd33b55.lovable.app-1771518403105.png">
-  <meta name="twitter:image" content="https://pub-bb2e103a32db4e198524a2e9ed8f35b4.r2.dev/45929098-ac18-4e3c-99a6-83268523126e/id-preview-e180f037--00efd5d1-9c79-43bc-85ad-92526cd33b55.lovable.app-1771518403105.png">
   <meta name="twitter:card" content="summary_large_image">
   <meta property="og:type" content="website">
 </head>

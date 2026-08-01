@@ -25,9 +25,10 @@ const RUNTIME_STORAGE_KEYS = [
  * paint. The persisted mirror is PLAINTEXT — separate from, and NOT protected
  * by, the AES-GCM native-state blob — so anyone who can read the browser
  * profile can read it without the account password or state key. It therefore
- * must carry no decrypted communication content AND no account metadata beyond
- * what the lock-screen shell paints: the local identity's display name, the
- * names of joined servers, and the support-node endpoint.
+ * must carry no decrypted communication content or account/network metadata.
+ * The lock screen obtains registered-account state from the identity vault and
+ * the native bridge; this plaintext compatibility mirror intentionally contains
+ * only empty collections.
  *
  * Deliberately stripped (readable only via the in-memory global while the
  * engine is live, and from the encrypted store after unlock): message bodies,
@@ -35,30 +36,14 @@ const RUNTIME_STORAGE_KEYS = [
  * member rosters, roles/member_roles, channel names/topics, server
  * descriptions/owners, presence, and per-scope unread counts.
  */
-function minimalBootstrapMirror(snapshot: XoreinRuntimeSnapshot): XoreinRuntimeSnapshot {
+function minimalBootstrapMirror(_snapshot: XoreinRuntimeSnapshot): XoreinRuntimeSnapshot {
   return {
-    role: snapshot.role,
-    peer_id: snapshot.peer_id,
-    control_endpoint: snapshot.control_endpoint,
-    ...(snapshot.identity
-      ? {
-          identity: {
-            id: snapshot.identity.id,
-            peer_id: snapshot.identity.peer_id,
-            ...(snapshot.identity.profile?.display_name
-              ? { profile: { display_name: snapshot.identity.profile.display_name } }
-              : {}),
-          },
-        }
-      : {}),
-    servers: (snapshot.servers ?? []).map(server => ({
-      id: server.id,
-      name: server.name,
-      owner_peer_id: '',
-      members: [],
-      channels: {},
-    })),
-    joined_server_ids: snapshot.joined_server_ids ?? [],
+    role: undefined,
+    peer_id: undefined,
+    control_endpoint: undefined,
+    identity: undefined,
+    servers: [],
+    joined_server_ids: [],
     messages: [],
     dms: [],
     friends: [],

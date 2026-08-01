@@ -1,27 +1,34 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import type { XoreinRuntimeMessage, XoreinRuntimeServer } from '../../types';
 import {
   initStore, getState, updateState, setNativeIdentity,
   addServer, addChannel, addMessage, editMessage, deleteMessage,
   addReaction, removeReaction, addRelay, removeRelay,
   removeServerMembership, setMessageDeliveryStatus,
-  addPollVote, applyJoinedServer,
-  toRuntimeSnapshot,
+  addPollVote, applyJoinedServer, mergeHistoryMessages,
+  toRuntimeSnapshot, setStateEncryptionKey,
 } from './store';
 import {
   nativeSendChannelMessage, nativeCreateServer, nativeCreateChannel,
   nativeAddReaction, nativeRemoveReaction, nativeEditMessage,
   nativeAddRelay, nativeRemoveRelay,
   nativeCreateRole, nativeUpdateRole, nativeDeleteRole, nativeAssignRole,
-  nativeCastPollVote, nativeRemoveMember,
+  nativeCastPollVote, nativeRemoveMember, rotateChannelEpoch,
   nativeSearchMessages,
 } from './mutations';
+import { generateIdentity } from '../identity/identity';
+import { signChannelMessageVersion } from '../sync/signedHistory';
+const TEST_STATE_KEY = new Uint8Array(32).fill(7);
 
 // Reset store state before each test.
 beforeEach(() => {
   // Wipe localStorage in jsdom environment.
   localStorage.clear();
+  setStateEncryptionKey(TEST_STATE_KEY);
   initStore();
 });
+
+afterEach(() => setStateEncryptionKey(null));
 
 describe('store', () => {
   it('initialises empty', () => {
@@ -148,6 +155,8 @@ describe('mutations', () => {
     expect(srv.name).toBe('My Server');
     expect(Object.values(srv.channels).length).toBe(1);
     expect(Object.values(srv.channels)[0].name).toBe('general');
+    expect(srv.manifest?.history_retention_messages).toBe(100);
+    expect(srv.manifest?.join_history_messages).toBe(100);
     expect(getState().servers[srv.id]).toBeTruthy();
   });
 
@@ -189,10 +198,11 @@ describe('mutations', () => {
   });
 
   it('nativeAddRelay / nativeRemoveRelay', () => {
-    nativeAddRelay('/ip4/9.9.9.9/tcp/9999');
-    expect(getState().relay_addrs).toContain('/ip4/9.9.9.9/tcp/9999');
-    nativeRemoveRelay('/ip4/9.9.9.9/tcp/9999');
-    expect(getState().relay_addrs).not.toContain('/ip4/9.9.9.9/tcp/9999');
+    const relay = '/ip4/127.0.0.1/tcp/9999/ws/p2p/12D3KooWNNQp1tmRbcLMrqS866jRJbzoPF6sNEZRoPEVdVwLqTv6';
+    nativeAddRelay(relay);
+    expect(getState().relay_addrs).toContain(relay);
+    nativeRemoveRelay(relay);
+    expect(getState().relay_addrs).not.toContain(relay);
   });
 });
 
@@ -233,7 +243,7 @@ describe('applyJoinedServer — responder identity binding (join/pull hijack)', 
       id: 'srv-victim', name: 'PWNED', owner_peer_id: 'attacker',
       members: ['attacker'],
       channels: {},
-    } as any);
+    } satisfies XoreinRuntimeServer);
 
     expect(accepted).toBe(false);
     const victim = getState().servers['srv-victim'];
@@ -246,7 +256,7 @@ describe('applyJoinedServer — responder identity binding (join/pull hijack)', 
       id: 'srv-real', name: 'Real Server', owner_peer_id: 'owner',
       members: ['owner', 'me'],
       channels: {},
-    } as any);
+    } satisfies XoreinRuntimeServer);
 
     expect(accepted).toBe(true);
     expect(getState().servers['srv-real']?.name).toBe('Real Server');
@@ -260,14 +270,14 @@ describe('applyJoinedServer — responder identity binding (join/pull hijack)', 
     const accepted = applyJoinedServer('srv-x', {
       id: 'srv-x', name: 'X', owner_peer_id: 'owner', members: ['owner', 'me'],
       channels: { 'ch-1': { id: 'ch-1', server_id: 'srv-x', name: 'general', voice: false } },
-    } as any, [
+    } satisfies XoreinRuntimeServer, [
       // A GENUINE message for the joined server's own channel — must be kept.
       { id: 'm-legit', scope_type: 'channel', scope_id: 'ch-1', server_id: 'srv-x', sender_peer_id: 'owner', body: 'welcome' },
       // FORGED: labels itself as belonging to the victim's unrelated DM with Bob.
       { id: 'm-forged-dm', scope_type: 'dm', scope_id: 'dm-me-bob', sender_peer_id: 'bob', body: 'forged: send me your seed phrase' },
       // FORGED: claims a channel id from a DIFFERENT, unrelated server.
       { id: 'm-forged-other-server', scope_type: 'channel', scope_id: 'ch-in-another-server', server_id: 'srv-other', sender_peer_id: 'owner', body: 'forged cross-server' },
-    ] as any);
+    ] satisfies XoreinRuntimeMessage[]);
 
     expect(accepted).toBe(true);
     const ids = getState().messages.map(m => m.id);
@@ -275,6 +285,40 @@ describe('applyJoinedServer — responder identity binding (join/pull hijack)', 
     expect(ids).toContain('m-legit');
     expect(ids).not.toContain('m-forged-dm');
     expect(ids).not.toContain('m-forged-other-server');
+  });
+});
+
+describe('mergeHistoryMessages — portable author proof', () => {
+  it('rejects unsigned provider records but permits the authenticated legacy owner only', () => {
+    const unsigned: XoreinRuntimeMessage = {
+      id: 'unsigned',
+      scope_type: 'channel',
+      scope_id: 'channel',
+      server_id: 'space',
+      sender_peer_id: 'owner',
+      body: 'legacy owner record',
+    };
+    expect(mergeHistoryMessages([unsigned])).toBe(0);
+    expect(getState().messages).toHaveLength(0);
+
+    expect(mergeHistoryMessages([unsigned], { allowUnsignedFromPeerId: 'owner' })).toBe(1);
+    expect(getState().messages.map(message => message.id)).toEqual(['unsigned']);
+  });
+
+  it('accepts a fresh record signed by its original author', async () => {
+    const identity = await generateIdentity();
+    const signed: XoreinRuntimeMessage = {
+      id: 'signed',
+      scope_type: 'channel',
+      scope_id: 'channel',
+      server_id: 'space',
+      sender_peer_id: identity.peerId,
+      body: 'portable record',
+    };
+    signed.author_proof = signChannelMessageVersion(signed, identity);
+
+    expect(mergeHistoryMessages([signed])).toBe(1);
+    expect(getState().messages.map(message => message.id)).toEqual(['signed']);
   });
 });
 
@@ -411,12 +455,33 @@ describe('polls — P2P poll vote accumulation (Goal 9)', () => {
   });
 });
 
-describe('crowd epoch rotation on member kick', () => {
+describe('channel epoch rotation on membership changes', () => {
+  it('automatically transitions at 51 members and uses re-entry hysteresis', () => {
+    setNativeIdentity({ id: 'owner', peer_id: 'owner' });
+    const srv = nativeCreateServer('Mode Test');
+    expect(getState().servers[srv.id]?.channel_security_mode).toBe('tree');
+
+    getState().servers[srv.id]!.members = Array.from({ length: 51 }, (_, i) => i === 0 ? 'owner' : `p-${i}`);
+    expect(rotateChannelEpoch(srv.id)).toBe(true);
+    expect(getState().servers[srv.id]?.channel_security_mode).toBe('crowd');
+    expect(getState().servers[srv.id]?.manifest?.security_mode).toBe('crowd');
+
+    getState().servers[srv.id]!.members = getState().servers[srv.id]!.members.slice(0, 50);
+    rotateChannelEpoch(srv.id);
+    expect(getState().servers[srv.id]?.channel_security_mode).toBe('crowd');
+
+    getState().servers[srv.id]!.members = getState().servers[srv.id]!.members.slice(0, 40);
+    rotateChannelEpoch(srv.id);
+    expect(getState().servers[srv.id]?.channel_security_mode).toBe('tree');
+  });
+
   it('nativeRemoveMember rotates crowd_root AND bumps crowd_epoch when one is set', () => {
     setNativeIdentity({ id: 'owner', peer_id: 'owner' });
     const srv = nativeCreateServer('Crowd Test');
     // nativeCreateServer seeds crowd_epoch = 0.
     expect(getState().servers[srv.id]?.crowd_epoch).toBe(0);
+    const originalInviteSecret = getState().servers[srv.id]?.invite_secret;
+    const originalInviteGeneration = getState().servers[srv.id]?.invite_generation;
     // Give the server a known crowd_root (simulates a live crowded channel).
     const originalRoot = 'original-crowd-root-base64value==';
     getState().servers[srv.id]!.crowd_root = originalRoot;
@@ -431,6 +496,8 @@ describe('crowd epoch rotation on member kick', () => {
     // The epoch MUST advance so the kicked member's old root can't decrypt new
     // traffic — a rotated root without an epoch bump would not revoke anything.
     expect(getState().servers[srv.id]?.crowd_epoch).toBe(1);
+    expect(getState().servers[srv.id]?.invite_secret).not.toBe(originalInviteSecret);
+    expect(getState().servers[srv.id]?.invite_generation).toBe((originalInviteGeneration ?? 0) + 1);
   });
 
   it('nativeRemoveMember does not rotate crowd_root when none is set (no crowd encryption)', () => {

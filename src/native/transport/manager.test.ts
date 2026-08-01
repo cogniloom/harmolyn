@@ -12,6 +12,7 @@ vi.mock('./node.js', () => ({
 }));
 vi.mock('./relays.js', () => ({
   resolveRelayList: () => ['/dns4/relay.example/tcp/443/wss/p2p/12D3KooWRelay'],
+  resolveRelayListAsync: async () => ['/dns4/relay.example/tcp/443/wss/p2p/12D3KooWRelay'],
   reserveAnyRelay: (...args: unknown[]) => reserveAnyRelay(...args),
 }));
 
@@ -21,6 +22,8 @@ function fakeNode() {
   const listeners = new Map<string, Array<(evt: CustomEvent) => void>>();
   return {
     stop: vi.fn(async () => {}),
+    dial: vi.fn(async () => ({})),
+    hangUp: vi.fn(async () => {}),
     getMultiaddrs: () => [],
     addEventListener(type: string, cb: (evt: CustomEvent) => void) {
       const arr = listeners.get(type) ?? [];
@@ -98,6 +101,40 @@ describe('XoreinTransportManager', () => {
     await m.start();
     node.emit('connection:close', { remotePeer: { toString: () => '12D3KooWSomePeer' } });
     expect(m.connectionState).toBe('connected');
+  });
+
+  it('re-reserves immediately on the selected node without rebuilding the peer node', async () => {
+    const node = fakeNode();
+    createXoreinNode.mockResolvedValue(node);
+    reserveAnyRelay.mockResolvedValue('/dns4/relay.example/tcp/443/wss/p2p/12D3KooWRelay');
+
+    const m = new XoreinTransportManager();
+    await m.start();
+    await m.refreshSelectedNode();
+
+    expect(reserveAnyRelay).toHaveBeenCalledTimes(2);
+    expect(createXoreinNode).toHaveBeenCalledTimes(1);
+    expect(node.stop).not.toHaveBeenCalled();
+  });
+
+  it('does not lose a node switch requested during an in-flight reconnect', async () => {
+    const node = fakeNode();
+    createXoreinNode.mockResolvedValue(node);
+    let releaseFirst: (value: string) => void = () => {};
+    reserveAnyRelay
+      .mockImplementationOnce(() => new Promise(resolve => { releaseFirst = resolve; }))
+      .mockResolvedValue('/dns4/relay-two.example/tcp/443/wss/p2p/12D3KooWRelayTwo');
+
+    const m = new XoreinTransportManager();
+    const starting = m.start();
+    await vi.waitFor(() => expect(reserveAnyRelay).toHaveBeenCalledTimes(1));
+    await m.refreshSelectedNode();
+    releaseFirst('/dns4/relay-one.example/tcp/443/wss/p2p/12D3KooWRelayOne');
+    await starting;
+    await vi.waitFor(() => expect(reserveAnyRelay).toHaveBeenCalledTimes(2));
+
+    expect(m.getActiveRelay()).toContain('RelayTwo');
+    expect(createXoreinNode).toHaveBeenCalledTimes(1);
   });
 
   it('stop() stops the node and clears state', async () => {

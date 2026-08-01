@@ -14,7 +14,7 @@ import { createServer } from 'vite';
 import { chromium } from 'playwright-core';
 
 const ROOT = process.cwd();
-const EVIDENCE_DIR = path.resolve(ROOT, '.sisyphus/evidence');
+const EVIDENCE_DIR = path.resolve(ROOT, '.generated/browser-evidence');
 const ECHO_PROTO = '/xorein/echo-test/1.0.0';
 const RELAY_TIMEOUT_MS = 20_000; // 20s to get a circuit reservation
 const POLL_INTERVAL_MS = 500;

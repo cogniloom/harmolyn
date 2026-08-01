@@ -24,6 +24,17 @@ describe("resolveFeatureFlag", () => {
     expect(resolveFeatureFlag("forumChannels")).toBe(true);
     expect(resolveFeatureFlag("directMessages")).toBe(false);
   });
+
+  it("does not allow localStorage to disable security-critical native ownership", () => {
+    window.localStorage.setItem(
+      FEATURE_OVERRIDES_STORAGE_KEY,
+      JSON.stringify({ nativeEngine: false, memberServedHistory: true, voiceScaleSfu: true }),
+    );
+
+    expect(resolveFeatureFlag("nativeEngine")).toBe(FEATURES.nativeEngine);
+    expect(resolveFeatureFlag("memberServedHistory")).toBe(FEATURES.memberServedHistory);
+    expect(resolveFeatureFlag("voiceScaleSfu")).toBe(FEATURES.voiceScaleSfu);
+  });
 });
 
 describe("readFeatureOverrides", () => {

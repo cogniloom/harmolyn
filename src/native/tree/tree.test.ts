@@ -79,6 +79,22 @@ describe('Tree mode encrypt / decrypt', () => {
     expect(dec(treeDecrypt(g, ct))).toBe('hello bob');
   });
 
+  it('binds ciphertext to its group id', () => {
+    const one = newGroup('space-one', makeMember('alice'));
+    const two = cloneGroup(one);
+    two.groupId = 'space-two';
+    const { ct } = treeEncrypt(one, 'alice', enc('space-bound'));
+    expect(() => treeDecrypt(two, ct)).toThrow();
+  });
+
+  it('uses all 256 bits of the epoch key', () => {
+    const sender = newGroup('space-one', makeMember('alice'));
+    const wrongLastHalf = cloneGroup(sender);
+    wrongLastHalf.currentEpoch.epochKey[31] ^= 0x01;
+    const { ct } = treeEncrypt(sender, 'alice', enc('full-key-bound'));
+    expect(() => treeDecrypt(wrongLastHalf, ct)).toThrow();
+  });
+
   it('decrypts from a prev epoch (legacy window)', () => {
     const g = newGroup('g1', makeMember('alice'));
     addMember(g, makeMember('bob'));

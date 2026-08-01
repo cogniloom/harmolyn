@@ -8,7 +8,13 @@ const LABEL_CROWD_SENDER_KEY = 'xorein/crowd/v1/sender-key'; // append peerID
 
 export const MAX_EPOCH_MESSAGES = 1000;
 export const EPOCH_TTL_MS = 7 * 24 * 3600 * 1000;
-export const LEGACY_WINDOW_SIZE = 2;
+// Preserve the keys necessary to decrypt the bounded retained-history window
+// after membership epochs advance. New members only receive the current root,
+// while existing members (including a restored device) retain these prior
+// epochs locally. This is deliberately bounded to avoid indefinite key hoard.
+export const LEGACY_WINDOW_SIZE = 256;
+const MAX_ID_BYTES = 256;
+const MAX_PLAINTEXT_BYTES = 1 << 20;
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -36,6 +42,7 @@ export interface CrowdCiphertext {
 // ── Group creation ─────────────────────────────────────────────────────────
 
 export function newCrowdGroup(scopeId: string): CrowdState {
+  if (!validId(scopeId)) throw new Error('crowd: invalid scope id');
   const root = crypto.getRandomValues(new Uint8Array(32));
   return {
     scopeId,
@@ -55,6 +62,9 @@ export function newCrowdGroup(scopeId: string): CrowdState {
  * epoch ids line up with everyone else's.
  */
 export function newCrowdGroupFromRoot(scopeId: string, root: Uint8Array, epochId = 0): CrowdState {
+  if (!validId(scopeId) || root.length !== 32 || !Number.isSafeInteger(epochId) || epochId < 0) {
+    throw new Error('crowd: invalid external epoch root');
+  }
   return {
     scopeId,
     currentEpoch: epochFromRoot(root, epochId),
@@ -66,22 +76,26 @@ export function newCrowdGroupFromRoot(scopeId: string, root: Uint8Array, epochId
 
 /** Derive the next epoch root from the current root (deterministic rotation). */
 export function deriveEpochRoot(current: Uint8Array): Uint8Array {
+  if (current.length !== 32) throw new Error('crowd: invalid epoch root');
   return deriveKey(current, null, LABEL_CROWD_EPOCH_ROOT, 32);
 }
 
 /** Derive a per-sender key from the epoch root. */
 export function deriveSenderKey(epochRoot: Uint8Array, peerId: string): Uint8Array {
+  if (epochRoot.length !== 32 || !validId(peerId)) throw new Error('crowd: invalid sender key input');
   return deriveKey(epochRoot, null, LABEL_CROWD_SENDER_KEY + peerId, 32);
 }
 
 /** Register (pre-derive) a sender key in the current epoch. */
 export function addSender(g: CrowdState, peerId: string): void {
+  assertCrowdState(g);
   const sk = deriveSenderKey(g.currentEpoch.epochRoot, peerId);
   g.currentEpoch.senderKeys.set(peerId, sk);
 }
 
 /** Rotate epoch on membership change using a FRESH random root (spec 13 §6.2). */
 export function rotateEpochMembership(g: CrowdState): void {
+  assertCrowdState(g);
   const freshRoot = crypto.getRandomValues(new Uint8Array(32));
   const nextId = g.currentEpoch.epochId + 1;
   g.prevEpochs = [g.currentEpoch, ...g.prevEpochs].slice(0, LEGACY_WINDOW_SIZE);
@@ -98,6 +112,10 @@ export function rotateEpochMembership(g: CrowdState): void {
  * the owner mints a fresh root, bumps the epoch, and broadcasts both.
  */
 export function installEpochRoot(g: CrowdState, root: Uint8Array, epochId: number): void {
+  assertCrowdState(g);
+  if (root.length !== 32 || !Number.isSafeInteger(epochId) || epochId < 0) {
+    throw new Error('crowd: invalid external epoch root');
+  }
   if (epochId <= g.currentEpoch.epochId) return; // stale / duplicate — never roll back
   g.prevEpochs = [g.currentEpoch, ...g.prevEpochs].slice(0, LEGACY_WINDOW_SIZE);
   g.currentEpoch = epochFromRoot(root, epochId);
@@ -115,11 +133,15 @@ export function installEpochRoot(g: CrowdState, root: Uint8Array, epochId: numbe
  * the synchronized `crowd_root`/`crowd_epoch` the owner broadcasts.
  */
 export function crowdEncrypt(g: CrowdState, senderId: string, plaintext: Uint8Array): CrowdCiphertext {
+  assertCrowdState(g);
+  if (!validId(senderId) || !isByteArray(plaintext) || plaintext.length > MAX_PLAINTEXT_BYTES) {
+    throw new Error('crowd: invalid message');
+  }
   let sk = g.currentEpoch.senderKeys.get(senderId);
   if (!sk) { sk = deriveSenderKey(g.currentEpoch.epochRoot, senderId); }
 
   const nonce = crypto.getRandomValues(new Uint8Array(12));
-  const aad = epochAAD(g.currentEpoch.epochId, senderId);
+  const aad = epochAAD(g.scopeId, g.currentEpoch.epochId, senderId);
   const aead = chacha20poly1305(sk, nonce, aad);
   const ct = aead.encrypt(plaintext);
   g.currentEpoch.messageCount++;
@@ -128,11 +150,14 @@ export function crowdEncrypt(g: CrowdState, senderId: string, plaintext: Uint8Ar
 
 /** Decrypt a Crowd mode ciphertext. */
 export function crowdDecrypt(g: CrowdState, ct: CrowdCiphertext): Uint8Array {
+  assertCrowdState(g);
+  if (!validCiphertext(ct)) throw new Error('crowd: invalid ciphertext');
   const epoch = findEpoch(g, ct.epochId);
   if (!epoch) throw new Error('crowd: epoch expired or not found');
   let sk = epoch.senderKeys.get(ct.senderId);
   if (!sk) { sk = deriveSenderKey(epoch.epochRoot, ct.senderId); }
-  const aad = epochAAD(ct.epochId, ct.senderId);
+  if (sk.length !== 32) throw new Error('crowd: invalid sender key');
+  const aad = epochAAD(g.scopeId, ct.epochId, ct.senderId);
   const aead = chacha20poly1305(sk, ct.nonce, aad);
   return aead.decrypt(ct.ct);
 }
@@ -140,6 +165,7 @@ export function crowdDecrypt(g: CrowdState, ct: CrowdCiphertext): Uint8Array {
 // ── Internal ───────────────────────────────────────────────────────────────
 
 function epochFromRoot(root: Uint8Array, epochId: number): CrowdEpoch {
+  if (root.length !== 32 || !Number.isSafeInteger(epochId) || epochId < 0) throw new Error('crowd: invalid epoch');
   return { epochId, epochRoot: new Uint8Array(root), senderKeys: new Map(), messageCount: 0, startedAt: Date.now() };
 }
 
@@ -149,13 +175,59 @@ function findEpoch(g: CrowdState, epochId: number): CrowdEpoch | null {
   return null;
 }
 
-function epochAAD(epochId: number, senderId: string): Uint8Array {
-  const buf = new Uint8Array(8);
-  const view = new DataView(buf.buffer);
-  view.setUint32(0, Math.floor(epochId / 2 ** 32), false);
-  view.setUint32(4, epochId >>> 0, false);
+function epochAAD(scopeId: string, epochId: number, senderId: string): Uint8Array {
+  const prefix = new TextEncoder().encode('xorein/crowd/v2/message\0');
+  const scope = new TextEncoder().encode(scopeId);
   const sender = new TextEncoder().encode(senderId);
-  const out = new Uint8Array(8 + sender.length);
-  out.set(buf, 0); out.set(sender, 8);
+  return concat(prefix, uint16BE(scope.length), scope, uint64BE(epochId), uint16BE(sender.length), sender);
+}
+
+function uint64BE(n: number): Uint8Array {
+  const out = new Uint8Array(8);
+  const view = new DataView(out.buffer);
+  view.setUint32(0, Math.floor(n / 2 ** 32), false);
+  view.setUint32(4, n >>> 0, false);
   return out;
+}
+
+function uint16BE(n: number): Uint8Array {
+  const out = new Uint8Array(2);
+  new DataView(out.buffer).setUint16(0, n, false);
+  return out;
+}
+
+function concat(...parts: Uint8Array[]): Uint8Array {
+  const out = new Uint8Array(parts.reduce((total, part) => total + part.length, 0));
+  let offset = 0;
+  for (const part of parts) { out.set(part, offset); offset += part.length; }
+  return out;
+}
+
+function validId(value: unknown): value is string {
+  if (typeof value !== 'string' || value.length === 0 || value.trim() !== value || containsControl(value)) return false;
+  return new TextEncoder().encode(value).length <= MAX_ID_BYTES;
+}
+
+function containsControl(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code <= 0x1f || code === 0x7f) return true;
+  }
+  return false;
+}
+
+function validCiphertext(ct: CrowdCiphertext): boolean {
+  return !!ct && Number.isSafeInteger(ct.epochId) && ct.epochId >= 0 && validId(ct.senderId)
+    && isByteArray(ct.nonce) && ct.nonce.length === 12
+    && isByteArray(ct.ct) && ct.ct.length >= 16 && ct.ct.length <= MAX_PLAINTEXT_BYTES + 16;
+}
+
+function isByteArray(value: unknown): value is Uint8Array {
+  return Object.prototype.toString.call(value) === '[object Uint8Array]';
+}
+
+function assertCrowdState(g: CrowdState): void {
+  if (!g || !validId(g.scopeId) || !g.currentEpoch || g.prevEpochs.length > LEGACY_WINDOW_SIZE
+    || g.currentEpoch.epochRoot.length !== 32 || !Number.isSafeInteger(g.currentEpoch.epochId)
+    || g.currentEpoch.epochId < 0) throw new Error('crowd: invalid state');
 }

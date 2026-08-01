@@ -10,6 +10,10 @@ import { ChatArea } from "./ChatArea";
 import type { Channel, Message } from "@/types";
 import { injectRuntimeSnapshot } from "@/test/runtimeHarness";
 import { createHappyRuntime } from "@/test/fixtures";
+import {
+  configureChatScopePersistence,
+  writePersistedChatScopeState,
+} from "@/protocol/client";
 
 const mutationStub = () => ({ mutate: vi.fn(), mutateAsync: vi.fn(async () => ({})), isPending: false });
 const sendChannelMock = vi.hoisted(() => ({ mutate: vi.fn(), mutateAsync: vi.fn(async () => ({})), isPending: false }));
@@ -49,10 +53,12 @@ vi.mock("@/hooks/runtime/useRuntimeMutations", () => ({
 }));
 
 const channel: Channel = { id: "ch-1", name: "general", type: "text", categoryId: "cat-1" };
-const SCOPE_KEY = "harmolyn:xorein:chat-scope:ch-1";
+const TEST_CHAT_SCOPE_KEY = new Uint8Array(32).fill(0x5a);
+const TEST_CHAT_SCOPE_NAMESPACE = "peer-test";
 
 function seedPersistedScope(messages: Message[], deletedMessageIds: string[] = []) {
-  window.localStorage.setItem(SCOPE_KEY, JSON.stringify({
+  configureChatScopePersistence({ key: TEST_CHAT_SCOPE_KEY, namespace: TEST_CHAT_SCOPE_NAMESPACE });
+  writePersistedChatScopeState(channel.id, {
     version: 1,
     nickname: "",
     mutedUserIds: [],
@@ -60,7 +66,7 @@ function seedPersistedScope(messages: Message[], deletedMessageIds: string[] = [
     deletedMessageIds,
     messages,
     threads: {},
-  }));
+  });
 }
 
 function renderChat(messages: Message[]) {
@@ -101,6 +107,9 @@ function renderChat(messages: Message[]) {
 }
 
 beforeEach(() => {
+  configureChatScopePersistence({ key: TEST_CHAT_SCOPE_KEY, namespace: TEST_CHAT_SCOPE_NAMESPACE });
+  window.localStorage.clear();
+  window.sessionStorage.clear();
   sendChannelMock.mutate.mockClear();
   sendChannelMock.mutateAsync.mockClear();
   castPollVoteMock.mutate.mockClear();
@@ -110,6 +119,9 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  configureChatScopePersistence(null);
+  window.localStorage.clear();
+  window.sessionStorage.clear();
   delete (window as unknown as Record<string, unknown>).__HARMOLYN_NATIVE_ACTIVE__;
 });
 

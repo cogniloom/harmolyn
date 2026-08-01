@@ -19,6 +19,55 @@ const randomRoot = () => crypto.getRandomValues(new Uint8Array(32));
 const SRV = 'srv-rotation';
 
 describe('Crowd epoch rotation — a kick revokes channel keys', () => {
+  it('changes Tree to Crowd at a fresh epoch and retains in-flight Tree ciphertext', () => {
+    const R0 = randomRoot();
+    const R1 = randomRoot();
+    const A = new ChannelCrypto(); A.setRoot(SRV, R0, 0, 'tree');
+    const B = new ChannelCrypto(); B.setRoot(SRV, R0, 0, 'tree');
+
+    const treeWire = A.encrypt(SRV, 'A', enc('small space'));
+    expect(dec(B.decrypt(SRV, treeWire, 'tree'))).toBe('small space');
+
+    A.setRoot(SRV, R1, 1, 'crowd');
+    B.setRoot(SRV, R1, 1, 'crowd');
+    expect(A.modeOf(SRV)).toBe('crowd');
+    expect(dec(B.decrypt(SRV, treeWire, 'tree'))).toBe('small space');
+
+    const crowdWire = A.encrypt(SRV, 'A', enc('large space'));
+    expect(crowdWire.epoch).toBe(1);
+    expect(dec(B.decrypt(SRV, crowdWire, 'crowd'))).toBe('large space');
+  });
+
+  it('refuses an algorithm change without an advancing epoch', () => {
+    const root = randomRoot();
+    const A = new ChannelCrypto();
+    A.setRoot(SRV, root, 3, 'tree');
+    A.setRoot(SRV, randomRoot(), 3, 'crowd');
+    expect(A.modeOf(SRV)).toBe('tree');
+    expect(A.epochOf(SRV)).toBe(3);
+  });
+
+  it('refuses different key material reusing the same epoch', () => {
+    const original = randomRoot();
+    const replacement = randomRoot();
+    const A = new ChannelCrypto(); A.setRoot(SRV, original, 4, 'crowd');
+    const B = new ChannelCrypto(); B.setRoot(SRV, original, 4, 'crowd');
+    A.setRoot(SRV, replacement, 4, 'crowd');
+    const wire = A.encrypt(SRV, 'A', enc('immutable epoch root'));
+    expect(dec(B.decrypt(SRV, wire, 'crowd'))).toBe('immutable epoch root');
+  });
+
+  it('retires an inactive mode after the one-epoch transition window', () => {
+    const A = new ChannelCrypto();
+    const treeRoot = randomRoot();
+    A.setRoot(SRV, treeRoot, 0, 'tree');
+    const oldTree = A.encrypt(SRV, 'A', enc('old tree'));
+    A.setRoot(SRV, randomRoot(), 1, 'crowd');
+    expect(dec(A.decrypt(SRV, oldTree, 'tree'))).toBe('old tree');
+    A.setRoot(SRV, randomRoot(), 2, 'crowd');
+    expect(() => A.decrypt(SRV, oldTree, 'tree')).toThrow();
+  });
+
   it('remaining member decrypts new epoch; kicked member is locked out', () => {
     const R0 = randomRoot(); // shared epoch-0 root (all three members)
     const R1 = randomRoot(); // owner's fresh root after kicking C

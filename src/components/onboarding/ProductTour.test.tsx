@@ -15,7 +15,7 @@ describe('ProductTour', () => {
 
     // Click NEXT through the middle steps; the final button reads differently.
     fireEvent.click(screen.getByRole('button', { name: /^NEXT$/i })); // 2
-    expect(screen.getByRole('heading', { name: /Servers are communities/i })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: /Spaces are communities/i })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: /^NEXT$/i })); // 3
     fireEvent.click(screen.getByRole('button', { name: /^NEXT$/i })); // 4
     fireEvent.click(screen.getByRole('button', { name: /^NEXT$/i })); // 5

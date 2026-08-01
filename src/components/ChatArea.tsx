@@ -23,8 +23,6 @@ import { InboxPanel } from '@/components/InboxPanel';
 import { MentionAutocomplete } from '@/components/MentionAutocomplete';
 import { useToast } from '@/lib/toastBus';
 import { useFeature } from '@/hooks/useFeature';
-import { useNodeHealth } from '@/hooks/useNodeHealth';
-import { NODE_OFFLINE_MESSAGE } from '@/lib/nodeHealth';
 import { useSendChannelMessage, useSendDmMessage, useEditMessage, useDeleteMessage, useAddReaction, useRemoveReaction, usePinMessage, useUnpinMessage, useCastPollVote, useLoadOlderHistory, useSetPeerVerified, useSubmitReport } from '@/hooks/runtime/mutations';
 import { KeyVerification } from '@/components/KeyVerification';
 import { ReportModal, type ReportSubmission } from '@/components/ReportModal';
@@ -254,7 +252,7 @@ function normalizeChatMessages(value: unknown): Message[] {
       ...(deletedAt ? { deletedAt } : {}),
       ...(deletedBy ? { deletedBy } : {}),
       ...(pollVotes ? { poll_votes: pollVotes } : {}),
-      ...(record.securityMode === 'seal' || record.securityMode === 'crowd' || record.securityMode === 'clear' ? { securityMode: record.securityMode } : {}),
+      ...(record.securityMode === 'seal' || record.securityMode === 'tree' || record.securityMode === 'crowd' || record.securityMode === 'clear' ? { securityMode: record.securityMode } : {}),
       ...(typeof record.encrypted === 'boolean' ? { encrypted: record.encrypted } : {}),
     });
   }
@@ -466,6 +464,8 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   hasIdentity = false,
   onOpenAuth,
 }) => {
+  const liveShellData = readShellRuntimeData();
+
   // The security badge is derived from what ACTUALLY happened on the wire, never
   // from the scope type. On the native path each message carries the real mode it
   // was encrypted/decrypted under (`securityMode`): inbound messages only exist
@@ -491,8 +491,11 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
     }),
     [messages],
   );
+  const latestEncryptedMode = [...messages].reverse().find((m) =>
+    m.securityMode === 'seal' || m.securityMode === 'tree' || m.securityMode === 'crowd',
+  )?.securityMode;
   const conversationMode = nativeActive
-    ? (anyClearMessage ? 'clear' : (isDM ? 'seal' : 'crowd'))
+    ? (anyClearMessage ? 'clear' : (isDM ? 'seal' : (latestEncryptedMode ?? securityMode)))
     : securityMode;
   const securityBadge = resolveSecurityMode(conversationMode);
   const channelFollowingEnabled = useFeature('channelFollowing');
@@ -580,8 +583,14 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
 
   const { showMenu } = useContextMenu();
   const toast = useToast();
-  const { nodeOffline } = useNodeHealth();
   const chatSupport = readBrowserChatActionSupport();
+  const chatTransportState = liveShellData.runtimeSnapshot?.transport_state
+    ?? (chatSupport.mode === 'offline' ? 'disconnected' : 'connected');
+  const chatTransportLabel = chatTransportState === 'connected'
+    ? 'connected'
+    : chatTransportState === 'connecting'
+      ? 'connecting'
+      : 'p2p offline';
 
   useEscapeKey(() => setShowSecuritySummary(false), showSecuritySummary);
 
@@ -987,11 +996,6 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
       showFeedback('error', 'Attachments are disabled while the local xorein runtime is offline.', 'system');
       return;
     }
-    if (nodeOffline) {
-      // Attachments are ciphertext blobs stored on the support node — no node, no upload.
-      showFeedback('error', NODE_OFFLINE_MESSAGE, 'system');
-      return;
-    }
     if (file.size > 8 * 1024 * 1024) {
       showFeedback('error', 'Attachments are limited to 8 MB.', 'system');
       return;
@@ -1005,13 +1009,13 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
         showFeedback('error', 'Could not read the selected file.', 'system');
         return;
       }
-      showFeedback('info', `Encrypting & uploading ${file.name}…`, 'system');
+      showFeedback('info', `Encrypting & distributing ${file.name}…`, 'system');
       try {
-        // Encrypt the file client-side, upload only ciphertext to the node, and
-        // carry the decryption key INSIDE the E2EE message — the node stores an
-        // opaque blob it can never read (priv-4).
+        // Encrypt client-side, prefer the selected node, and also distribute
+        // content-addressed ciphertext fragments among authenticated members.
+        // The decryption key travels only inside the E2EE message.
         const attachment = await uploadEncryptedAttachment(
-          buffer, file.name, file.type || 'application/octet-stream',
+          buffer, file.name, file.type || 'application/octet-stream', channel?.id,
         );
         const sizeKb = Math.max(1, Math.round(attachment.size / 1024));
         const caption = `📎 ${attachment.name} (${sizeKb} KB)`;
@@ -1022,7 +1026,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
             await sendChannelMutation.mutateAsync({ channelId: channel.id, content: caption, media: [attachment] });
           }
         }
-        showFeedback('success', `Uploaded ${attachment.name} (${sizeKb} KB), end-to-end encrypted.`, 'message');
+        showFeedback('success', `Shared ${attachment.name} (${sizeKb} KB), end-to-end encrypted.`, 'message');
       } catch (error) {
         showFeedback('error', error instanceof Error ? error.message : 'Upload failed.', 'system');
       }
@@ -1294,7 +1298,6 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
     );
   };
 
-  const liveShellData = readShellRuntimeData();
   const runtimeSnapshot = liveShellData.runtimeSnapshot ?? null;
   const currentUserName = liveShellData.currentUser.username.toLowerCase();
   // The local peer id — poll voter lists (`poll_votes`) contain raw peer ids, so
@@ -1402,7 +1405,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
         type: isReply ? 'reply' : 'mention',
         messageId: message.id,
         channelName: channel?.name || 'current-chat',
-        serverName: isDM ? 'Direct Messages' : 'Current Server',
+        serverName: isDM ? 'Direct Messages' : 'Current Space',
         timestamp: message.timestamp,
         read: inboxReadIds.has(id),
       });
@@ -2050,8 +2053,8 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
         ) : (
           <>
             <div className="mb-2 px-1 flex items-center justify-between gap-2 text-[9px] font-mono tracking-[0.18em] uppercase">
-              <span className={`${chatSupport.mode === 'offline' ? 'text-accent-danger/80' : 'text-primary/70'}`}>
-                {chatSupport.mode === 'offline' ? 'offline' : 'connected'}
+              <span className={`${chatTransportState === 'disconnected' || chatSupport.mode === 'offline' ? 'text-accent-danger/80' : chatTransportState === 'connecting' ? 'text-accent-warning/80' : 'text-primary/70'}`}>
+                {chatTransportLabel}
               </span>
               <span className={`${composerFeedback?.tone === 'error' ? 'text-accent-danger/75' : composerFeedback?.tone === 'success' ? 'text-accent-success/80' : 'text-white/45'} text-right`}>{composerFeedback?.text || chatSupport.detail}</span>
             </div>
@@ -2091,10 +2094,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                     <input type="file" ref={fileInputRef} className="hidden" onChange={handleFileUpload} />
                     <button
                       onClick={() => fileInputRef.current?.click()}
-                      disabled={nodeOffline}
-                      aria-disabled={nodeOffline}
-                      title={nodeOffline ? NODE_OFFLINE_MESSAGE : undefined}
-                      className="p-3 text-white/30 hover:text-primary transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:text-white/30"
+                      className="p-3 text-white/30 hover:text-primary transition-colors"
                       aria-label="Add attachment"
                     ><PlusCircle size={20} /></button>
                   </>
@@ -2330,7 +2330,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
               details: report.details || undefined,
             });
             setReportTarget(null);
-            toast.success('Report submitted', serverId ? 'It has been sent to the server owner (and will retry if they are offline).' : 'Thanks — your report was recorded.');
+            toast.success('Report submitted', serverId ? 'It has been sent to the Space Owner (and will retry if they are offline).' : 'Thanks — your report was recorded.');
           }}
         />
       )}

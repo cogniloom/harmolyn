@@ -355,7 +355,7 @@ export const ChannelRail: React.FC<ChannelRailProps> = ({
             onClick: () => onInvite(),
           }] : []),
           ...(onOpenServerSettings ? [{
-            label: 'Server Settings',
+            label: 'Space Settings',
             icon: <Settings size={13} />,
             onClick: () => onOpenServerSettings(),
           }] : []),
@@ -365,14 +365,14 @@ export const ChannelRail: React.FC<ChannelRailProps> = ({
         items: [
           isOwner
             ? {
-                label: 'Delete Server',
+                label: 'Delete Space',
                 icon: <Trash2 size={13} />,
                 onClick: () => { if (safeConfirm(`Delete “${server.name}”? This permanently removes it for every member and cannot be undone.`)) onDeleteServer?.(); },
                 danger: true,
                 disabled: !onDeleteServer,
               }
             : {
-                label: 'Leave Server',
+                label: 'Leave Space',
                 icon: <LogOut size={13} />,
                 onClick: () => { if (safeConfirm(`Leave “${server.name}”? You'll need a new invite to rejoin.`)) onLeaveServer?.(); },
                 danger: true,
@@ -412,8 +412,8 @@ export const ChannelRail: React.FC<ChannelRailProps> = ({
             <button
               onClick={showServerHeaderMenu}
               className="min-w-0 flex items-center gap-1.5 group/title text-left hover:text-primary transition-colors focus-ring rounded"
-              aria-label="Server menu"
-              title="Server menu"
+              aria-label="Space menu"
+              title="Space menu"
             >
               <div className="min-w-0">
                 <h2 className="font-bold theme-text truncate micro-label text-xs tracking-widest group-hover/title:text-primary transition-colors">{server?.name}</h2>
@@ -430,7 +430,7 @@ export const ChannelRail: React.FC<ChannelRailProps> = ({
         </div>
         <div className="flex items-center gap-1">
           {!isHome && onOpenServerSettings && (
-            <button onClick={onOpenServerSettings} className="theme-text-dim hover:text-primary transition-colors" aria-label="Server Settings" title="Server Settings">
+            <button onClick={onOpenServerSettings} className="theme-text-dim hover:text-primary transition-colors" aria-label="Space Settings" title="Space Settings">
               <Settings size={14} />
             </button>
           )}

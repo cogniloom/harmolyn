@@ -1,274 +1,490 @@
-name: Release
+name: Promote staging and release
 
 on:
-  push:
-    tags:
-      - 'v[0-9]*.[0-9]*.[0-9]*'
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Version change to publish from staging
+        required: true
+        default: stable
+        type: choice
+        options:
+          - stable
+          - patch
+          - minor
+          - major
+      resume_tag:
+        description: Existing signed vX.Y.Z tag to rebuild and finish publishing after a post-promotion failure
+        required: false
+        default: ''
+        type: string
 
 permissions:
-  contents: write
+  contents: read
 
-env:
-  XOREIN_REF: 7864adad8e7beaa63ae4a1e38b6325b2786586c4
+concurrency:
+  group: official-release
+  cancel-in-progress: false
 
 jobs:
-  draft-release:
-    name: Create Draft Release
-    runs-on: self-hosted
-    outputs:
-      release_id: ${{ steps.create-release.outputs.id }}
-      release_upload_url: ${{ steps.create-release.outputs.upload_url }}
+  gate:
+    name: Verify official signing configuration
+    runs-on: [self-hosted, linux, x64]
+    environment: official-release
+    timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v5
-
-      - name: Create draft release
-        id: create-release
-        uses: actions/github-script@v8
-        with:
-          script: |
-            const tag = context.ref.replace('refs/tags/', '');
-            const release = await github.rest.repos.createRelease({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              tag_name: tag,
-              name: tag,
-              draft: true,
-              generate_release_notes: true,
-            });
-            core.setOutput('id', release.data.id);
-            core.setOutput('upload_url', release.data.upload_url);
-
-  build:
-    name: Build (${{ matrix.platform }})
-    needs: draft-release
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - platform: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            goos: linux
-            goarch: amd64
-            cgo: "1"
-            ext: ""
-            bundles: deb,appimage
-          - platform: macos-latest
-            target: x86_64-apple-darwin
-            goos: darwin
-            goarch: amd64
-            cgo: "0"
-            ext: ""
-            bundles: dmg
-          - platform: macos-latest
-            target: aarch64-apple-darwin
-            goos: darwin
-            goarch: arm64
-            cgo: "0"
-            ext: ""
-            bundles: dmg
-          - platform: windows-latest
-            target: x86_64-pc-windows-msvc
-            goos: windows
-            goarch: amd64
-            cgo: "0"
-            ext: ".exe"
-            bundles: msi,nsis
-
-    runs-on: self-hosted
-    steps:
-      - uses: actions/checkout@v5
-
-      - name: Checkout xorein sidecar source
-        uses: actions/checkout@v5
-        with:
-          repository: kylhuk/xorein
-          path: xorein
-          ref: ${{ env.XOREIN_REF }}
-
-      - name: Install Linux system dependencies
-        if: matrix.platform == 'ubuntu-latest'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libappindicator3-dev \
-            librsvg2-dev \
-            xdg-utils \
-            patchelf \
-            libgtk-3-dev \
-            libssl-dev
-
-      - uses: actions/setup-node@v5
-        with:
-          node-version: 20
-          cache: npm
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: xorein/go.mod
-
-      - name: Build pinned xorein runtime
-        id: xorein
+      # This runs before checkout so repository code never receives every
+      # platform credential merely to determine whether one is missing.
+      - name: Refuse an unsigned or incomplete release configuration
         shell: bash
         env:
-          CGO_ENABLED: ${{ matrix.cgo }}
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
-        run: |
-          set -euo pipefail
-          mkdir -p xorein-dist
-          asset_name="xorein-${{ matrix.target }}${{ matrix.ext }}"
-          output="$PWD/xorein-dist/$asset_name"
-          (cd xorein && go build -trimpath -o "$output" ./cmd/aether)
-          sha256="$(node -e "const crypto=require('crypto'); const fs=require('fs'); console.log(crypto.createHash('sha256').update(fs.readFileSync(process.argv[1])).digest('hex'))" "$output")"
-          echo "asset_name=$asset_name" >> "$GITHUB_OUTPUT"
-          echo "path=$output" >> "$GITHUB_OUTPUT"
-          echo "sha256=$sha256" >> "$GITHUB_OUTPUT"
-
-      - name: Upload xorein runtime asset
-        uses: actions/github-script@v8
-        env:
-          RELEASE_ID: ${{ needs.draft-release.outputs.release_id }}
-          XOREIN_ASSET_NAME: ${{ steps.xorein.outputs.asset_name }}
-          XOREIN_ASSET_PATH: ${{ steps.xorein.outputs.path }}
-        with:
-          script: |
-            const fs = require('fs');
-            await github.rest.repos.uploadReleaseAsset({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              release_id: process.env.RELEASE_ID,
-              name: process.env.XOREIN_ASSET_NAME,
-              data: fs.readFileSync(process.env.XOREIN_ASSET_PATH),
-              headers: { 'content-type': 'application/octet-stream' },
-            });
-
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: src-tauri
-          key: ${{ matrix.target }}
-
-      - name: Import macOS certificate
-        if: matrix.platform == 'macos-latest' && env.APPLE_CERTIFICATE != ''
-        env:
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          KEYCHAIN_PASSWORD: ${{ github.run_id }}
-        run: |
-          echo "$APPLE_CERTIFICATE" | base64 --decode > certificate.p12
-          security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
-          security default-keychain -s build.keychain
-          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
-          security import certificate.p12 -k build.keychain -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
-          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" build.keychain
-          rm certificate.p12
-
-      - run: npm ci
-
-      - name: Build frontend
-        run: npm run build
-
-      - name: Build Tauri bundles
-        uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          # macOS signing
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          # Windows signing
           WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
           WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
-          HARMOLYN_XOREIN_ARTIFACT_URL: https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/${{ steps.xorein.outputs.asset_name }}
-          HARMOLYN_XOREIN_ARTIFACT_SHA256: ${{ steps.xorein.outputs.sha256 }}
-          HARMOLYN_XOREIN_ARTIFACT_TARGET: ${{ matrix.target }}
-          HARMOLYN_XOREIN_ARTIFACT_VERSION: ${{ env.XOREIN_REF }}
-        with:
-          releaseId: ${{ needs.draft-release.outputs.release_id }}
-          args: --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
+          RELEASE_TAG_GPG_PRIVATE_KEY: ${{ secrets.RELEASE_TAG_GPG_PRIVATE_KEY }}
+          RELEASE_TAG_GPG_PASSPHRASE: ${{ secrets.RELEASE_TAG_GPG_PASSPHRASE }}
+          RELEASE_TAG_GPG_FINGERPRINT: ${{ secrets.RELEASE_TAG_GPG_FINGERPRINT }}
+        run: |
+          set -euo pipefail
+          required=(
+            TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+            APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY
+            APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID
+            WINDOWS_CERTIFICATE WINDOWS_CERTIFICATE_PASSWORD
+            RELEASE_TAG_GPG_PRIVATE_KEY RELEASE_TAG_GPG_PASSPHRASE
+            RELEASE_TAG_GPG_FINGERPRINT
+          )
+          missing=()
+          for name in "${required[@]}"; do
+            [[ -n "${!name:-}" ]] || missing+=("$name")
+          done
+          if (( ${#missing[@]} )); then
+            echo "::error::Official release credentials are missing: ${missing[*]}"
+            exit 1
+          fi
 
-  manifest:
-    name: Generate Release Manifest
-    needs: [draft-release, build]
-    runs-on: self-hosted
+  prepare:
+    name: Validate and version staging
+    needs: gate
+    runs-on: [self-hosted, linux, x64]
+    environment: official-release
+    timeout-minutes: 45
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+      source_sha: ${{ steps.refs.outputs.staging_sha }}
+      main_sha: ${{ steps.refs.outputs.main_sha }}
+      candidate_tree: ${{ steps.candidate.outputs.tree }}
+      resume: ${{ steps.refs.outputs.resume }}
     steps:
-      - uses: actions/checkout@v5
-
-      - name: Download release assets
-        uses: actions/github-script@v8
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          script: |
-            const fs = require('fs');
-            const crypto = require('crypto');
-            const releaseId = '${{ needs.draft-release.outputs.release_id }}';
-            const assets = await github.rest.repos.listReleaseAssets({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              release_id: releaseId,
-              per_page: 100,
-            });
-            const artifacts = [];
-            for (const asset of assets.data) {
-              const response = await github.request('GET /repos/{owner}/{repo}/releases/assets/{asset_id}', {
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                asset_id: asset.id,
-                headers: { accept: 'application/octet-stream' },
-              });
-              const bytes = Buffer.from(response.data);
-              artifacts.push({
-                name: asset.name,
-                size: asset.size,
-                sha256: crypto.createHash('sha256').update(bytes).digest('hex'),
-                download_url: asset.browser_download_url,
-              });
-            }
-            const manifest = {
-              version: context.ref.replace('refs/tags/', ''),
-              git_sha: context.sha,
-              workflow_run_id: context.runId,
-              built_at: new Date().toISOString(),
-              xorein_ref: process.env.XOREIN_REF,
-              artifacts,
-            };
-            fs.writeFileSync('release-manifest.json', JSON.stringify(manifest, null, 2));
+          ref: staging
+          fetch-depth: 0
 
-      - name: Upload release manifest
-        uses: actions/github-script@v8
+      - name: Configure release tag signing and verification
+        if: inputs.resume_tag != ''
+        env:
+          RELEASE_TAG_GPG_PRIVATE_KEY: ${{ secrets.RELEASE_TAG_GPG_PRIVATE_KEY }}
+          RELEASE_TAG_GPG_PASSPHRASE: ${{ secrets.RELEASE_TAG_GPG_PASSPHRASE }}
+          RELEASE_TAG_GPG_FINGERPRINT: ${{ secrets.RELEASE_TAG_GPG_FINGERPRINT }}
+        run: bash scripts/configure-release-gpg.sh
+
+      - name: Verify release source refs
+        id: refs
+        shell: bash
+        env:
+          RESUME_TAG: ${{ inputs.resume_tag }}
+        run: |
+          set -euo pipefail
+          git fetch --prune origin main staging --tags
+          resume_tag="$RESUME_TAG"
+          staging_sha=$(git rev-parse origin/staging)
+          main_sha=$(git rev-parse origin/main)
+          if [[ -n "$resume_tag" ]]; then
+            [[ "$resume_tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+            [[ "$(git cat-file -t "$resume_tag")" == tag ]]
+            git tag -v "$resume_tag"
+            release_sha=$(git rev-parse "$resume_tag^{commit}")
+            [[ "$staging_sha" == "$release_sha" ]]
+            [[ "$main_sha" == "$release_sha" ]]
+            echo "resume=true" >> "$GITHUB_OUTPUT"
+            echo "staging_sha=$release_sha" >> "$GITHUB_OUTPUT"
+            echo "main_sha=$release_sha" >> "$GITHUB_OUTPUT"
+          else
+            git merge-base --is-ancestor "$main_sha" "$staging_sha"
+            echo "resume=false" >> "$GITHUB_OUTPUT"
+            echo "staging_sha=$staging_sha" >> "$GITHUB_OUTPUT"
+            echo "main_sha=$main_sha" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Remove release tag verification material
+        if: always()
+        shell: bash
+        run: |
+          if [[ -n "${GNUPGHOME:-}" ]]; then rm -rf -- "$GNUPGHOME"; fi
+          if [[ -n "${HARMOLYN_RELEASE_GPG_PROGRAM:-}" ]]; then rm -f -- "$HARMOLYN_RELEASE_GPG_PROGRAM"; fi
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          script: |
-            const fs = require('fs');
-            const releaseId = '${{ needs.draft-release.outputs.release_id }}';
-            await github.rest.repos.uploadReleaseAsset({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              release_id: releaseId,
-              name: 'release-manifest.json',
-              data: fs.readFileSync('release-manifest.json'),
-              headers: { 'content-type': 'application/json' },
-            });
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+        with:
+          workspaces: src-tauri
+          key: release-prepare
+
+      - name: Install Linux build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev \
+            xdg-utils patchelf libgtk-3-dev libssl-dev
+
+      - run: npm ci
+
+      - name: Install the lockfile-pinned Chromium runtime
+        run: npx playwright-core install --with-deps chromium
+
+      - name: Select and synchronize the release version
+        id: version
+        shell: bash
+        env:
+          RESUME_TAG: ${{ inputs.resume_tag }}
+        run: |
+          set -euo pipefail
+          if [[ "${{ steps.refs.outputs.resume }}" == true ]]; then
+            version=$(npm run --silent release:version -- --check)
+            [[ "v$version" == "$RESUME_TAG" ]]
+          else
+            version=$(npm run --silent release:version -- "${{ inputs.bump }}")
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+
+      - name: Full pre-release validation
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run release:version -- --check
+          npm run lint
+          npm run typecheck
+          npm run build
+          npm test
+          npm run test:protocol
+          npm run test:browser:ci
+          cargo test --locked --manifest-path src-tauri/Cargo.toml
+
+      - name: Pin the exact candidate tree without mutating staging
+        id: candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ steps.refs.outputs.resume }}" == true ]]; then
+            git diff --quiet
+            git diff --cached --quiet
+            echo "tree=$(git rev-parse HEAD^{tree})" >> "$GITHUB_OUTPUT"
+          else
+            git add package.json package-lock.json src-tauri/Cargo.toml src-tauri/Cargo.lock src-tauri/tauri.conf.json
+            git diff --cached --quiet && { echo "::error::The selected bump produced no release commit"; exit 1; }
+            echo "tree=$(git write-tree)" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    name: Signed build - ${{ matrix.name }}
+    needs: prepare
+    environment: official-release
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: linux-x64
+            name: Linux x86_64
+            runner: '["self-hosted","linux","x64"]'
+            target: x86_64-unknown-linux-gnu
+            rust_targets: x86_64-unknown-linux-gnu
+            bundles: deb,appimage
+          - id: macos-universal
+            name: macOS universal
+            runner: '["self-hosted","macOS"]'
+            target: universal-apple-darwin
+            rust_targets: aarch64-apple-darwin,x86_64-apple-darwin
+            bundles: app,dmg
+          - id: windows-x64
+            name: Windows x86_64
+            runner: '["windows-latest"]'
+            target: x86_64-pc-windows-msvc
+            rust_targets: x86_64-pc-windows-msvc
+            bundles: msi,nsis
+    runs-on: ${{ fromJSON(matrix.runner) }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.prepare.outputs.source_sha }}
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: stable
+          targets: ${{ matrix.rust_targets }}
+
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+        with:
+          workspaces: src-tauri
+          key: release-${{ matrix.id }}
+
+      - name: Reproduce the validated candidate tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ needs.prepare.outputs.resume }}" == true ]]; then
+            version=$(npm run --silent release:version -- --check)
+          else
+            version=$(npm run --silent release:version -- "${{ inputs.bump }}")
+            git add package.json package-lock.json src-tauri/Cargo.toml src-tauri/Cargo.lock src-tauri/tauri.conf.json
+          fi
+          [[ "$version" == "${{ needs.prepare.outputs.version }}" ]]
+          [[ "$(git write-tree)" == "${{ needs.prepare.outputs.candidate_tree }}" ]]
+
+      - name: Install Linux build dependencies
+        if: matrix.id == 'linux-x64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev \
+            xdg-utils patchelf libgtk-3-dev libssl-dev
+
+      - run: npm ci
+
+      - name: Import Apple signing identity
+        if: matrix.id == 'macos-universal'
+        shell: bash
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          certificate_path="$RUNNER_TEMP/harmolyn-release.p12"
+          keychain_path="$RUNNER_TEMP/harmolyn-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.keychain-db"
+          original_keychain=$(security default-keychain -d user | tr -d '"')
+          printf '%s' "$APPLE_CERTIFICATE" | base64 -D > "$certificate_path"
+          security create-keychain -p "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" "$keychain_path"
+          security set-keychain-settings -lut 21600 "$keychain_path"
+          security unlock-keychain -p "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" "$keychain_path"
+          security import "$certificate_path" -k "$keychain_path" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" "$keychain_path"
+          security list-keychains -d user -s "$keychain_path" "$original_keychain"
+          security default-keychain -d user -s "$keychain_path"
+          echo "HARMOLYN_RELEASE_KEYCHAIN=$keychain_path" >> "$GITHUB_ENV"
+          echo "HARMOLYN_ORIGINAL_KEYCHAIN=$original_keychain" >> "$GITHUB_ENV"
+          rm -f "$certificate_path"
+
+      - name: Import Windows signing identity
+        if: matrix.id == 'windows-x64'
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $bytes = [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE)
+          $flags = [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::PersistKeySet -bor [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::UserKeySet
+          $certificate = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($bytes, $env:WINDOWS_CERTIFICATE_PASSWORD, $flags)
+          $store = [System.Security.Cryptography.X509Certificates.X509Store]::new('My', 'CurrentUser')
+          $store.Open('ReadWrite')
+          $store.Add($certificate)
+          $store.Close()
+          "TAURI_BUNDLER_WINDOWS_CERTIFICATE_THUMBPRINT=$($certificate.Thumbprint)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "HARMOLYN_WINDOWS_CERTIFICATE_THUMBPRINT=$($certificate.Thumbprint)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Build signed Linux/Windows bundles and updater archives
+        if: matrix.id != 'macos-universal'
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: npm exec tauri build -- --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
+
+      - name: Build signed and notarized macOS bundles and updater archives
+        if: matrix.id == 'macos-universal'
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: npm exec tauri build -- --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
+
+      - name: Collect release assets
+        shell: bash
+        run: node scripts/release-artifacts.mjs collect "src-tauri/target/${{ matrix.target }}/release/bundle" "release-artifacts/${{ matrix.id }}"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: harmolyn-${{ matrix.id }}-${{ needs.prepare.outputs.version }}
+          path: release-artifacts/${{ matrix.id }}/
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Remove Apple signing identity
+        if: always() && matrix.id == 'macos-universal'
+        shell: bash
+        run: |
+          if [[ -n "${HARMOLYN_ORIGINAL_KEYCHAIN:-}" ]]; then security default-keychain -d user -s "$HARMOLYN_ORIGINAL_KEYCHAIN" || true; fi
+          if [[ -n "${HARMOLYN_RELEASE_KEYCHAIN:-}" ]]; then security delete-keychain "$HARMOLYN_RELEASE_KEYCHAIN" || true; fi
+
+      - name: Remove Windows signing identity
+        if: always() && matrix.id == 'windows-x64'
+        shell: pwsh
+        run: |
+          if ($env:HARMOLYN_WINDOWS_CERTIFICATE_THUMBPRINT) {
+            Remove-Item "Cert:\CurrentUser\My\$env:HARMOLYN_WINDOWS_CERTIFICATE_THUMBPRINT" -Force -ErrorAction SilentlyContinue
+          }
 
   publish:
-    name: Publish Release
-    needs: [draft-release, build, manifest]
-    runs-on: self-hosted
+    name: Atomically promote and publish
+    needs: [prepare, build]
+    runs-on: [self-hosted, linux, x64]
+    environment: official-release
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+      TAG: ${{ needs.prepare.outputs.tag }}
+      SOURCE_SHA: ${{ needs.prepare.outputs.source_sha }}
+      PREPARED_MAIN_SHA: ${{ needs.prepare.outputs.main_sha }}
+      RESUME: ${{ needs.prepare.outputs.resume }}
     steps:
-      - name: Publish release
-        uses: actions/github-script@v8
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          script: |
-            await github.rest.repos.updateRelease({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              release_id: '${{ needs.draft-release.outputs.release_id }}',
-              draft: false,
-            });
+          ref: ${{ needs.prepare.outputs.source_sha }}
+          fetch-depth: 0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: harmolyn-*-${{ needs.prepare.outputs.version }}
+          path: release-assets
+          merge-multiple: true
+
+      - name: Revalidate refs after all platform builds
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --prune origin main staging --tags
+          [[ "$(git rev-parse origin/staging)" == "$SOURCE_SHA" ]]
+          [[ "$(git rev-parse origin/main)" == "$PREPARED_MAIN_SHA" ]]
+          if [[ "$RESUME" == true ]]; then
+            [[ "$(git rev-parse origin/main)" == "$SOURCE_SHA" ]]
+            [[ "$(git rev-parse "$TAG^{commit}")" == "$SOURCE_SHA" ]]
+          else
+            git merge-base --is-ancestor origin/main "$SOURCE_SHA"
+            if git show-ref --verify --quiet "refs/tags/$TAG"; then
+              echo "::error::Release tag $TAG already exists; rerun with resume_tag=$TAG to finish publication"
+              exit 1
+            fi
+          fi
+
+      - run: npm ci
+
+      - name: Materialize the validated release commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$RESUME" == true ]]; then
+            version=$(npm run --silent release:version -- --check)
+            [[ "$version" == "$VERSION" ]]
+            [[ "$(git rev-parse HEAD^{tree})" == "${{ needs.prepare.outputs.candidate_tree }}" ]]
+            release_sha="$SOURCE_SHA"
+          else
+            version=$(npm run --silent release:version -- "${{ inputs.bump }}")
+            [[ "$version" == "$VERSION" ]]
+            git add package.json package-lock.json src-tauri/Cargo.toml src-tauri/Cargo.lock src-tauri/tauri.conf.json
+            [[ "$(git write-tree)" == "${{ needs.prepare.outputs.candidate_tree }}" ]]
+            git config user.name github-actions[bot]
+            git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+            git commit -m "release: v$VERSION"
+            release_sha=$(git rev-parse HEAD)
+          fi
+          echo "RELEASE_SHA=$release_sha" >> "$GITHUB_ENV"
+
+      - name: Verify assets and generate signed manifests
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          node scripts/release-artifacts.mjs generate release-assets generated-release "$VERSION" "$GITHUB_REPOSITORY" "$RELEASE_SHA"
+          npm exec tauri signer sign -- generated-release/latest.json
+          npm exec tauri signer sign -- generated-release/release-manifest.json
+          npm exec tauri signer sign -- generated-release/SHA256SUMS
+          cp generated-release/* release-assets/
+
+      - name: Configure release tag signing and verification
+        env:
+          RELEASE_TAG_GPG_PRIVATE_KEY: ${{ secrets.RELEASE_TAG_GPG_PRIVATE_KEY }}
+          RELEASE_TAG_GPG_PASSPHRASE: ${{ secrets.RELEASE_TAG_GPG_PASSPHRASE }}
+          RELEASE_TAG_GPG_FINGERPRINT: ${{ secrets.RELEASE_TAG_GPG_FINGERPRINT }}
+        run: bash scripts/configure-release-gpg.sh
+
+      - name: Verify the existing tag or promote atomically with a signed tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$RESUME" == true ]]; then
+            git tag -v "$TAG"
+          else
+            git tag -s "$TAG" "$RELEASE_SHA" -m "Harmolyn $VERSION"
+            git push --atomic origin "$RELEASE_SHA:refs/heads/staging" "$RELEASE_SHA:refs/heads/main" "refs/tags/$TAG"
+          fi
+          git tag -v "$TAG"
+
+      - name: Remove release tag signing material
+        if: always()
+        shell: bash
+        run: |
+          if [[ -n "${GNUPGHOME:-}" ]]; then rm -rf -- "$GNUPGHOME"; fi
+          if [[ -n "${HARMOLYN_RELEASE_GPG_PROGRAM:-}" ]]; then rm -f -- "$HARMOLYN_RELEASE_GPG_PROGRAM"; fi
+
+      - name: Publish verified release assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --draft --generate-notes --title "Harmolyn $VERSION"
+          fi
+          mapfile -d '' assets < <(find release-assets -maxdepth 1 -type f -print0 | sort -z)
+          (( ${#assets[@]} > 0 ))
+          gh release upload "$TAG" "${assets[@]}" --repo "$GITHUB_REPOSITORY" --clobber
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest
+          echo "### Published Harmolyn $VERSION" >> "$GITHUB_STEP_SUMMARY"
+          echo "All signed platform builds completed before the atomic staging/main/tag promotion." >> "$GITHUB_STEP_SUMMARY"

@@ -22,7 +22,12 @@ vi.mock('@chainsafe/libp2p-yamux', () => ({ yamux: () => ({ tag: 'yamux' }) }));
 vi.mock('@libp2p/identify', () => ({ identify: () => ({ tag: 'identify' }) }));
 vi.mock('@libp2p/ping', () => ({ ping: () => ({ tag: 'ping' }) }));
 
-import { createXoreinNode } from './node';
+import {
+  createXoreinNode,
+  isAllowedDialMultiaddr,
+  isSafeRemoteRelayMultiaddr,
+  RELAY_MULTIADDR,
+} from './node';
 import { FEATURE_OVERRIDES_STORAGE_KEY } from '../../config/featureFlags';
 
 const transportTags = (config: Record<string, unknown>) =>
@@ -55,5 +60,74 @@ describe('createXoreinNode — directTransport flag', () => {
     expect(listen(cfg)).toEqual(['/p2p-circuit', '/p2p-circuit/webrtc']);
     // The relayed transports are still present (additive, not replacing).
     expect(transportTags(cfg)).toEqual(expect.arrayContaining(['ws', 'wt', 'circuit', 'webrtc']));
+  });
+});
+
+describe('outbound dial gate', () => {
+  const peer = '12D3KooWNNQp1tmRbcLMrqS866jRJbzoPF6sNEZRoPEVdVwLqTv6';
+  const otherRelay = '/dns4/relay-two.example/tcp/443/wss/p2p/12D3KooWDsujzQH69Gq2LQb1gHMUCbDaJVACYmoVymK9dej5zh4T';
+  const crossRelayCircuit = `${otherRelay}/p2p-circuit/p2p/${peer}`;
+
+  it('allows an exact peer-bound cross-relay address only after validation added it', () => {
+    expect(isAllowedDialMultiaddr(
+      crossRelayCircuit,
+      new Set([crossRelayCircuit]),
+      new Set([RELAY_MULTIADDR]),
+      new Set(),
+      true,
+    )).toBe(true);
+    expect(isAllowedDialMultiaddr(
+      crossRelayCircuit,
+      new Set(),
+      new Set([RELAY_MULTIADDR]),
+      new Set(),
+      true,
+    )).toBe(false);
+  });
+
+  it('allows only WebRTC-derived direct dials to a peer authenticated this session', () => {
+    const direct = `/ip4/127.0.0.1/udp/1234/webrtc-direct/p2p/${peer}`;
+    expect(isAllowedDialMultiaddr(direct, new Set(), new Set(), new Set([peer]), true)).toBe(true);
+    expect(isAllowedDialMultiaddr(direct, new Set(), new Set(), new Set(), true)).toBe(false);
+    expect(isAllowedDialMultiaddr(direct, new Set(), new Set(), new Set([peer]), false)).toBe(false);
+  });
+});
+
+describe('remote PEX host policy', () => {
+  const peer = '12D3KooWNNQp1tmRbcLMrqS866jRJbzoPF6sNEZRoPEVdVwLqTv6';
+
+  it('allows only literal globally routable addresses for automatic probes', () => {
+    expect(isSafeRemoteRelayMultiaddr(`/ip4/8.8.8.8/tcp/443/wss/p2p/${peer}`, peer)).toBe(true);
+    expect(isSafeRemoteRelayMultiaddr(`/ip6/2606:4700:4700::1111/tcp/443/wss/p2p/${peer}`, peer)).toBe(true);
+    expect(isSafeRemoteRelayMultiaddr(`/ip4/192.168.1.1/tcp/443/wss/p2p/${peer}`, peer)).toBe(false);
+    expect(isSafeRemoteRelayMultiaddr(`/ip4/100.64.1.1/tcp/443/wss/p2p/${peer}`, peer)).toBe(false);
+    expect(isSafeRemoteRelayMultiaddr(`/ip6/fd00::1/tcp/443/wss/p2p/${peer}`, peer)).toBe(false);
+    expect(isSafeRemoteRelayMultiaddr(`/dns4/relay.example/tcp/443/wss/p2p/${peer}`, peer)).toBe(false);
+  });
+
+  it('allows private discovery only from the same explicitly reached local scope', () => {
+    const sourcePeer = RELAY_MULTIADDR.split('/').at(-1)!;
+    const loopbackSource = `/ip4/127.0.0.1/tcp/9999/ws/p2p/${sourcePeer}`;
+    const publicSource = `/ip4/8.8.8.8/tcp/443/wss/p2p/${sourcePeer}`;
+    expect(isSafeRemoteRelayMultiaddr(
+      `/ip4/127.0.0.1/tcp/19999/ws/p2p/${peer}`,
+      peer,
+      loopbackSource,
+    )).toBe(true);
+    expect(isSafeRemoteRelayMultiaddr(
+      `/ip4/192.168.7.20/tcp/19999/ws/p2p/${peer}`,
+      peer,
+      `/ip4/192.168.7.10/tcp/9999/ws/p2p/${sourcePeer}`,
+    )).toBe(true);
+    expect(isSafeRemoteRelayMultiaddr(
+      `/ip4/192.168.8.20/tcp/19999/ws/p2p/${peer}`,
+      peer,
+      `/ip4/192.168.7.10/tcp/9999/ws/p2p/${sourcePeer}`,
+    )).toBe(false);
+    expect(isSafeRemoteRelayMultiaddr(
+      `/ip4/127.0.0.1/tcp/19999/ws/p2p/${peer}`,
+      peer,
+      publicSource,
+    )).toBe(false);
   });
 });

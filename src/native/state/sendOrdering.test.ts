@@ -5,7 +5,7 @@
 // of the broadcast serialized all of that in front of the wire send. These tests
 // fail against the old ordering (publish first, broadcast second) and also pin
 // the durability behavior so the reorder can never silently weaken it.
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest';
 import type { Mock } from 'vitest';
 
 vi.mock('./snapshot', () => {
@@ -27,15 +27,17 @@ import {
 } from './store';
 import { ChannelCrypto } from '../crowd/channel';
 import { SealSessions } from '../seal/session';
-import { generateSigningIdentity } from '../crypto/hybrid';
+import { generateIdentity, identitySigningKey, type XoreinIdentity } from '../identity/identity';
 import { registerScopeCrypto, resetScopeCrypto } from '../sync/secureEnvelope';
+import { registerHistoryIdentity, resetHistoryIdentity } from '../sync/signedHistory';
 import { registerPeerSync } from '../sync/registry';
 import { nativeSendChannelMessage, nativeSendDmMessage } from './mutations';
 import type { PeerSync } from '../sync/peersync';
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 20));
 
-const ME = 'me';
+let identity: XoreinIdentity;
+let ME = '';
 const ALICE = 'alice';
 const SRV = 'srv1';
 const CHAN = 'chan1';
@@ -50,17 +52,24 @@ function freshRootB64(): string {
 const publishMock = publishNativeSnapshot as unknown as Mock;
 
 describe('send-path ordering: wire before snapshot publish', () => {
+  beforeAll(async () => {
+    identity = await generateIdentity();
+    ME = identity.peerId;
+  });
+
   beforeEach(() => {
     localStorage.clear();
     publishMock.mockClear();
     initStore();
     setNativeIdentity({ id: ME, peer_id: ME });
-    registerScopeCrypto({ seal: new SealSessions(ME, generateSigningIdentity()), channels: new ChannelCrypto(), fetchBundle: async () => null });
-    addServer({ id: SRV, name: 'S', owner_peer_id: ME, members: [ME, ALICE], channels: { [CHAN]: { id: CHAN, server_id: SRV, name: 'general', voice: false } } });
+    registerHistoryIdentity(identity);
+    registerScopeCrypto({ seal: new SealSessions(ME, identitySigningKey(identity)), channels: new ChannelCrypto(), fetchBundle: async () => null });
+    addServer({ id: SRV, name: 'S', owner_peer_id: ME, members: [ME, ALICE], channel_security_mode: 'crowd', channel_crypto_profile: 'scope-aad-v2', channels: { [CHAN]: { id: CHAN, server_id: SRV, name: 'general', voice: false } } });
     updateServer(SRV, { crowd_root: freshRootB64(), crowd_epoch: 0 });
   });
   afterEach(() => {
     resetScopeCrypto();
+    resetHistoryIdentity();
     registerPeerSync(null as unknown as PeerSync);
   });
 

@@ -6,7 +6,9 @@
 // most important thing a browser check must guarantee: the production Vite build actually
 // loads and renders the app shell in a real (headless Chromium) browser, with no uncaught
 // runtime exception. It needs no privileged install (Chromium is provided via
-// PLAYWRIGHT_CHROME_PATH or a Playwright-managed browser) and no network.
+// PLAYWRIGHT_CHROME_PATH or a Playwright-managed browser). CI sets
+// HARMOLYN_REQUIRE_BROWSER=1, so an unavailable browser is a failed required
+// check rather than a misleading green skip.
 import path from 'path';
 import os from 'os';
 import { existsSync, readdirSync } from 'fs';
@@ -70,7 +72,7 @@ function resolveChromeExecutable() {
 }
 
 const ROOT = process.cwd();
-const EVIDENCE_DIR = path.resolve(ROOT, '.sisyphus/evidence');
+const EVIDENCE_DIR = path.resolve(ROOT, '.generated/browser-evidence');
 await mkdir(EVIDENCE_DIR, { recursive: true });
 
 if (!existsSync(path.join(ROOT, 'dist', 'index.html'))) {
@@ -90,11 +92,9 @@ const address = viteServer.httpServer?.address();
 const port = typeof address === 'object' && address ? address.port : 0;
 const baseUrl = viteServer.resolvedUrls?.local?.[0] ?? `http://127.0.0.1:${port}`;
 
-// A launch failure whose signature is "this runner can't host a browser" (no OS libs,
-// no executable, sandbox restrictions) is an environment limitation, not an app defect —
-// so we skip-green (exit 0 with an explicit ::notice::), mirroring the Tauri capability
-// gate. A browser that DOES launch still runs the real assertions and fails on genuine
-// app errors.
+// A local developer machine may omit Chromium and receive an explicit skip. Required CI
+// sets HARMOLYN_REQUIRE_BROWSER=1, making missing binaries, libraries, or sandbox support
+// a hard failure. A browser that launches also fails on genuine application errors.
 function isEnvironmentLaunchError(message) {
   return (
     /cannot open shared object file/i.test(message) ||   // missing libnspr4.so / libnss3 etc.
@@ -107,17 +107,23 @@ function isEnvironmentLaunchError(message) {
   );
 }
 
-function skipGreen(reason) {
+function unavailableBrowser(reason) {
+  if (process.env.HARMOLYN_REQUIRE_BROWSER === '1') {
+    console.error(`::error title=Browser smoke unavailable::${reason}`);
+    console.error(`browser-ci-smoke: FAIL — ${reason}`);
+    return 1;
+  }
   console.log(`::notice title=Browser smoke skipped::${reason}`);
   console.log(`browser-ci-smoke: SKIP — ${reason}`);
+  return 0;
 }
 
 const executablePath = resolveChromeExecutable();
 let browser;
 if (!executablePath) {
-  skipGreen('no Chromium executable available on this runner (set PLAYWRIGHT_CHROME_PATH or install one to run the smoke).');
+  const unavailableCode = unavailableBrowser('no Chromium executable available on this runner (set PLAYWRIGHT_CHROME_PATH or install one to run the smoke).');
   await viteServer.close();
-  process.exitCode = 0;
+  process.exitCode = unavailableCode;
 } else {
   try {
     browser = await chromium.launch({ headless: true, executablePath });
@@ -125,8 +131,7 @@ if (!executablePath) {
     const message = error instanceof Error ? error.message : String(error);
     await viteServer.close();
     if (isEnvironmentLaunchError(message)) {
-      skipGreen(`Chromium could not launch on this runner (${message.split('\n')[0]}).`);
-      process.exitCode = 0;
+      process.exitCode = unavailableBrowser(`Chromium could not launch on this runner (${message.split('\n')[0]}).`);
     } else {
       console.error(error instanceof Error ? error.stack || error.message : message);
       process.exitCode = 1;

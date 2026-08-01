@@ -19,26 +19,6 @@ if (process.platform === "linux" && buildMayNeedAppImage(tauriArgs)) {
   patchLinuxDeployGtkPlugin();
 }
 
-const sidecarBuild = spawn("node", ["./scripts/build-xorein-sidecar.mjs"], {
-  env,
-  stdio: "inherit",
-  shell: process.platform === "win32",
-});
-
-const sidecarExitCode = await new Promise((resolve) => {
-  sidecarBuild.on("exit", (code, signal) => {
-    if (signal) {
-      process.kill(process.pid, signal);
-      return;
-    }
-    resolve(code ?? 1);
-  });
-});
-
-if (sidecarExitCode !== 0) {
-  process.exit(sidecarExitCode);
-}
-
 const firstBuild = await runTauriBuild(tauriArgs);
 if (firstBuild.signal) {
   process.kill(process.pid, firstBuild.signal);
@@ -96,7 +76,7 @@ function patchLinuxDeployGtkPlugin() {
     ? original
     : original.replace(bulkDeploy, `# Harmolyn workaround: skip redundant bulk library pass.
 # Tauri invokes linuxdeploy before this GTK plugin runs, so the app, WebKit, GTK,
-# and sidecar dependency graph is already deployed. On some rolling Linux
+# and application dependency graph is already deployed. On some rolling Linux
 # systems the plugin's second all-at-once library pass aborts with exit 127.
 # Keep the GTK schemas/modules/hooks work below, but avoid the duplicate pass.
 true`);

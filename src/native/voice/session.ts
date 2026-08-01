@@ -43,6 +43,11 @@ type InsertableCap = 'scriptTransform' | 'encodedStreams' | 'none';
 // Grace window after ICE 'disconnected' before we escalate to recovery — most
 // disconnects are transient network blips that self-heal well within this.
 const DISCONNECT_GRACE_MS = 3000;
+// Voice joins can cross on the wire: the first presence request may arrive just
+// before the other browser has finished publishing its local voice session. A
+// short bounded retry window closes that race without turning presence into a
+// polling loop or making the support node authoritative for call membership.
+const VOICE_PRESENCE_RETRY_DELAYS_MS = [120, 240, 480] as const;
 
 function insertableStreamsCapability(): InsertableCap {
   if (typeof RTCRtpSender === 'undefined') return 'none';
@@ -476,9 +481,7 @@ export class VoiceSession {
     if (this.localStream) this.activity.addStream(this.localPeerId, this.localStream);
 
     // 4) Best-effort mesh: discover who is already here and dial them.
-    const tTurn = Date.now();
     this.iceServers = await fetchTurnCredentials().catch(() => [] as RTCIceServer[]);
-    console.debug(`[voice] turn-credentials fetch took ${Date.now() - tTurn}ms`);
     // Surface an honest warning when no TURN relay is available: on restrictive or
     // symmetric NATs a STUN-only mesh may never connect, and the user deserves to
     // know rather than watch a call spin forever.
@@ -504,13 +507,40 @@ export class VoiceSession {
       screen_sharing: false,
       ...selfProfile(),
     };
-    const tAnnounce = Date.now();
-    console.debug(`[voice] presence fan-out to ${members.length} member(s)`);
-    const responses = await peerSync.requestScope<VoicePresenceResponse>(members, PROTOCOLS.voice, VOICE_OPS.presence, req);
-    console.debug(`[voice] presence responses after ${Date.now() - tAnnounce}ms: ${JSON.stringify(responses.map(r => ({ p: r.peerId.slice(-6), in: r.response?.in_channel })))}`);
+    const responsesByPeer = new Map<string, VoicePresenceResponse>();
+    const pending = new Set(members);
+    const raceRetried = new Set<string>();
+    for (let attempt = 0; attempt <= VOICE_PRESENCE_RETRY_DELAYS_MS.length; attempt += 1) {
+      if (this.stopped) return;
+      const targets = [...pending];
+      if (!targets.length) break;
+      const responses = await peerSync.requestScope<VoicePresenceResponse>(
+        targets,
+        PROTOCOLS.voice,
+        VOICE_OPS.presence,
+        req,
+      );
+      for (const { peerId, response } of responses) {
+        if (!pending.has(peerId) || !response) continue;
+        // Never overwrite an earlier positive reply with a later timeout/false.
+        // A false reply gets one short retry to close the simultaneous-join race;
+        // after that it is a definitive "not in this channel", not a reason to
+        // fan out to the full Space two more times.
+        if (response.in_channel) {
+          responsesByPeer.set(peerId, response);
+          pending.delete(peerId);
+        } else if (raceRetried.has(peerId)
+          || attempt === VOICE_PRESENCE_RETRY_DELAYS_MS.length) {
+          pending.delete(peerId);
+        } else {
+          raceRetried.add(peerId);
+        }
+      }
+      if (!pending.size || attempt === VOICE_PRESENCE_RETRY_DELAYS_MS.length) break;
+      await new Promise<void>((resolve) => setTimeout(resolve, VOICE_PRESENCE_RETRY_DELAYS_MS[attempt]));
+    }
 
-    const present = responses.filter(r => r.response?.in_channel);
-    for (const { peerId, response } of present) {
+    for (const [peerId, response] of responsesByPeer) {
       storeJoinVoice(this.channelId, peerId);
       setVoiceParticipant(this.channelId, peerId, {
         muted: !!response.muted, video: !!response.video, screen_sharing: !!response.screen_sharing,
@@ -531,7 +561,7 @@ export class VoiceSession {
     // The elected coordinator is deterministic across peers (min peer-id), so both
     // ends agree without negotiation. SFrame keys are per-sender, so a coordinator
     // relaying frames only ever handles ciphertext.
-    const presentIds = present.map(p => p.peerId);
+    const presentIds = [...responsesByPeer.keys()];
     let dialTargets = presentIds;
     if (resolveFeatureFlag('voiceScaleSfu')) {
       const roster = [this.localPeerId, ...presentIds];

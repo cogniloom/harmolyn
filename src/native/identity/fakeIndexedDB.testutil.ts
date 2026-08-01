@@ -60,6 +60,8 @@ class FakeObjectStore {
     req.succeed([...this.data.keys()]);
     return req;
   }
+
+  createIndex(): void { /* index queries are outside this small test fake */ }
 }
 
 class FakeTransaction {
@@ -81,16 +83,17 @@ class FakeDatabase {
   readonly objectStoreNames = {
     contains: (name: string): boolean => this.stores.has(name),
   };
-  createObjectStore(name: string, opts?: { keyPath?: string }): void {
+  createObjectStore(name: string, opts?: { keyPath?: string }): FakeObjectStore {
     if (!this.stores.has(name)) this.stores.set(name, { data: new Map(), keyPath: opts?.keyPath ?? null });
+    return this.store(name);
   }
   store(name: string): FakeObjectStore {
     const s = this.stores.get(name);
     if (!s) throw new Error(`fake idb: no object store ${name}`);
     return new FakeObjectStore(s.data, s.keyPath);
   }
-  transaction(name: string, _mode: 'readonly' | 'readwrite'): FakeTransaction {
-    this.store(name); // throw early on unknown store, like the real thing
+  transaction(name: string | string[], _mode: 'readonly' | 'readwrite'): FakeTransaction {
+    for (const storeName of Array.isArray(name) ? name : [name]) this.store(storeName); // throw early on unknown store, like the real thing
     return new FakeTransaction(this);
   }
   close(): void { /* no-op */ }

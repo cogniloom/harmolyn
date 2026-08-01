@@ -39,7 +39,7 @@ describe('nodeHealth', () => {
   it('exports the canonical UI strings', () => {
     expect(NODE_OFFLINE_MESSAGE).toBe('No node currently available. This feature only works with at least one node online.');
     expect(NODE_OFFLINE_BANNER_TITLE).toBe('Node offline');
-    expect(NODE_OFFLINE_BANNER_DETAIL).toBe('Peer-to-peer messaging keeps working. Features that need a node are paused until one is reachable.');
+    expect(NODE_OFFLINE_BANNER_DETAIL).toBe('Peer routing, contacts, joins, messages, attachments, mailbox delivery, and rendezvous remain active through available peers. Only node-exclusive services pause.');
   });
 
   describe('state transitions', () => {

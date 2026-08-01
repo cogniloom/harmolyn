@@ -29,6 +29,16 @@ vi.mock("@/lib/xoreinRuntimeContext", () => ({
   useRuntimeSnapshot: vi.fn(),
 }));
 
+vi.mock("@/config/featureFlags", async () => {
+  const actual = await vi.importActual<typeof import("@/config/featureFlags")>("@/config/featureFlags");
+  return {
+    ...actual,
+    // This suite verifies the legacy HTTP compatibility path. Native friend
+    // routing and its fail-closed bootstrap behavior are covered separately.
+    resolveFeatureFlag: (feature: string) => feature === "nativeEngine" ? false : actual.resolveFeatureFlag(feature as never),
+  };
+});
+
 vi.mock("@/lib/xoreinControl", async () => {
   const actual = await vi.importActual<typeof import("@/lib/xoreinControl")>("@/lib/xoreinControl");
   return {

@@ -1,13 +1,18 @@
 import React from 'react';
-import { ArrowRight, Globe, RotateCw, Shield, Server, CircleOff, Eye, ShieldCheck, X } from 'lucide-react';
+import { AlertTriangle, ArrowRight, CheckCircle2, CircleOff, Eye, Globe, RotateCw, Server, Shield, ShieldCheck, X } from 'lucide-react';
+import type { ControlEndpointTestResult } from '@/lib/xoreinControl';
+import { isPrivateNetworkHostname } from '@/lib/trustedOrigin';
 import { SecurityNote } from './SecurityNote';
 
 interface NodeLaunchScreenProps {
   endpoint: string;
   feedback?: string | null;
   busy?: boolean;
+  testBusy?: boolean;
+  testResult?: ControlEndpointTestResult | null;
   currentNodeLabel?: string;
   onEndpointChange: (value: string) => void;
+  onTest: () => void;
   onConnect: () => void;
   onUseDefault: () => void;
   onContinueOffline: () => void;
@@ -23,6 +28,19 @@ function isLoopbackEndpoint(value: string): boolean {
     const url = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`);
     const host = url.hostname.toLowerCase().replace(/^\[/, '').replace(/\]$/, '');
     return host === 'localhost' || host === '::1' || /^127(?:\.\d{1,3}){3}$/.test(host);
+  } catch {
+    return false;
+  }
+}
+
+function isPrivateNetworkEndpoint(value: string): boolean {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return false;
+  }
+  try {
+    const url = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`);
+    return isPrivateNetworkHostname(url.hostname);
   } catch {
     return false;
   }
@@ -51,13 +69,18 @@ export const NodeLaunchScreen: React.FC<NodeLaunchScreenProps> = ({
   endpoint,
   feedback,
   busy = false,
+  testBusy = false,
+  testResult = null,
   currentNodeLabel,
   onEndpointChange,
+  onTest,
   onConnect,
   onUseDefault,
   onContinueOffline,
 }) => {
   const endpointLooksValid = isLikelyValidEndpoint(endpoint);
+  const loopbackEndpoint = isLoopbackEndpoint(endpoint);
+  const privateNetworkEndpoint = isPrivateNetworkEndpoint(endpoint);
   return (
     <div className="fixed inset-0 z-[260] bg-bg-0 overflow-hidden">
       <div className="absolute inset-0 bg-gradient-to-b from-bg-0 via-bg-2 to-bg-0" />
@@ -70,8 +93,8 @@ export const NodeLaunchScreen: React.FC<NodeLaunchScreenProps> = ({
             <div className="inline-flex items-center justify-center w-16 h-16 rounded-r3 bg-primary/10 border border-primary/20 mb-5 shadow-glow">
               <Shield size={30} className="text-primary" />
             </div>
-            <h1 className="text-display-l font-bold text-text-primary font-display tracking-tight">SELECT NODE</h1>
-            <p className="micro-label text-text-tertiary mt-2">CONTROL // ENDPOINT // LAUNCH</p>
+            <h1 className="text-display-l font-bold text-text-primary font-display tracking-tight">CHOOSE A NODE</h1>
+            <p className="micro-label text-text-tertiary mt-2">NETWORK // CONNECTION</p>
           </div>
 
           <div className="glass-card rounded-r3 border border-white/10 shadow-2xl overflow-hidden">
@@ -84,7 +107,8 @@ export const NodeLaunchScreen: React.FC<NodeLaunchScreenProps> = ({
                   <div className="micro-label text-white/30">LAUNCH TARGET</div>
                   <h2 className="mt-1 text-xl md:text-2xl font-bold text-white font-display tracking-tight">Choose the xorein node to connect to.</h2>
                   <p className="mt-2 text-sm text-white/50 leading-relaxed">
-                    Most users should never need this screen. If the default node is unavailable, enter any HTTP or HTTPS node such as <span className="font-mono text-white/70">127.0.0.1:7711</span>. No token is needed.
+                    Enter an IP address or hostname and port. Harmolyn checks the node,
+                    learns its current network address, and reconnects automatically.
                   </p>
                 </div>
               </div>
@@ -99,7 +123,7 @@ export const NodeLaunchScreen: React.FC<NodeLaunchScreenProps> = ({
 
               {currentNodeLabel && (
                 <div className="rounded-r2 border border-white/10 bg-white/5 px-4 py-3 text-xs text-white/70">
-                  Currently connected to: <span className="font-mono text-white/85 break-all">{currentNodeLabel}</span>
+                  Current preferred node: <span className="font-mono text-white/85 break-all">{currentNodeLabel}</span>
                 </div>
               )}
 
@@ -138,14 +162,20 @@ export const NodeLaunchScreen: React.FC<NodeLaunchScreenProps> = ({
                   className={`text-[11px] leading-relaxed ${endpointLooksValid ? 'text-white/35' : 'text-accent-danger'}`}
                 >
                   {endpointLooksValid
-                    ? 'Any HTTP or HTTPS node is accepted. No token is required.'
-                    : 'That doesn’t look like a valid address. Try a host like 127.0.0.1:7711 or https://node.example.com.'}
+                    ? 'For example: 192.168.0.1:7711, localhost:7711, or https://node.example.com.'
+                    : 'That doesn’t look like a valid address. Enter an IP or hostname and port.'}
                 </p>
               </div>
 
-              {isLoopbackEndpoint(endpoint) ? (
+              {loopbackEndpoint ? (
                 <SecurityNote tone="info" icon={<ShieldCheck size={13} />}>
-                  This node runs on your own machine, so your traffic and metadata stay on this device.
+                  This support node runs on your machine. Message contents stay end-to-end encrypted,
+                  and the metadata visible to the node remains under your control.
+                </SecurityNote>
+              ) : privateNetworkEndpoint ? (
+                <SecurityNote tone="info" icon={<ShieldCheck size={13} />}>
+                  This node is on your private network. Message contents remain end-to-end encrypted
+                  and signed; the node can observe connection metadata but cannot alter accepted data.
                 </SecurityNote>
               ) : (
                 <SecurityNote
@@ -156,22 +186,52 @@ export const NodeLaunchScreen: React.FC<NodeLaunchScreenProps> = ({
                       Metadata means the patterns around your messages — your account identifier, which
                       peers you exchange with, and the timing and size of that traffic — not the messages
                       themselves. Harmolyn still encrypts contents end-to-end, so a node operator cannot
-                      read what you say, but they could log who is talking to whom. Use a node you run
-                      yourself, or one operated by someone you trust, when this matters to you.
+                      read what you say, and signatures prevent it from silently changing accepted data,
+                      but the operator could log who is talking to whom. A self-hosted node reduces that
+                      metadata exposure.
                     </>
                   }
                 >
-                  A remote node relays your traffic, so whoever operates it can observe metadata — which
-                  accounts you contact and when — even though message contents stay end-to-end encrypted.
-                  Only connect to a node you trust.
+                  Remote nodes are untrusted helpers, not data authorities. They can observe connection
+                  metadata, but message contents remain end-to-end encrypted and signed.
                 </SecurityNote>
               )}
 
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              {testResult && (
+                <div
+                  data-testid="node-test-result"
+                  role="status"
+                  aria-live="polite"
+                  className={`flex items-start gap-3 rounded-r2 border px-4 py-3 text-sm ${
+                    testResult.status === 'reachable'
+                      ? 'border-accent-success/25 bg-accent-success/10 text-accent-success'
+                      : 'border-accent-danger/25 bg-accent-danger/10 text-accent-danger'
+                  }`}
+                >
+                  {testResult.status === 'reachable' ? <CheckCircle2 size={17} className="mt-0.5 shrink-0" /> : <AlertTriangle size={17} className="mt-0.5 shrink-0" />}
+                  <div className="min-w-0">
+                    <div className="font-semibold">{testResult.status === 'reachable' ? 'Node reachable' : 'Node test failed'}</div>
+                    <div className="mt-1 text-xs leading-relaxed opacity-85">{testResult.detail}</div>
+                    {testResult.endpoint && <div className="mt-1 break-all font-mono text-[10px] opacity-70">{testResult.endpoint}</div>}
+                  </div>
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
+                <button
+                  type="button"
+                  data-testid="test-node-button"
+                  onClick={onTest}
+                  disabled={busy || testBusy || !endpoint.trim() || !endpointLooksValid}
+                  className="focus-ring self-center h-12 rounded-full border border-primary/30 bg-primary/10 text-primary font-bold text-sm flex items-center justify-center gap-2 hover:bg-primary/15 transition-all disabled:opacity-60 disabled:cursor-not-allowed"
+                >
+                  {testBusy ? <RotateCw size={16} className="animate-spin" /> : <CheckCircle2 size={16} />}
+                  {testBusy ? 'Testing…' : 'Test Node'}
+                </button>
                 <button
                   type="button"
                   onClick={onConnect}
-                  disabled={busy || !endpoint.trim() || !endpointLooksValid}
+                  disabled={busy || testBusy || !endpoint.trim() || !endpointLooksValid}
                   className="focus-ring self-center h-12 rounded-full bg-primary text-bg-0 font-bold text-sm flex items-center justify-center gap-2 hover:shadow-glow transition-all disabled:opacity-60 disabled:cursor-not-allowed"
                 >
                   {busy ? <RotateCw size={16} className="animate-spin" /> : <ArrowRight size={16} />}
@@ -181,7 +241,7 @@ export const NodeLaunchScreen: React.FC<NodeLaunchScreenProps> = ({
                   <button
                     type="button"
                     onClick={onUseDefault}
-                    disabled={busy}
+                    disabled={busy || testBusy}
                     className="focus-ring h-12 w-full rounded-full border border-white/10 bg-white/5 text-white/80 font-bold text-sm flex items-center justify-center gap-2 hover:border-primary/30 hover:text-white transition-all disabled:opacity-60 disabled:cursor-not-allowed"
                   >
                     <Globe size={16} />
@@ -192,11 +252,11 @@ export const NodeLaunchScreen: React.FC<NodeLaunchScreenProps> = ({
                 <button
                   type="button"
                   onClick={onContinueOffline}
-                  disabled={busy}
+                  disabled={busy || testBusy}
                   className="focus-ring self-center h-12 rounded-full border border-white/10 bg-transparent text-white/60 font-bold text-sm flex items-center justify-center gap-2 hover:border-white/20 hover:text-white transition-all disabled:opacity-60 disabled:cursor-not-allowed"
                 >
                   <CircleOff size={16} />
-                  Offline
+                  Continue P2P
                 </button>
               </div>
             </div>

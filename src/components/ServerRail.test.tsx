@@ -64,10 +64,10 @@ describe("ServerRail", () => {
       />,
     );
 
-    expect(screen.getAllByRole("button", { name: /server: first node/i })).toHaveLength(1);
-    expect(screen.queryByRole("button", { name: /server: second node/i })).toBeNull();
-    expect(screen.queryByRole("button", { name: /server: unknown/i })).toBeNull();
-    expect(screen.getByRole("button", { name: /server: first node/i })).toBeTruthy();
+    expect(screen.getAllByRole("button", { name: /space: first node/i })).toHaveLength(1);
+    expect(screen.queryByRole("button", { name: /space: second node/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /space: unknown/i })).toBeNull();
+    expect(screen.getByRole("button", { name: /space: first node/i })).toBeTruthy();
     expect(screen.getByText("2")).toBeInTheDocument();
     expect(screen.queryByText("11")).toBeNull();
   });
