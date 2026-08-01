@@ -40,6 +40,47 @@ describe("readShellRuntimeData mapping", () => {
     expect(shell.currentUser).toBeDefined();
   });
 
+  it("preserves peer-swarm attachment manifests through runtime normalization", () => {
+    const key = btoa(String.fromCharCode(...new Uint8Array(32))).replace(/=+$/, "");
+    const nonce = btoa(String.fromCharCode(...new Uint8Array(12))).replace(/=+$/, "");
+    const swarm = {
+      version: 1 as const,
+      blob_id: "a".repeat(64),
+      node_namespace: "A".repeat(43),
+      scope_id: "base-node-general",
+      owner_peer_id: "u2",
+      ciphertext_size: 17,
+      chunk_size: 64 * 1024,
+      chunk_hashes: ["b".repeat(64)],
+      provider_peer_ids: ["u2"],
+    };
+    injectRuntimeSnapshot({
+      ...createHappyRuntime(),
+      messages: [{
+        id: "msg-attachment",
+        scope_type: "channel",
+        scope_id: "base-node-general",
+        server_id: "base-node",
+        sender_peer_id: "u2",
+        body: "peer attachment",
+        media: [{
+          id: swarm.blob_id,
+          name: "peer.txt",
+          content_type: "text/plain",
+          size: 1,
+          key,
+          nonce,
+          content_hash: "c".repeat(64),
+          swarm,
+        }],
+      }],
+    });
+
+    const shell = readShellRuntimeData();
+    expect(shell.runtimeSnapshot?.messages?.[0].media?.[0].swarm).toEqual(swarm);
+    expect(shell.messagesByScope.get("base-node-general")?.[0].media?.[0].swarm).toEqual(swarm);
+  });
+
   it("uses persisted local presence for the current user", () => {
     injectRuntimeSnapshot({
       ...createHappyRuntime(),
@@ -746,6 +787,26 @@ describe("readShellRuntimeData mapping", () => {
     expect(shell.runtimeSnapshot?.servers?.[0].description).toBeUndefined();
   });
 
+  it("strips capability secrets from runtime data before rendering", () => {
+    clearRuntime();
+    injectRuntimeSnapshot({
+      ...createHappyRuntime(),
+      servers: [{
+        ...createHappyRuntime().servers[0],
+        invite_secret: "owner-only-secret",
+        crowd_root: "owner-only-root",
+      } as never],
+    });
+
+    const runtimeServers = readShellRuntimeData().runtimeSnapshot?.servers;
+    if (!runtimeServers?.[0]) {
+      throw new Error("expected normalized runtime server");
+    }
+    const server = runtimeServers[0];
+    expect("invite_secret" in server).toBe(false);
+    expect("crowd_root" in server).toBe(false);
+  });
+
   it("normalizes server owner, member, and channel ids before rendering servers", () => {
     clearRuntime();
     injectRuntimeSnapshot({
@@ -893,6 +954,17 @@ describe("deriveConnectionState", () => {
     expect(state.canUseConnectivityActions).toBe(true);
   });
 
+  it("does not call a reachable runtime CONNECTED until a peer path is confirmed", () => {
+    const runtime = createHappyRuntime();
+    delete runtime.transport_state;
+    injectRuntimeSnapshot(runtime);
+    const shell = readShellRuntimeData();
+    const state = deriveConnectionState(shell, "home", true);
+    expect(state.status).toBe("reconnecting");
+    expect(state.label).toBe("CONNECTING");
+    expect(state.detail).toContain("peer network");
+  });
+
   it("treats prototype-bearing runtime identities as disconnected", () => {
     const shell = {
       runtimeSnapshot: {
@@ -934,7 +1006,7 @@ describe("deriveConnectionState", () => {
     expect(deriveConnectionState(shell, "base-node", true).status).toBe("connected");
   });
 
-  it("is NO PEER when the scoped server has no reachable peer", () => {
+  it("uses the live peer graph as a router when the scoped member has no direct address", () => {
     const runtime: XoreinRuntimeSnapshot = {
       ...createHappyRuntime(),
       known_peers: [
@@ -951,10 +1023,28 @@ describe("deriveConnectionState", () => {
     };
     injectRuntimeSnapshot(runtime);
     const shell = readShellRuntimeData();
-    expect(deriveConnectionState(shell, "lonely", true).status).toBe("no-peer");
+    const state = deriveConnectionState(shell, "lonely", true);
+    expect(state.status).toBe("connected");
+    expect(state.label).toBe("P2P ROUTED");
+    expect(state.canUseConnectivityActions).toBe(true);
   });
 
-  it("is NO RELAY when delivery fails and no relay path is advertised", () => {
+  it("keeps durable peer actions enabled while a scoped space is still finding peers", () => {
+    const runtime: XoreinRuntimeSnapshot = {
+      ...createHappyRuntime(),
+      transport_state: "disconnected",
+      relay_addrs: [],
+    };
+    injectRuntimeSnapshot(runtime);
+    const shell = readShellRuntimeData();
+    const state = deriveConnectionState(shell, "base-node", true);
+    expect(state.status).toBe("no-relay");
+    expect(state.label).toBe("FINDING PEERS");
+    expect(state.canUseConnectivityActions).toBe(true);
+    expect(state.detail).toContain("retries continue automatically");
+  });
+
+  it("keeps peer actions active when a relay fails but an authenticated peer edge remains", () => {
     const runtime: XoreinRuntimeSnapshot = {
       ...createHappyRuntime(),
       known_peers: [
@@ -976,7 +1066,11 @@ describe("deriveConnectionState", () => {
     };
     injectRuntimeSnapshot(runtime);
     const shell = readShellRuntimeData();
-    expect(deriveConnectionState(shell, "relayless", true).status).toBe("no-relay");
+    const state = deriveConnectionState(shell, "relayless", true);
+    expect(state.status).toBe("connected");
+    expect(state.label).toBe("P2P ONLY");
+    expect(state.canUseConnectivityActions).toBe(true);
+    expect(state.detail).toContain("Connected peers remain active");
   });
 
   it("treats top-level relay_addrs as a reachable relay path", () => {

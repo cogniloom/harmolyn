@@ -15,6 +15,10 @@ export const DEFAULT_FEATURE_FLAGS = [
     "cap.moderation",
     "cap.rbac",
     "cap.slow-mode",
+    "cap.tree",
+    "cap.crowd",
+    "cap.channel-aad-v2",
+    "cap.mediashield",
 ];
 export function validFeatureFlagName(flag) {
     if (!flag.startsWith(FEATURE_FLAG_PREFIX)) {

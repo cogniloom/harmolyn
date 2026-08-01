@@ -6,6 +6,8 @@
 // local node receives ALL support traffic — nothing may stay pinned to the
 // public default node.
 
+import { parseTrustedHttpOrigin } from '../lib/trustedOrigin.js';
+
 const DEFAULT_NODE = 'https://node.xorein.com';
 
 // Same key xoreinControl.ts writes via storePreferredControlEndpoint().
@@ -13,21 +15,31 @@ const CONTROL_ENDPOINT_STORAGE_KEY = 'harmolyn:xorein:selected-control-endpoint'
 
 /** The active support-node origin, e.g. "https://node.xorein.com" or "http://127.0.0.1:7711". */
 export function supportNodeOrigin(): string {
+  let stored: string | null | undefined;
   if (typeof window !== 'undefined') {
     try {
-      const stored = window.localStorage.getItem(CONTROL_ENDPOINT_STORAGE_KEY);
-      if (stored) {
-        return new URL(stored).origin;
-      }
+      stored = window.localStorage.getItem(CONTROL_ENDPOINT_STORAGE_KEY);
     } catch {
-      // Storage unavailable or a malformed value — fall through to the build default.
+      // Storage unavailable — use the build-time endpoint below.
     }
   }
+
+  // An explicitly stored but malformed/insecure endpoint must not silently
+  // fall back to the public node: that would send ciphertext and metadata to a
+  // different operator than the user selected. Empty means fail closed.
+  if (stored !== null && stored !== undefined) {
+    return parseTrustedHttpOrigin(stored)?.origin ?? '';
+  }
+
   const env = import.meta.env?.VITE_XOREIN_CONTROL_ENDPOINT?.trim();
-  return (env || DEFAULT_NODE).replace(/\/+$/, '');
+  return parseTrustedHttpOrigin(env || DEFAULT_NODE)?.origin ?? '';
 }
 
 /** The /v1 API base for the active support node. */
 export function supportNodeApiBase(): string {
-  return `${supportNodeOrigin()}/v1`;
+  const origin = supportNodeOrigin();
+  if (!origin) {
+    throw new Error('xorein support node endpoint is missing or insecure');
+  }
+  return `${origin}/v1`;
 }

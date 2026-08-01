@@ -7,8 +7,6 @@ import { useRuntimeMutations } from '@/hooks/runtime/useRuntimeMutations';
 import { PendingButton } from '@/components/ui/PendingButton';
 import { Search, MessageSquare, X, UserPlus, Users, UserX, Clock, Check, Ban, Copy } from 'lucide-react';
 import { useFeature } from '@/hooks/useFeature';
-import { useNodeHealth } from '@/hooks/useNodeHealth';
-import { NODE_OFFLINE_MESSAGE } from '@/lib/nodeHealth';
 import { MessageRequests } from '@/components/MessageRequests';
 import { resolveAvatarSrc } from '@/lib/avatar';
 import { copyTextToClipboardSafely } from '@/components/contextMenuUtils';
@@ -23,6 +21,7 @@ interface FriendRequest {
   recordId: string;
   userId: string;
   type: 'incoming' | 'outgoing';
+  deliveryStatus?: XoreinFriendRecord['delivery_status'];
   timestamp: string;
 }
 
@@ -81,9 +80,6 @@ export const FriendsPanel: React.FC<FriendsPanelProps> = ({ onOpenDM, hasIdentit
   // Friend ops route through the mutation facade so they hit the native P2P engine
   // (delivering request/accept to the other peer) rather than the HTTP support node.
   const mutations = useRuntimeMutations();
-  // removeFriend is still on the HTTP support-node path (useRuntimeMutations), so
-  // it is gated on node health below.
-  const { nodeOffline } = useNodeHealth();
 
   // Keyboard shortcut to focus the search input: "/" (when not already typing
   // in a field) or Ctrl/Cmd+F, matching the search affordance in other panels.
@@ -134,6 +130,7 @@ export const FriendsPanel: React.FC<FriendsPanelProps> = ({ onOpenDM, hasIdentit
       recordId: r.id,
       userId: friendPeerId(r, currentPeerId),
       type: r.from_peer_id === currentPeerId ? 'outgoing' : 'incoming',
+      ...(r.delivery_status ? { deliveryStatus: r.delivery_status } : {}),
       timestamp: r.created_at ?? '',
     })),
     [pendingRecords, currentPeerId],
@@ -243,10 +240,6 @@ export const FriendsPanel: React.FC<FriendsPanelProps> = ({ onOpenDM, hasIdentit
 
   const unblockUser = async (peerId: string) => {
     if (!runtimeSnapshot) return;
-    if (nodeOffline) {
-      setFeedback({ tone: 'error', message: NODE_OFFLINE_MESSAGE });
-      return;
-    }
     const record = blockedRecords.find((r) => friendPeerId(r, currentPeerId) === peerId);
     if (!record) return;
     try {
@@ -282,10 +275,18 @@ export const FriendsPanel: React.FC<FriendsPanelProps> = ({ onOpenDM, hasIdentit
 
     setAddFriendPending(true);
     try {
-      await mutations.sendFriendRequest(normalized);
+      const result = await mutations.sendFriendRequest(normalized);
+      const deliveryStatus = result && typeof result === 'object' && 'delivery_status' in result
+        ? (result as { delivery_status?: string }).delivery_status
+        : undefined;
       setAddFriendInput('');
       setActiveTab('pending');
-      setFeedback({ tone: 'success', message: 'Friend request sent.' });
+      setFeedback({
+        tone: deliveryStatus === 'queued' ? 'info' : 'success',
+        message: deliveryStatus === 'queued'
+          ? 'Saved locally. Harmolyn will retry automatically when any peer path is available.'
+          : 'Friend request sent.',
+      });
     } catch (error) {
       setFeedback({ tone: 'error', message: error instanceof Error ? error.message : 'Unable to send friend request.' });
     } finally {
@@ -397,7 +398,9 @@ export const FriendsPanel: React.FC<FriendsPanelProps> = ({ onOpenDM, hasIdentit
               <ActionButton icon={<X size={16} />} label="Decline" onClick={() => void declineRequest(request.recordId)} variant="danger" />
             </>
           ) : (
-            <span className="micro-label text-white/20 tracking-widest mr-1.5">OUTGOING</span>
+            <span className="micro-label text-white/20 tracking-widest mr-1.5">
+              {request.deliveryStatus === 'queued' ? 'QUEUED' : request.deliveryStatus === 'failed' ? 'FAILED' : 'OUTGOING'}
+            </span>
           ));
         })}
       </div>

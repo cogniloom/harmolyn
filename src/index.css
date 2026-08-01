@@ -58,7 +58,7 @@ body {
   /* Latin display font first, then a broad system-font fallback so non-Latin
      scripts (Cyrillic/Greek/CJK/Arabic/Hebrew/Thai/Devanagari) render natively
      rather than as tofu. See tailwind.config.ts fontFamily for the full stack. */
-  font-family: 'Space Grotesk', system-ui, -apple-system, 'Segoe UI', 'Noto Sans', 'Noto Sans CJK SC', 'Noto Sans Arabic', 'Noto Sans Hebrew', 'Noto Sans Thai', 'Noto Sans Devanagari', Arial, sans-serif;
+  font-family: system-ui, -apple-system, 'Segoe UI', 'Noto Sans', 'Noto Sans CJK SC', 'Noto Sans Arabic', 'Noto Sans Hebrew', 'Noto Sans Thai', 'Noto Sans Devanagari', Arial, sans-serif;
 }
 
 /* RTL: the app is built with physical Tailwind utilities today; until the logical-
@@ -285,7 +285,9 @@ body {
 
 /* dyslexic-font class applied from AccessibilitySection */
 .dyslexic-font, .dyslexic-font * {
-  font-family: 'OpenDyslexic', sans-serif !important;
+  /* Keep this stack local: loading a third-party font would disclose page
+     visits and could reintroduce a remote stylesheet execution path. */
+  font-family: 'Trebuchet MS', Arial, system-ui, sans-serif !important;
   letter-spacing: 0.05em;
   word-spacing: 0.1em;
   line-height: 1.6;

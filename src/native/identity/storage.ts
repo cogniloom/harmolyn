@@ -23,6 +23,13 @@ const STORAGE_VERSION = 1;
 const ARGON2_M = 65536; // 64 MiB
 const ARGON2_T = 3;
 const ARGON2_P = 1;
+const ARGON2_MIN_M = 256; // Keep the explicit reduced test profile valid.
+const ARGON2_MAX_M = 128 * 1024; // Never let imported data request unbounded RAM.
+const ARGON2_MAX_T = 10;
+const ARGON2_MAX_P = 4;
+const MAX_IDENTITY_CIPHERTEXT_BYTES = 512 * 1024;
+export const MAX_IDENTITY_BACKUP_BYTES = 8 * 1024 * 1024;
+const AES_GCM_TAG_BYTES = 16;
 
 // ── Encryption types ───────────────────────────────────────────────────────
 
@@ -51,17 +58,92 @@ function toHex(b: Uint8Array): string {
 }
 
 function fromHex(s: string): Uint8Array {
-  const b = new Uint8Array(s.length / 2);
+	if (typeof s !== 'string' || s.length % 2 !== 0 || !/^[0-9a-fA-F]*$/.test(s)) {
+		throw new Error('identity storage: invalid hexadecimal value');
+	}
+	const b = new Uint8Array(s.length / 2);
   for (let i = 0; i < b.length; i++) b[i] = parseInt(s.slice(i * 2, i * 2 + 2), 16);
   return b;
 }
 
 function toBase64(b: Uint8Array): string {
-  return btoa(String.fromCharCode(...b));
+	let binary = '';
+	for (let offset = 0; offset < b.length; offset += 0x8000) {
+		binary += String.fromCharCode(...b.subarray(offset, offset + 0x8000));
+	}
+	return btoa(binary);
 }
 
 function fromBase64(s: string): Uint8Array {
-  return new Uint8Array([...atob(s)].map(c => c.charCodeAt(0)));
+	if (typeof s !== 'string' || s.length > 4 * Math.ceil(MAX_IDENTITY_CIPHERTEXT_BYTES / 3) + 4
+		|| s.length % 4 === 1 || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(s)) {
+		throw new Error('identity storage: invalid base64 value');
+	}
+	const decoded = atob(s);
+	return Uint8Array.from(decoded, c => c.charCodeAt(0));
+}
+
+function validateArgon2Params(params: Argon2Params): void {
+	if (!Number.isSafeInteger(params.m) || params.m < ARGON2_MIN_M || params.m > ARGON2_MAX_M
+		|| !Number.isSafeInteger(params.t) || params.t < 1 || params.t > ARGON2_MAX_T
+		|| !Number.isSafeInteger(params.p) || params.p < 1 || params.p > ARGON2_MAX_P
+		|| params.m < 8 * params.p) {
+		throw new Error('identity storage: invalid KDF parameters');
+	}
+}
+
+function isByteArray(value: unknown, length: number): value is number[] {
+	return Array.isArray(value) && value.length === length
+		&& value.every(byte => Number.isSafeInteger(byte) && byte >= 0 && byte <= 255);
+}
+
+function parseStoredIdentity(plaintext: Uint8Array): { ed25519_priv: number[]; mldsa65_priv: number[] } {
+	if (plaintext.length > MAX_IDENTITY_CIPHERTEXT_BYTES) {
+		throw new Error('identity storage: identity payload is too large');
+	}
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(new TextDecoder().decode(plaintext));
+	} catch {
+		throw new Error('identity storage: invalid identity payload');
+	}
+	if (typeof parsed !== 'object' || parsed === null) {
+		throw new Error('identity storage: invalid identity payload');
+	}
+	const stored = parsed as Record<string, unknown>;
+	if (!isByteArray(stored.ed25519_priv, 64) || !isByteArray(stored.mldsa65_priv, 4032)) {
+		throw new Error('identity storage: invalid identity key material');
+	}
+	return {
+		ed25519_priv: stored.ed25519_priv,
+		mldsa65_priv: stored.mldsa65_priv,
+	};
+}
+
+function validateEncryptedIdentityBlob(blob: unknown): asserts blob is EncryptedIdentityBlob {
+	if (typeof blob !== 'object' || blob === null) {
+		throw new Error('identity storage: invalid format');
+	}
+	const candidate = blob as Record<string, unknown>;
+	if (candidate.v !== STORAGE_VERSION || candidate.kdf !== 'argon2id'
+		|| typeof candidate.salt !== 'string' || candidate.salt.length !== 32
+		|| typeof candidate.nonce !== 'string' || candidate.nonce.length !== 24
+		|| typeof candidate.ciphertext !== 'string') {
+		throw new Error('identity storage: unsupported format');
+	}
+	const salt = fromHex(candidate.salt);
+	const nonce = fromHex(candidate.nonce);
+	if (salt.length !== 16 || nonce.length !== 12) {
+		throw new Error('identity storage: invalid nonce or salt');
+	}
+	if (typeof candidate.m !== 'number' || typeof candidate.t !== 'number' || typeof candidate.p !== 'number') {
+		throw new Error('identity storage: invalid KDF parameters');
+	}
+	validateArgon2Params({ m: candidate.m, t: candidate.t, p: candidate.p });
+	const ciphertext = fromBase64(candidate.ciphertext);
+	if (ciphertext.length < AES_GCM_TAG_BYTES || ciphertext.length > MAX_IDENTITY_CIPHERTEXT_BYTES) {
+		throw new Error('identity storage: ciphertext size is invalid');
+	}
 }
 
 /** Serialize an identity to the Go-oracle-compatible stored format. */
@@ -80,9 +162,8 @@ function serializeIdentity(id: XoreinIdentity): Uint8Array {
 // hand the protocol layer an at-rest cipher config derived from that identity:
 //   • registered → AES-256-GCM key from the identity seed, namespaced by peer id;
 //   • guest      → ephemeral (memory-only; guests leave no chat data behind).
-// Every path that resolves the active identity funnels through this module
-// (loadSessionIdentity, saveSessionIdentity, loadOrCreateGuestIdentity /
-// saveGuestIdentity), so hooking here covers all engine bootstrap modes.
+// Every path that resolves the active identity funnels through this module, so
+// hooking here covers all engine bootstrap modes.
 
 const CHAT_SCOPE_KEY_LABEL = 'xorein/chat-scope/v1/at-rest';
 
@@ -113,7 +194,8 @@ export function encryptIdentity(
   passphrase: string,
   argon2Params: Argon2Params = { m: ARGON2_M, t: ARGON2_T, p: ARGON2_P },
 ): EncryptedIdentityBlob {
-  const { m, t, p } = argon2Params;
+	const { m, t, p } = argon2Params;
+	validateArgon2Params(argon2Params);
   const salt = crypto.getRandomValues(new Uint8Array(16));
   const nonce = crypto.getRandomValues(new Uint8Array(12));
   const key = deriveKey(passphrase, salt, m, t, p);
@@ -127,8 +209,8 @@ export function encryptIdentity(
 
 /** Decrypt an encrypted identity blob with the given passphrase. */
 export async function decryptIdentity(blob: EncryptedIdentityBlob, passphrase: string): Promise<XoreinIdentity> {
-  if (blob.v !== 1 || blob.kdf !== 'argon2id') throw new Error('identity storage: unsupported format');
-  const salt = fromHex(blob.salt);
+	validateEncryptedIdentityBlob(blob);
+	const salt = fromHex(blob.salt);
   const nonce = fromHex(blob.nonce);
   const key = deriveKey(passphrase, salt, blob.m, blob.t, blob.p);
   const ciphertext = fromBase64(blob.ciphertext);
@@ -141,10 +223,7 @@ export async function decryptIdentity(blob: EncryptedIdentityBlob, passphrase: s
     throw new Error('identity storage: decryption failed (wrong passphrase?)');
   }
 
-  const stored = JSON.parse(new TextDecoder().decode(plaintext)) as {
-    ed25519_priv: number[];
-    mldsa65_priv: number[];
-  };
+	const stored = parseStoredIdentity(plaintext);
   const edPriv64 = new Uint8Array(stored.ed25519_priv);
   const mldsaPriv = new Uint8Array(stored.mldsa65_priv);
   return identityFromStored(edPriv64, mldsaPriv);
@@ -168,7 +247,8 @@ function openDB(): Promise<IDBDatabase> {
 
 /** Save an encrypted identity blob to IndexedDB. */
 export async function saveEncryptedIdentity(blob: EncryptedIdentityBlob): Promise<void> {
-  const db = await openDB();
+	validateEncryptedIdentityBlob(blob);
+	const db = await openDB();
   await new Promise<void>((resolve, reject) => {
     const tx = db.transaction(IDB_STORE_NAME, 'readwrite');
     tx.objectStore(IDB_STORE_NAME).put(JSON.stringify(blob), IDB_KEY);
@@ -187,9 +267,15 @@ export async function loadEncryptedIdentity(): Promise<EncryptedIdentityBlob | n
     req.onsuccess = () => resolve(req.result as string | undefined);
     req.onerror = () => reject(req.error);
   });
-  db.close();
-  if (!raw) return null;
-  return JSON.parse(raw) as EncryptedIdentityBlob;
+	db.close();
+	if (!raw) return null;
+	try {
+		const parsed: unknown = JSON.parse(raw);
+		validateEncryptedIdentityBlob(parsed);
+		return parsed;
+	} catch {
+		return null;
+	}
 }
 
 /** Check if an identity is persisted in IndexedDB (no decryption needed). */
@@ -295,7 +381,8 @@ export async function listVaultIdentities(): Promise<VaultEntry[]> {
 }
 
 export async function saveToVault(entry: VaultEntry): Promise<void> {
-  const db = await openVaultDB();
+	validateEncryptedIdentityBlob(entry.blob);
+	const db = await openVaultDB();
   await new Promise<void>((resolve, reject) => {
     const tx = db.transaction(VAULT_STORE_NAME, 'readwrite');
     tx.objectStore(VAULT_STORE_NAME).put(entry);
@@ -339,8 +426,17 @@ export async function saveCurrentToVault(peerId: string, displayName: string): P
 
 /** Import an external encrypted backup blob into the vault after verifying the passphrase. */
 export async function importToVault(blobJson: string, passphrase: string): Promise<VaultEntry> {
-  const parsed = JSON.parse(blobJson) as EncryptedIdentityBlob;
-  const identity = await decryptIdentity(parsed, passphrase);
+	if (typeof blobJson !== 'string' || new TextEncoder().encode(blobJson).length > MAX_IDENTITY_BACKUP_BYTES) {
+		throw new Error('identity storage: backup is too large');
+	}
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(blobJson);
+	} catch {
+		throw new Error('identity storage: invalid backup JSON');
+	}
+	validateEncryptedIdentityBlob(parsed);
+	const identity = await decryptIdentity(parsed, passphrase);
   const entry: VaultEntry = {
     peerId: identity.peerId,
     displayName: '',
@@ -351,94 +447,45 @@ export async function importToVault(blobJson: string, passphrase: string): Promi
   return entry;
 }
 
-// ── Session unlock (remember-me) ──────────────────────────────────────────
-// OPT-IN ONLY (`setRememberMeEnabled`). After a successful passphrase unlock we
-// re-encrypt the decrypted identity under a WebCrypto AES-GCM key and store both
-// the ciphertext and the CryptoKey handle in IndexedDB; localStorage holds only
-// the expiry/created timestamps.
-//
-// HONEST THREAT MODEL: `extractable: false` restricts only the JavaScript API.
-// When the CryptoKey handle is structured-cloned into IndexedDB, the BROWSER
-// SERIALIZES THE RAW KEY BYTES into the IDB backing store on disk (Chromium
-// LevelDB / Firefox SQLite). On platforms without OS-level profile encryption
-// (e.g. a default Linux install), anyone who can read the browser profile can
-// therefore recover BOTH the wrapping key and the wrapped identity ciphertext
-// and decrypt the identity offline — WITHOUT the account password. Because the
-// at-rest state key is derived from the identity seed, that also unlocks the
-// encrypted native state and ratchet blobs. Remember-me thus trades the
-// "a stolen device yields nothing readable without the password" guarantee for
-// convenience, which is why it is opt-in with explicit UI disclosure and why
-// its lifetime is HARD-CAPPED from the initial password unlock (the sliding
-// TTL refresh can never extend a session past SESSION_MAX_LIFETIME_MS).
+// ── Session unlock (disabled) ─────────────────────────────────────────────
+// A previous implementation stored an AES wrapping key handle and ciphertext
+// in IndexedDB. Browser profiles can serialize the raw CryptoKey bytes, so a
+// disk reader could recover the identity seed without the password. That
+// violates the local at-rest boundary: this module now deliberately refuses
+// all remember-me sessions and deletes artifacts created by older builds.
 
 const SESSION_KEY_LS_KEY = 'harmolyn:session-unlock';
 const SESSION_BLOB_IDB_KEY = 'session';
 const SESSION_WRAPKEY_IDB_KEY = 'session-wrapkey';
 const REMEMBER_ME_LS_KEY = 'harmolyn:remember-me';
-/** Sliding inactivity window: an unused session expires after this long. */
-export const SESSION_TTL_MS = 5 * 24 * 60 * 60 * 1000;
 /**
- * Hard cap measured from the INITIAL password unlock. Activity refreshes the
- * sliding TTL but can never push the expiry past `createdAt + this` — after the
- * cap the password is always required again (no indefinitely-refreshed session).
- */
-export const SESSION_MAX_LIFETIME_MS = 30 * 24 * 60 * 60 * 1000;
-
-interface SessionEntry {
-  /** Expiry (ms timestamp). Always ≤ createdAt + SESSION_MAX_LIFETIME_MS. */
-  expiresAt: number;
-  /** When the session was established by a REAL password unlock (ms timestamp). */
-  createdAt: number;
-}
-
-/**
- * Whether the user has explicitly opted in to remember-me on this device.
- * Defaults to OFF: without opt-in, every reload requires the account password
- * and no identity key material is recoverable from disk without it.
+ * Remember-me is permanently disabled. Kept as a compatibility export so old
+ * callers cannot accidentally re-enable an unsafe storage path.
  */
 export function isRememberMeEnabled(): boolean {
   try {
-    return typeof localStorage !== 'undefined' && localStorage.getItem(REMEMBER_ME_LS_KEY) === '1';
+    if (typeof localStorage !== 'undefined') localStorage.removeItem(REMEMBER_ME_LS_KEY);
   } catch {
-    return false;
+    // Storage may be unavailable in private/SSR contexts.
   }
+  return false;
 }
 
 /**
- * Record the user's remember-me choice. Disabling it also destroys any existing
- * persisted session so previously-saved key material stops being recoverable.
+ * Compatibility no-op: all choices are treated as disabled and any legacy
+ * persisted session is destroyed immediately.
  */
-export function setRememberMeEnabled(enabled: boolean): void {
+export function setRememberMeEnabled(_enabled: boolean): void {
   try {
-    if (typeof localStorage !== 'undefined') {
-      if (enabled) localStorage.setItem(REMEMBER_ME_LS_KEY, '1');
-      else localStorage.removeItem(REMEMBER_ME_LS_KEY);
-    }
+    if (typeof localStorage !== 'undefined') localStorage.removeItem(REMEMBER_ME_LS_KEY);
   } catch { /* best effort */ }
-  if (!enabled) clearSessionIdentity();
+  clearSessionIdentity();
 }
 
-interface SessionBlob {
-  nonce: string;      // hex 12 bytes
-  ciphertext: string; // base64 AES-256-GCM(identity JSON) under the non-extractable key
-}
-
-/** Returns true if a non-expired opt-in session entry exists in localStorage. Synchronous. */
+/** Always false: identity keys must not be recoverable from disk without a password. */
 export function hasValidSession(): boolean {
-  try {
-    if (typeof localStorage === 'undefined') return false;
-    if (!isRememberMeEnabled()) return false;
-    const raw = localStorage.getItem(SESSION_KEY_LS_KEY);
-    if (!raw) return false;
-    const entry = JSON.parse(raw) as Partial<SessionEntry>;
-    const now = Date.now();
-    return typeof entry.expiresAt === 'number'
-      && typeof entry.createdAt === 'number'
-      && entry.expiresAt > now
-      && now < entry.createdAt + SESSION_MAX_LIFETIME_MS;
-  } catch {
-    return false;
-  }
+  clearSessionIdentity();
+  return false;
 }
 
 async function idbPut(key: string, value: unknown): Promise<void> {
@@ -475,110 +522,27 @@ async function idbDelete(key: string): Promise<void> {
   db.close();
 }
 
-async function saveSessionBlob(blob: SessionBlob): Promise<void> {
-  await idbPut(SESSION_BLOB_IDB_KEY, JSON.stringify(blob));
-}
-
-async function loadSessionBlob(): Promise<SessionBlob | null> {
-  const raw = await idbGet<string>(SESSION_BLOB_IDB_KEY);
-  return raw ? (JSON.parse(raw) as SessionBlob) : null;
+/** Activate encrypted chat-scope persistence for the current in-memory identity. */
+export function configureIdentityChatScopePersistence(id: XoreinIdentity): void {
+  activateChatScopePersistence(id, { ephemeral: false });
 }
 
 /**
- * Get (or lazily create) the AES-GCM wrapping key, persisted as a CryptoKey
- * handle in IndexedDB. `extractable: false` only stops JS in this origin from
- * reading the raw bytes back out — it is NOT at-rest protection: the browser
- * writes the key bytes into the IndexedDB backing store on disk when the handle
- * is structured-cloned, so a disk-level attacker can recover it (see the honest
- * threat model at the top of this section). It still raises the bar against
- * same-machine attackers limited to copying localStorage values.
- */
-async function getOrCreateSessionWrapKey(): Promise<CryptoKey> {
-  const existing = await idbGet<CryptoKey>(SESSION_WRAPKEY_IDB_KEY);
-  if (existing) return existing;
-  const key = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
-  await idbPut(SESSION_WRAPKEY_IDB_KEY, key);
-  return key;
-}
-
-/**
- * Persist a remember-me session for the identity — ONLY if the user opted in
- * via setRememberMeEnabled (default OFF; see the threat model above). Without
- * opt-in this clears any stale session and stores nothing. The engine calls
- * this on every password unlock / registration, so it also doubles as the
- * "registered identity is now active" hook that activates encrypted chat-scope
- * persistence regardless of the remember-me choice.
+ * Compatibility shim for older callers. It never stores an unlock session;
+ * it only activates encrypted chat-scope persistence for the live identity.
  */
 export async function saveSessionIdentity(id: XoreinIdentity): Promise<void> {
-  // The active registered identity is known here — install the at-rest cipher
-  // for chat-scope persistence unconditionally (independent of remember-me).
-  activateChatScopePersistence(id, { ephemeral: false });
-  if (!isRememberMeEnabled()) {
-    clearSessionIdentity();
-    return;
-  }
-  const wrapKey = await getOrCreateSessionWrapKey();
-  const nonce = crypto.getRandomValues(new Uint8Array(12));
-  const plaintext = serializeIdentity(id);
-  const ciphertext = new Uint8Array(
-    await crypto.subtle.encrypt({ name: 'AES-GCM', iv: nonce as BufferSource }, wrapKey, plaintext as BufferSource),
-  );
-  await saveSessionBlob({ nonce: toHex(nonce), ciphertext: toBase64(ciphertext) });
-  // A fresh save is always backed by a real password unlock (or registration),
-  // so the hard-cap clock restarts here — and only here.
-  const now = Date.now();
-  const entry: SessionEntry = {
-    createdAt: now,
-    expiresAt: Math.min(now + SESSION_TTL_MS, now + SESSION_MAX_LIFETIME_MS),
-  };
-  localStorage.setItem(SESSION_KEY_LS_KEY, JSON.stringify(entry));
+  configureIdentityChatScopePersistence(id);
+  clearSessionIdentity();
 }
 
 /**
- * Attempt to load the session identity. Requires the remember-me opt-in and a
- * session inside BOTH the sliding TTL and the hard lifetime cap. On success the
- * sliding TTL is refreshed, but never past `createdAt + SESSION_MAX_LIFETIME_MS`
- * — an active user is still forced back to the password once the cap is hit.
- * Returns null and clears the session on opt-out, expiry, or any error.
- * Sessions from builds that predate the opt-in/hard-cap scheme (including the
- * pre-A5 raw-key-in-localStorage format) are cleared, never migrated.
+ * Session restore is permanently disabled. Remove any legacy artifacts and
+ * require the caller to provide the password to recover the identity.
  */
 export async function loadSessionIdentity(): Promise<XoreinIdentity | null> {
-  try {
-    if (typeof localStorage === 'undefined') return null;
-    const raw = localStorage.getItem(SESSION_KEY_LS_KEY);
-    if (!raw) return null;
-    if (!isRememberMeEnabled()) { clearSessionIdentity(); return null; }
-    const entry = JSON.parse(raw) as Partial<SessionEntry>;
-    const now = Date.now();
-    if (typeof entry.expiresAt !== 'number' || typeof entry.createdAt !== 'number') {
-      // Legacy entry (no hard-cap clock, possibly raw key material) — destroy it.
-      clearSessionIdentity();
-      return null;
-    }
-    const capAt = entry.createdAt + SESSION_MAX_LIFETIME_MS;
-    if (entry.expiresAt <= now || now >= capAt) { clearSessionIdentity(); return null; }
-    const [blob, wrapKey] = await Promise.all([loadSessionBlob(), idbGet<CryptoKey>(SESSION_WRAPKEY_IDB_KEY)]);
-    if (!blob || !wrapKey) { clearSessionIdentity(); return null; }
-    const plaintext = new Uint8Array(
-      await crypto.subtle.decrypt({ name: 'AES-GCM', iv: fromHex(blob.nonce) as BufferSource }, wrapKey, fromBase64(blob.ciphertext) as BufferSource),
-    );
-    const stored = JSON.parse(new TextDecoder().decode(plaintext)) as {
-      ed25519_priv: number[];
-      mldsa65_priv: number[];
-    };
-    // Refresh the sliding TTL, hard-capped from the initial password unlock.
-    entry.expiresAt = Math.min(now + SESSION_TTL_MS, capAt);
-    localStorage.setItem(SESSION_KEY_LS_KEY, JSON.stringify(entry));
-    const identity = await identityFromStored(new Uint8Array(stored.ed25519_priv), new Uint8Array(stored.mldsa65_priv));
-    // Session unlock resolved the ACTIVE registered identity — activate the
-    // encrypted chat-scope persistence for it.
-    activateChatScopePersistence(identity, { ephemeral: false });
-    return identity;
-  } catch {
-    clearSessionIdentity();
-    return null;
-  }
+  clearSessionIdentity();
+  return null;
 }
 
 /** Remove the session expiry, encrypted blob, and non-extractable wrapping key. */
@@ -589,6 +553,10 @@ export function clearSessionIdentity(): void {
   void idbDelete(SESSION_BLOB_IDB_KEY).catch(() => {});
   void idbDelete(SESSION_WRAPKEY_IDB_KEY).catch(() => {});
 }
+
+// Upgrade hygiene: remove session artifacts left by versions that offered the
+// unsafe remember-me feature, even before the engine reaches its first boot.
+void clearSessionIdentity();
 
 // ── High-level API ─────────────────────────────────────────────────────────
 

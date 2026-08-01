@@ -48,6 +48,10 @@ export const STREAM_OPTS = { runOnLimitedConnection: true, negotiateFully: false
 // 'open' in the local pool (zombie); without this cap a send to it burns the full
 // default 10s negotiation timeout before the fresh-dial fallback runs.
 const REUSE_NEGOTIATION_TIMEOUT_MS = 5_000;
+// A dial that never completes must not pin an application operation forever.
+// Eight seconds is deliberately longer than normal WebRTC/circuit setup, while
+// still leaving enough of the routed-request TTL for another peer to help.
+const FRESH_DIAL_TIMEOUT_MS = 8_000;
 
 /** The target peer of a (possibly circuit) multiaddr: its LAST /p2p/ component. */
 export function circuitTargetPeer(ma: Multiaddr): string | undefined {
@@ -156,12 +160,19 @@ export async function openFamilyStream(node: Libp2p, ma: Multiaddr, protocol: st
         }
       }
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      return await (node as any).dialProtocol(ma, protocol, { ...STREAM_OPTS, force: true });
+      return await (node as any).dialProtocol(ma, protocol, {
+        ...STREAM_OPTS,
+        force: true,
+        signal: AbortSignal.timeout(FRESH_DIAL_TIMEOUT_MS),
+      });
     }
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return await (node as any).dialProtocol(ma, protocol, STREAM_OPTS);
+  return await (node as any).dialProtocol(ma, protocol, {
+    ...STREAM_OPTS,
+    signal: AbortSignal.timeout(FRESH_DIAL_TIMEOUT_MS),
+  });
 }
 
 // ── Mux channel ────────────────────────────────────────────────────────────
@@ -177,7 +188,7 @@ export class MuxStreamError extends Error {
 /** Reply deadline per pipelined request. Handlers answer in well under a second;
  * a silent stream this long is a zombie circuit, so the whole channel is torn
  * down (and the caller's legacy retry re-dials fresh). */
-const REQUEST_TIMEOUT_MS = 15_000;
+export const REQUEST_TIMEOUT_MS = 8_000;
 
 /** Keep pooled streams alive well past libp2p's 120s default inactivity abort,
  * so a quiet-but-open conversation doesn't pay stream re-setup per message. An

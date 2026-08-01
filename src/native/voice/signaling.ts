@@ -126,7 +126,10 @@ export async function fetchTurnCredentials(): Promise<RTCIceServer[]> {
   } catch {
     // STUN-only fallback (node STUN). Works for most non-symmetric NATs.
     return [
-      { urls: [`stun:${new URL(supportNodeOrigin()).hostname}:3479`] },
+      // Xorein serves STUN and TURN on the same standard UDP listener. Keeping
+      // the fallback on 3478 means a node configured with the turnkey default
+      // works even when its credential endpoint is temporarily unavailable.
+      { urls: [`stun:${new URL(supportNodeOrigin()).hostname}:3478`] },
       ...optionalPublicStun(),
     ];
   }

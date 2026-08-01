@@ -29,7 +29,7 @@ import {
 } from './browser-smoke-fixtures.mjs';
 
 const ROOT = process.cwd();
-const EVIDENCE_DIR = path.resolve(ROOT, '.sisyphus/evidence');
+const EVIDENCE_DIR = path.resolve(ROOT, '.generated/browser-evidence');
 const MODE = process.argv[2] === 'missing-runtime' ? 'missing-runtime' : 'happy';
 
 await mkdir(EVIDENCE_DIR, { recursive: true });
@@ -144,8 +144,17 @@ async function runMissingRuntimePath(browserInstance, baseUrlValue) {
 
 async function smokeCreateAndJoin(page) {
   await page.getByTestId('server-rail-create').click();
-  await page.getByPlaceholder('THE // HUB').fill(CREATED_SERVER_NAME);
-  await page.getByRole('button', { name: 'Initiate Matrix' }).click();
+  try {
+    await page.getByPlaceholder('THE // HUB').fill(CREATED_SERVER_NAME);
+  } catch (error) {
+    console.error(await page.locator('body').innerText());
+    await page.screenshot({
+      path: path.join(EVIDENCE_DIR, 'task-10-create-modal-failure.png'),
+      fullPage: true,
+    });
+    throw error;
+  }
+  await page.getByRole('button', { name: 'Create Space' }).click();
   try {
     await page.waitForSelector('[data-testid="server-rail-server-alpha-node"]', { timeout: 10000 });
   } catch (error) {
@@ -165,7 +174,7 @@ async function smokeCreateAndJoin(page) {
   await page.getByPlaceholder(/xorein:\/\/invite\/.+/).first().fill(JOIN_INVITE);
   try {
     await page.waitForFunction(() => {
-      const button = [...document.querySelectorAll('button')].find((entry) => entry.textContent?.includes('Join Server'));
+      const button = [...document.querySelectorAll('button')].find((entry) => entry.textContent?.includes('Join Space'));
       return Boolean(button) && !button.hasAttribute('disabled');
     });
   } catch (error) {
@@ -173,7 +182,7 @@ async function smokeCreateAndJoin(page) {
     console.error(await page.locator('body').innerText());
     throw error;
   }
-  await page.getByRole('button', { name: 'Join Server' }).evaluate((element) => {
+  await page.getByRole('button', { name: 'Join Space' }).evaluate((element) => {
     element.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
   });
   await page.waitForSelector('[data-testid="server-rail-server-beta-node"]');

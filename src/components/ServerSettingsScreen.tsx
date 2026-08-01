@@ -255,7 +255,7 @@ function createInitialAdminState(server: Server): AdminState {
       {
         id: `${server.id}-rule-invite`,
         name: 'No External Invites',
-        description: 'Block messages containing invite links to other servers.',
+        description: 'Block messages containing invite links to other Spaces.',
         type: 'invite',
         enabled: true,
         actions: ['Delete message', 'Alert moderator'],
@@ -442,7 +442,7 @@ export const ServerSettingsScreen: React.FC<ServerSettingsScreenProps> = ({ serv
   };
 
   const handleAddChannel = async (categoryId: string) => {
-    if (!isOwner) { showUnsupported('Only the server owner can add channels.'); return; }
+    if (!isOwner) { showUnsupported('Only the Space Owner can add channels.'); return; }
     const category = adminState.categories.find((entry) => entry.id === categoryId);
     // When no categories exist yet, create the first channel named 'general'.
     const nextIndex = category ? category.channels.length + 1 : 1;
@@ -459,7 +459,7 @@ export const ServerSettingsScreen: React.FC<ServerSettingsScreenProps> = ({ serv
   };
 
   const handleEditChannel = (channel: Channel) => {
-    if (!isOwner) { showUnsupported('Only the server owner can edit channels.'); return; }
+    if (!isOwner) { showUnsupported('Only the Space Owner can edit channels.'); return; }
     setChannelEdit({ id: channel.id, name: channel.name });
   };
 
@@ -479,7 +479,7 @@ export const ServerSettingsScreen: React.FC<ServerSettingsScreenProps> = ({ serv
   };
 
   const handleDeleteChannel = async (channel: Channel) => {
-    if (!isOwner) { showUnsupported('Only the server owner can delete channels.'); return; }
+    if (!isOwner) { showUnsupported('Only the Space Owner can delete channels.'); return; }
     try {
       await deleteChannelMutation.mutateAsync({ serverId: server.id, channelId: channel.id });
       showFeedback('success', `Deleted #${channel.name}.`);
@@ -489,23 +489,23 @@ export const ServerSettingsScreen: React.FC<ServerSettingsScreenProps> = ({ serv
   };
 
   const handleSaveServerMeta = async (patch: { name?: string; description?: string }) => {
-    if (!isOwner) { showUnsupported('Only the server owner can edit server details.'); return; }
+    if (!isOwner) { showUnsupported('Only the Space Owner can edit Space details.'); return; }
     try {
       await mutations.updateServerMeta?.(server.id, patch);
-      showFeedback('success', 'Server details updated.');
+      showFeedback('success', 'Space details updated.');
     } catch (error) {
-      showFeedback('error', error instanceof Error ? error.message : 'Unable to update server.');
+      showFeedback('error', error instanceof Error ? error.message : 'Unable to update Space.');
     }
   };
 
   const handleDeleteServer = async () => {
-    if (!isOwner) { showUnsupported('Only the server owner can delete this server.'); return; }
+    if (!isOwner) { showUnsupported('Only the Space Owner can delete this Space.'); return; }
     if (!safeConfirm(`Delete “${server.name}”? This permanently removes it for every member and cannot be undone.`)) return;
     try {
       await mutations.deleteServer?.(server.id);
       onClose();
     } catch (error) {
-      showFeedback('error', error instanceof Error ? error.message : 'Unable to delete server.');
+      showFeedback('error', error instanceof Error ? error.message : 'Unable to delete Space.');
     }
   };
 
@@ -527,7 +527,7 @@ export const ServerSettingsScreen: React.FC<ServerSettingsScreenProps> = ({ serv
     setPendingRemoval(null);
     try {
       await mutations.removeMember?.(server.id, member.id);
-      showFeedback('success', `${member.username} was removed from the server.`);
+      showFeedback('success', `${member.username} was removed from the Space.`);
     } catch (error) {
       showFeedback('error', error instanceof Error ? error.message : 'Unable to remove member.');
     }
@@ -536,7 +536,7 @@ export const ServerSettingsScreen: React.FC<ServerSettingsScreenProps> = ({ serv
   // "Generate/rotate" mints a fresh invite secret — this invalidates every old link
   // and the displayed deeplink updates from the new secret. Real, owner-only.
   const handleRotateInvite = async () => {
-    if (!isOwner) { showUnsupported('Only the server owner can manage invites.'); return; }
+    if (!isOwner) { showUnsupported('Only the Space Owner can manage invites.'); return; }
     try {
       await mutations.rotateInvite?.(server.id);
       showFeedback('success', 'Invite link rotated — previous links no longer work.');
@@ -548,11 +548,11 @@ export const ServerSettingsScreen: React.FC<ServerSettingsScreenProps> = ({ serv
   // Revoke closes the server: the invite secret is cleared, so no link is accepted
   // until a new one is minted.
   const handleRevokeInvite = async () => {
-    if (!isOwner) { showUnsupported('Only the server owner can manage invites.'); return; }
+    if (!isOwner) { showUnsupported('Only the Space Owner can manage invites.'); return; }
     if (!safeConfirm('Revoke invites? Existing links stop working until you generate a new one.')) return;
     try {
       await mutations.revokeInvite?.(server.id);
-      showFeedback('info', 'Invites revoked. The server is now closed to new links.');
+      showFeedback('info', 'Invites revoked. The Space is now closed to new links.');
     } catch (error) {
       showFeedback('error', error instanceof Error ? error.message : 'Unable to revoke invites.');
     }
@@ -640,7 +640,7 @@ export const ServerSettingsScreen: React.FC<ServerSettingsScreenProps> = ({ serv
     <div className="absolute inset-0 z-[100] bg-bg-0 flex flex-col md:flex-row text-white/70 animate-in fade-in zoom-in-95 duration-300 overflow-hidden">
       <div className="hidden md:flex w-[224px] bg-bg-1 flex-col items-end py-10 px-5 border-r border-white/5">
         <div className="w-full space-y-1.5">
-          <div className="micro-label text-white/20 px-3 mb-3">SERVER // CONFIGURATION</div>
+          <div className="micro-label text-white/20 px-3 mb-3">SPACE // CONFIGURATION</div>
           {sections.map((section) => (
             <button
               key={section.id}
@@ -665,7 +665,7 @@ export const ServerSettingsScreen: React.FC<ServerSettingsScreenProps> = ({ serv
                 className="flex items-center gap-2.5 px-3 py-2 rounded-r1 w-full text-accent-danger hover:bg-accent-danger/10 transition-all micro-label"
               >
                 <Trash2 size={16} />
-                <span>Delete Server</span>
+                <span>Delete Space</span>
               </button>
             </>
           )}
@@ -826,7 +826,7 @@ const RemoveMemberConfirm: React.FC<{
           </h3>
         </div>
         <p id="remove-member-desc" className="text-xs text-white/50 leading-relaxed mb-5">
-          This removes <span className="text-white font-medium">{member.username}</span> from this server. They
+          This removes <span className="text-white font-medium">{member.username}</span> from this Space. They
           will lose access until invited again.
         </p>
         <div className="flex items-center justify-end gap-2.5">
@@ -875,7 +875,7 @@ const OverviewSection: React.FC<{
   return (
     <>
       <header className="mb-10">
-        <h2 className="text-[26px] font-bold text-white mb-2 font-display tracking-tight">SERVER // OVERVIEW</h2>
+        <h2 className="text-[26px] font-bold text-white mb-2 font-display tracking-tight">SPACE // OVERVIEW</h2>
         <p className="micro-label text-white/30">CONFIGURATION // IDENTITY // REGION</p>
       </header>
 
@@ -895,7 +895,7 @@ const OverviewSection: React.FC<{
 
         <div className="px-6 py-5 space-y-5">
           <div>
-            <label className="micro-label text-white/20 mb-1.5 block" htmlFor="server-name-input">Server Name</label>
+            <label className="micro-label text-white/20 mb-1.5 block" htmlFor="server-name-input">Space Name</label>
             <input
               id="server-name-input"
               type="text"
@@ -1030,7 +1030,7 @@ const ChannelsSection: React.FC<{
     </header>
 
     {!canManage && (
-      <p className="text-[11px] text-white/30 mb-5">Only the server owner can add, rename, or remove channels.</p>
+      <p className="text-[11px] text-white/30 mb-5">Only the Space Owner can add, rename, or remove channels.</p>
     )}
 
     {categories.length === 0 && (
@@ -1225,7 +1225,7 @@ const InvitesSection: React.FC<{
           )}
         </div>
       ) : (
-        <p className="mt-4 text-[10px] text-white/25">Only the server owner can rotate or revoke invites.</p>
+        <p className="mt-4 text-[10px] text-white/25">Only the Space Owner can rotate or revoke invites.</p>
       )}
     </div>
   </>

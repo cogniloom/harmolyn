@@ -1,5 +1,5 @@
 {
-  "name": "aether",
+  "name": "harmolyn",
   "private": true,
   "version": "1.0.0-rc.1",
   "license": "AGPL-3.0-or-later",
@@ -16,8 +16,8 @@
     "build:dev": "vite build --mode development",
     "build:protocol": "tsc -p tsconfig.protocol.json",
     "test:protocol": "npm run build:protocol && node ./scripts/run-protocol-tests.mjs",
-    "test:browser": "node ./scripts/browser-smoke.mjs",
-    "test:browser:missing-runtime": "node ./scripts/browser-smoke.mjs missing-runtime",
+    "test:browser": "node ./scripts/browser-native-smoke.mjs",
+    "test:browser:missing-runtime": "node ./scripts/browser-native-smoke.mjs no-peers",
     "tauri:dev": "node ./scripts/tauri-dev.mjs",
     "tauri:build": "node ./scripts/tauri-build.mjs",
     "build:linux:x64": "node ./scripts/build-linux-x64.mjs",
@@ -25,12 +25,17 @@
     "test:browser:transport": "node ./scripts/native-transport-test.mjs",
     "test:all": "npm run lint && npm run typecheck && npm run build && npm run test && npm run test:browser:all",
     "test:voice:e2e": "node ./scripts/voice-e2e-test.mjs",
-    "test:browser:ci": "node ./scripts/browser-ci-smoke.mjs"
+    "test:node-switch:e2e": "node ./scripts/node-switch-e2e.mjs",
+    "test:browser:ci": "node ./scripts/browser-ci-smoke.mjs",
+    "release:version": "node ./scripts/release-version.mjs",
+    "release:artifacts": "node ./scripts/release-artifacts.mjs"
   },
   "dependencies": {
     "@bufbuild/protobuf": "^2.12.0",
     "@chainsafe/libp2p-noise": "^17.0.0",
     "@chainsafe/libp2p-yamux": "^8.0.1",
+    "@emnapi/core": "^2.0.0-alpha.3",
+    "@emnapi/runtime": "^2.0.0-alpha.3",
     "@libp2p/circuit-relay-v2": "^4.2.6",
     "@libp2p/dcutr": "^3.0.25",
     "@libp2p/identify": "^4.1.7",
@@ -46,6 +51,7 @@
     "@tanstack/react-query": "^5.100.14",
     "@tauri-apps/api": "^2.11.0",
     "@tauri-apps/plugin-deep-link": "^2.4.9",
+    "@tauri-apps/plugin-process": "^2.3.1",
     "@tauri-apps/plugin-updater": "^2.10.1",
     "@types/qrcode": "^1.5.6",
     "autoprefixer": "^10.5.0",
@@ -60,7 +66,6 @@
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
     "react-i18next": "^15.7.4",
-    "react-router-dom": "^7.16.0",
     "tailwindcss-animate": "^1.0.7"
   },
   "devDependencies": {
@@ -73,8 +78,8 @@
     "@types/node": "^22.19.19",
     "@vitejs/plugin-react": "^6.0.2",
     "@vitest/coverage-v8": "^4.1.7",
-    "eslint": "^9.39.4",
-    "eslint-plugin-react-hooks": "^5.2.0",
+    "eslint": "^10.8.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
     "eslint-plugin-react-refresh": "^0.5.2",
     "globals": "^17.6.0",
     "jsdom": "^29.1.1",

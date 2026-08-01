@@ -27,6 +27,22 @@ describe('Crowd mode', () => {
     expect(dec(crowdDecrypt(g, ct))).toBe('lazy key derivation');
   });
 
+  it('binds ciphertext to its scope id', () => {
+    const one = newCrowdGroup('space-one');
+    const two = {
+      ...one,
+      scopeId: 'space-two',
+      currentEpoch: {
+        ...one.currentEpoch,
+        epochRoot: new Uint8Array(one.currentEpoch.epochRoot),
+        senderKeys: new Map(one.currentEpoch.senderKeys),
+      },
+      prevEpochs: [],
+    };
+    const ct = crowdEncrypt(one, 'alice', enc('scope-bound'));
+    expect(() => crowdDecrypt(two, ct)).toThrow();
+  });
+
   it('multi-sender: different senders produce different keys', () => {
     const root = new Uint8Array(32).fill(0x42);
     const ka = deriveSenderKey(root, 'alice');

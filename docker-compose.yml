@@ -7,15 +7,18 @@ services:
       args:
         # VITE_* vars are baked at build time — override via env file or shell
         VITE_XOREIN_CONTROL_ENDPOINT: ${VITE_XOREIN_CONTROL_ENDPOINT:-https://node.xorein.com}
-        VITE_SOURCE_URL: ${VITE_SOURCE_URL:-https://github.com/kylhuk/harmolyn-preview}
+        VITE_SOURCE_URL: ${VITE_SOURCE_URL:-https://github.com/cogniloom/harmolyn}
     container_name: harmolyn-web
     hostname: harmolyn-web
     restart: unless-stopped
-    expose:
-      - "8080"
-    networks:
-      - lama-lan_backend
-
-networks:
-  lama-lan_backend:
-    external: true
+    ports:
+      - 8909:8080
+#    expose:
+#      - "8080"
+#
+#    networks:
+#      - lama-lan_backend
+#
+#networks:
+#  lama-lan_backend:
+#    external: true

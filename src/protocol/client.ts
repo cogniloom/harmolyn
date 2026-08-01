@@ -26,7 +26,7 @@ import {
   type FeatureToggleSet,
 } from "./featureBridge.js";
 import { parseProtocolId, stringifyProtocolId, type ProtocolId } from "./protocolId.js";
-import { safeStorageGet, safeStorageSet } from "../lib/browserStorage.js";
+import { safeStorageGet, safeStorageRemove, safeStorageSet } from "../lib/browserStorage.js";
 import { normalizeRuntimeEndpoint, normalizeRuntimeIdentity, normalizeRuntimeSettings } from "../lib/authPreview.js";
 import type { Message } from "../types.js";
 
@@ -354,11 +354,10 @@ export class XoreinControlTransport implements XoreinTransport {
 //   • ephemeral   — guest identity: in-memory only for this JS context. Guests
 //                   must not leave chat plaintext (or ciphertext) behind at all.
 //   • unconfigured (default, e.g. no native identity resolved) — in-memory only;
-//                   reads fall back to any pre-existing LEGACY plaintext blob for
-//                   migration compatibility, but nothing is ever written back to
-//                   storage in this mode.
-// Legacy plaintext blobs (written by older builds) are purged from localStorage
-// as soon as an identity configures persistence.
+//                   legacy plaintext blobs are never read or migrated.
+// Legacy plaintext blobs (written by older builds) are purged as soon as this
+// module sees them, because retaining decrypted chat on disk is unsafe even if
+// the current build no longer writes it.
 
 interface ChatScopeEncryptedEnvelope {
   v: 2;
@@ -437,6 +436,11 @@ function purgeLegacyPlaintextChatScopeState(): void {
     // Storage unavailable (SSR/private browsing) — nothing persisted to purge.
   }
 }
+
+// Remove legacy decrypted chat state as soon as the protocol module loads, not
+// only after the identity bootstrap finishes. This closes the pre-unlock window
+// in which a copied browser profile could still contain old plaintext.
+purgeLegacyPlaintextChatScopeState();
 
 /** Remove ALL chat-scope blobs (encrypted and legacy). For logout/identity reset. */
 export function purgeAllPersistedChatScopeState(): void {
@@ -542,12 +546,12 @@ export function readPersistedChatScopeState(scopeId: string): PersistedChatScope
     return createEmptyPersistedChatScopeState();
   }
 
-  // Unconfigured: migration read of a LEGACY plaintext blob. Never written back.
-  const raw = safeStorageGet(() => window.localStorage, buildChatScopeStorageKey(trimmedScopeId));
-  if (!raw || isChatScopeEncryptedEnvelope(raw)) {
-    return createEmptyPersistedChatScopeState();
-  }
-  return parsePersistedChatScopeState(raw);
+  // Unconfigured contexts never read browser storage. This includes legacy
+  // plaintext blobs: they are not a migration source because doing so would
+  // surface decrypted conversation content before an identity key exists.
+  const legacyKey = buildChatScopeStorageKey(trimmedScopeId);
+  safeStorageRemove(() => window.localStorage, legacyKey);
+  return createEmptyPersistedChatScopeState();
 }
 
 function parsePersistedChatScopeState(raw: string): PersistedChatScopeState {
@@ -624,19 +628,26 @@ export function readBrowserChatActionSupport(): BrowserChatActionSupport {
     };
   }
 
-  // When the in-app native engine is active it performs chat mutations over the
-  // P2P network itself — support must not depend on control-endpoint
-  // reachability (the support node is bootstrap/blob storage only).
+  const runtime = readBrowserRuntimeSnapshot();
+
+  // When the in-app native engine is active it performs chat mutations locally
+  // and over the P2P network itself. The local engine being alive is not proof
+  // that a peer path is alive, so keep the action path available for local
+  // queueing while describing the actual transport state precisely.
   if ((window as unknown as Record<string, unknown>).__HARMOLYN_NATIVE_ACTIVE__ === true) {
+    const transportState = runtime?.transport_state ?? "disconnected";
     return {
       mode: "connected",
       canPersistLocally: true,
       canAttemptAttachments: true,
-      detail: "Native engine active — chat mutations are handled by the in-app xorein peer.",
+      detail: transportState === "connected"
+        ? "Native engine active — connected to the xorein peer network; chat mutations are handled by the in-app peer."
+        : transportState === "connecting"
+          ? "Native engine active — connecting to the xorein peer network; chat mutations remain local or queued until a peer path is available."
+          : "Native engine active locally — no xorein peer path is connected; chat mutations remain local or queued until a peer path is available.",
     };
   }
 
-  const runtime = readBrowserRuntimeSnapshot();
   const peerId = normalizeRuntimeIdentity(runtime?.identity)?.peer_id ?? "";
   const endpoint = normalizeRuntimeEndpoint(runtime?.control_endpoint) || normalizeRuntimeSettings(runtime?.settings)?.control_endpoint || "";
 
@@ -1318,6 +1329,7 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 function readBrowserRuntimeSnapshot(): {
   identity?: { peer_id?: string };
   control_endpoint?: string;
+  transport_state?: "connecting" | "connected" | "disconnected";
   settings?: Record<string, string>;
 } | null {
   const windowRecord = window as unknown as Record<string, unknown>;
@@ -1352,6 +1364,7 @@ function readBrowserControlBridgeReady(): boolean {
 function parseBrowserJson(value: unknown): {
   identity?: { peer_id?: string };
   control_endpoint?: string;
+  transport_state?: "connecting" | "connected" | "disconnected";
   settings?: Record<string, string>;
 } | null {
   if (!value) {
@@ -1374,6 +1387,7 @@ function parseBrowserJson(value: unknown): {
 function normalizeBrowserRuntimeJson(value: unknown): {
   identity?: { peer_id?: string };
   control_endpoint?: string;
+  transport_state?: "connecting" | "connected" | "disconnected";
   settings?: Record<string, string>;
 } | null {
   if (!isPlainObject(value)) {
@@ -1382,14 +1396,20 @@ function normalizeBrowserRuntimeJson(value: unknown): {
 
   const identity = normalizeRuntimeIdentity(value.identity);
   const controlEndpoint = normalizeRuntimeEndpoint(value.control_endpoint);
+  const transportState = value.transport_state === "connecting"
+    || value.transport_state === "connected"
+    || value.transport_state === "disconnected"
+    ? value.transport_state
+    : undefined;
   const settings = normalizeRuntimeSettings(value.settings);
-  if (!identity && !controlEndpoint && !settings) {
+  if (!identity && !controlEndpoint && !transportState && !settings) {
     return null;
   }
 
   return {
     ...(identity ? { identity } : {}),
     ...(controlEndpoint ? { control_endpoint: controlEndpoint } : {}),
+    ...(transportState ? { transport_state: transportState } : {}),
     ...(settings ? { settings } : {}),
   };
 }

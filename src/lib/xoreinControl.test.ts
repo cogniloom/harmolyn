@@ -14,6 +14,7 @@ vi.mock("@tauri-apps/api/event", () => ({
 import {
   normalizeJoinInput,
   discoverServerByInvite,
+  joinServerByInvite,
   sendChannelMessage,
   createServer,
   createChannel,
@@ -36,6 +37,7 @@ import {
   listRoles,
   connectToDefaultRuntime,
   connectToControlEndpoint,
+  testControlEndpoint,
   consumePendingNativeDeepLinks,
   clearPreferredControlEndpoint,
   getIdentityBackup,
@@ -116,6 +118,12 @@ function expectNativeControlGlobalsCleared(): void {
   expect(windowRecord.__HARMOLYN_XOREIN_CONTROL_TOKEN__).toBeUndefined();
   expect(windowRecord.__HARMOLYN_CONTROL_TOKEN__).toBeUndefined();
   expect(windowRecord.__XOREIN_CONTROL_TOKEN__).toBeUndefined();
+}
+
+function enableNativeControlBridge(): void {
+  const windowRecord = window as unknown as Record<string, unknown>;
+  windowRecord.__HARMOLYN_XOREIN_CONTROL_ENDPOINT__ = "http://127.0.0.1:7711";
+  windowRecord.__HARMOLYN_XOREIN_CONTROL_READY__ = true;
 }
 
 afterEach(() => {
@@ -237,6 +245,18 @@ describe("requestControlApi (through control functions)", () => {
     expect(atob(sent.split("invite=")[1].replace(/-/g, "+").replace(/_/g, "/"))).not.toContain("SECRET-CAPABILITY");
     // Public preview fields survive.
     expect(sent).toContain("xorein://join/alpha");
+  });
+
+  it("never sends an invite capability to a remote support endpoint", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const remoteRuntime = { control_endpoint: "https://node.example", settings: {} } as XoreinRuntimeSnapshot;
+
+    await expect(joinServerByInvite(remoteRuntime, makeXoreinInviteDeeplink("alpha"))).rejects.toMatchObject({
+      code: "p2p_required",
+      status: 501,
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("rejects primitive discovery bodies before normalizing them", async () => {
@@ -447,6 +467,7 @@ describe("requestControlApi (through control functions)", () => {
   });
 
   it("uses the native bridge for an explicit local launch endpoint", async () => {
+    enableNativeControlBridge();
     storePreferredControlEndpoint("127.0.0.1:7711");
     invokeMock.mockResolvedValueOnce({
       status: 200,
@@ -480,7 +501,66 @@ describe("requestControlApi (through control functions)", () => {
       path: "/v1/state",
       body: null,
     });
-    expect(window.localStorage.getItem("harmolyn:xorein:runtime") ?? "").toContain("peer-local");
+    expect(window.localStorage.getItem("harmolyn:xorein:runtime") ?? "").not.toContain("peer-local");
+  });
+
+  it("uses browser fetch for local launch endpoints outside the desktop bridge", async () => {
+    storePreferredControlEndpoint("127.0.0.1:7711");
+    const fetchMock = vi.fn(async (..._args: unknown[]) => jsonResponse({
+      identity: { peer_id: "peer-browser" },
+      control_endpoint: "http://127.0.0.1:7711",
+      servers: [],
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const snapshot = await connectToControlEndpoint("http://127.0.0.1:7711");
+
+    expect(snapshot?.identity?.peer_id).toBe("peer-browser");
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.objectContaining({ href: "http://127.0.0.1:7711/v1/state" }),
+      expect.objectContaining({ headers: {} }),
+    );
+    expect(invokeMock).not.toHaveBeenCalled();
+  });
+
+  it("probes a private-LAN HTTP endpoint from the browser execution context", async () => {
+    const fetchMock = vi.fn(async () => jsonResponse({ status: "ok" }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(testControlEndpoint("http://192.168.0.1:7711")).resolves.toMatchObject({
+      endpoint: "http://192.168.0.1:7711",
+      status: "reachable",
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.objectContaining({ href: "http://192.168.0.1:7711/v1/state" }),
+      expect.any(Object),
+    );
+  });
+
+  it("reports browser reachability and HTTP authentication failures separately", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ status: "ok" }))
+      .mockResolvedValueOnce(jsonResponse({ code: "unauthorized" }, 401));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(testControlEndpoint("127.0.0.1:7712")).resolves.toMatchObject({
+      endpoint: "http://127.0.0.1:7712",
+      status: "reachable",
+    });
+    await expect(testControlEndpoint("127.0.0.1:7712")).resolves.toMatchObject({
+      status: "unauthorized",
+    });
+  });
+
+  it("reports browser CORS or network failures as unreachable", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => {
+      throw new TypeError("Failed to fetch");
+    }));
+
+    await expect(testControlEndpoint("127.0.0.1:7712")).resolves.toMatchObject({
+      status: "unreachable",
+      detail: expect.stringMatching(/CORS|binding/i),
+    });
   });
 
   it("maps a non-ok response to a XoreinControlError with the server code and status", async () => {
@@ -1220,51 +1300,73 @@ describe("identity control API", () => {
     });
   });
 
-  it("requests encrypted identity backups with a passphrase over POST", async () => {
-    const fetchMock = vi.fn(async (_url: URL | string, _init?: RequestInit) => jsonResponse(backupDocument));
+  it("requests encrypted identity backups through the authenticated local bridge", async () => {
+    enableNativeControlBridge();
+    invokeMock.mockResolvedValueOnce({ status: 200, body: backupDocument });
+    const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
 
     const backup = await getIdentityBackup(runtime, " secret ");
 
-    const init = (fetchMock.mock.calls[0]?.[1] ?? {}) as { method?: string; body?: string };
-    expect(String(fetchMock.mock.calls[0]?.[0] ?? "")).toBe("http://127.0.0.1:7711/v1/identities/backup");
-    expect(init.method).toBe("POST");
-    expect(JSON.parse(init.body ?? "{}")).toEqual({ passphrase: "secret" });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(invokeMock).toHaveBeenCalledWith("request_xorein_control_api", {
+      endpoint: "http://127.0.0.1:7711",
+      method: "POST",
+      path: "/v1/identities/backup",
+      body: { passphrase: " secret " },
+    });
     expect(JSON.parse(backup)).toEqual(backupDocument);
   });
 
   it("rejects malformed identity backups from /v1/identities/backup", async () => {
-    const fetchMock = vi.fn(async (_url: URL | string, _init?: RequestInit) => jsonResponse({
+    enableNativeControlBridge();
+    invokeMock.mockResolvedValueOnce({ status: 200, body: {
       version: 1,
       alg: "argon2id-aes256gcm",
       peer_id: "peer-local",
       salt: "c2FsdA==",
       nonce: "bm9uY2U=",
       ciphertext: "Y2lwaGVydGV4dA==",
-    }));
+    } });
+    const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
 
     await expect(getIdentityBackup(runtime, "secret")).rejects.toMatchObject({
       code: "invalid_response",
       status: 502,
     });
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("restores identities with a passphrase and structured backup document", async () => {
-    const fetchMock = vi.fn(async (url: URL | string, _init?: RequestInit) => {
-      if (String(url).endsWith("/v1/state")) {
-        return jsonResponse({ peer_id: "peer-local", display_name: "Ada", servers: [], settings: {} });
-      }
-      return jsonResponse({ peer_id: "peer-local", display_name: "Ada" });
-    });
+    enableNativeControlBridge();
+    invokeMock
+      .mockResolvedValueOnce({ status: 200, body: { peer_id: "peer-local", display_name: "Ada" } })
+      .mockResolvedValueOnce({ status: 200, body: { peer_id: "peer-local", display_name: "Ada", servers: [], settings: {} } });
+    const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
 
     await restoreIdentity(runtime, JSON.stringify(backupDocument), " secret ");
 
-    const init = (fetchMock.mock.calls[0]?.[1] ?? {}) as { method?: string; body?: string };
-    expect(String(fetchMock.mock.calls[0]?.[0] ?? "")).toBe("http://127.0.0.1:7711/v1/identities/restore");
-    expect(init.method).toBe("POST");
-    expect(JSON.parse(init.body ?? "{}")).toEqual({ passphrase: "secret", backup: backupDocument });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(invokeMock).toHaveBeenNthCalledWith(1, "request_xorein_control_api", {
+      endpoint: "http://127.0.0.1:7711",
+      method: "POST",
+      path: "/v1/identities/restore",
+      body: { passphrase: " secret ", backup: backupDocument },
+    });
+  });
+
+  it("refuses to send identity backup material to a remote endpoint", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const remoteRuntime = { control_endpoint: "https://evil.example", settings: {} } as XoreinRuntimeSnapshot;
+
+    await expect(getIdentityBackup(remoteRuntime, "secret")).rejects.toMatchObject({
+      code: "identity_local_only",
+      status: 403,
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("rejects malformed backup JSON before calling restore", async () => {
@@ -1316,40 +1418,30 @@ describe("consumePendingNativeDeepLinks", () => {
 });
 
 describe("readNativeRuntimeBootstrapStatus", () => {
-  it("reports a waiting sidecar as visible bootstrap progress", async () => {
+  it("reports an unconfigured local runtime without implying process management", async () => {
     invokeMock.mockResolvedValueOnce({
       control_endpoint: "",
       control_ready: false,
       data_dir: "/tmp/harmolyn-xorein",
-      sidecar: {
-        managed: true,
-        running: true,
-        control_endpoint: "",
-      },
     });
 
     await expect(readNativeRuntimeBootstrapStatus()).resolves.toEqual({
-      phase: "waiting",
-      message: "xorein sidecar is running. Waiting for the control endpoint...",
+      phase: "idle",
+      message: "No local xorein runtime is configured.",
       detail: "/tmp/harmolyn-xorein",
     });
   });
 
-  it("reports native startup failures with the underlying error", async () => {
+  it("reports an unready local runtime without probing a child process", async () => {
     invokeMock.mockResolvedValueOnce({
-      control_endpoint: "",
+      control_endpoint: "http://127.0.0.1:7711",
       control_ready: false,
-      sidecar: {
-        managed: true,
-        running: false,
-        last_error: "Unable to start xorein sidecar: missing binary",
-      },
     });
 
     await expect(readNativeRuntimeBootstrapStatus()).resolves.toEqual({
-      phase: "failed",
-      message: "xorein could not start.",
-      detail: "Unable to start xorein sidecar: missing binary",
+      phase: "waiting",
+      message: "Local xorein runtime is not authenticated yet.",
+      detail: "http://127.0.0.1:7711",
     });
   });
 });
@@ -1368,7 +1460,7 @@ describe("connectToDefaultRuntime", () => {
     expect(result?.settings).toBeUndefined();
     expect(result?.presence).toBeUndefined();
     expect(String(fetchMock.mock.calls[0]?.[0] ?? "")).toContain("http://127.0.0.1:7711/v1/state");
-    expect(window.localStorage.getItem("harmolyn:xorein:runtime") ?? "").toContain("peer-x");
+    expect(window.localStorage.getItem("harmolyn:xorein:runtime") ?? "").not.toContain("peer-x");
   });
 
   it("fetches the preferred local endpoint for autoconnect without exposing a token", async () => {
@@ -1686,8 +1778,8 @@ describe("connectToDefaultRuntime", () => {
     storageSpy.mockRestore();
   });
 
-  it("resolves the preferred local endpoint immediately without polling for a sidecar", async () => {
-    // The Tauri sidecar probe was removed: autoconnect no longer waits/polls for
+  it("resolves the preferred local endpoint immediately without polling for a child process", async () => {
+    // The Tauri child-process probe was removed: autoconnect no longer waits/polls for
     // a starting native runtime. It issues a single fetch against the resolved
     // endpoint and resolves promptly.
     storePreferredControlEndpoint("127.0.0.1:7811");
@@ -1709,7 +1801,6 @@ describe("connectToDefaultRuntime", () => {
       invokeMock.mockResolvedValue({
         control_endpoint: "http://127.0.0.1:7711",
         control_ready: false,
-        sidecar: { running: true, managed: true },
       });
       const fetchMock = vi.fn();
       vi.stubGlobal("fetch", fetchMock);
@@ -1732,7 +1823,6 @@ describe("connectToDefaultRuntime", () => {
         control_endpoint: "http://127.0.0.1:7711",
         control_ready: false,
         control_token: "native-token",
-        sidecar: { running: true, managed: true },
       });
       const fetchMock = vi.fn(async (..._args: unknown[]) => jsonResponse(discoveryResponse("x", "No Token")));
       vi.stubGlobal("fetch", fetchMock);
@@ -1758,7 +1848,7 @@ describe("connectToDefaultRuntime", () => {
     (window as unknown as Record<string, unknown>).__HARMOLYN_XOREIN_CONTROL_ENDPOINT__ = "http://127.0.0.1:7777";
     (window as unknown as Record<string, unknown>).__HARMOLYN_XOREIN_CONTROL_READY__ = true;
     (window as unknown as Record<string, unknown>).__HARMOLYN_XOREIN_CONTROL_TOKEN__ = "stale-token";
-    invokeMock.mockResolvedValueOnce({ control_endpoint: "", sidecar: { running: false, managed: true } });
+    invokeMock.mockResolvedValueOnce({ control_endpoint: "" });
     vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("unreachable"); }));
 
     await expect(connectToDefaultRuntime()).resolves.toBeNull();

@@ -59,7 +59,7 @@ try {
   const alice = await s.client('alice');
   const bob = await s.client('bob');
 
-  await s.step('two clients in one Crowd channel', async () => {
+  await s.step('two clients in one adaptive E2EE channel', async () => {
     await register(alice, 'Alice');
     await createServer(alice, 'Speed Lab');
     const invite = await copyInvite(alice);

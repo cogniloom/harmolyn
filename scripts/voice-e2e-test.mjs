@@ -1,22 +1,36 @@
-// Voice E2E test suite — covers:
-//   T1: TURN credential fetch (control plane)
-//   T2: WebTransport (QUIC) dial to relay
-//   T3: Voice join/leave signaling (SFU session lifecycle)
-//   T4: TURN relay path — WebRTC with iceTransportPolicy:'relay' (proves firewall traversal)
-//   T5: Direct ICE path — WebRTC with host/srflx candidates
+// Real two-browser WebRTC/TURN smoke test.
 //
-// Requires: live xorein-node + coturn on node.xorein.com
+// Start a relay/archivist Xorein node first, then run:
+//   VOICE_NODE_ENDPOINT=http://127.0.0.1:7711 npm run test:voice:e2e
+//
+// The two peers live in isolated Chromium contexts. Signaling is exchanged by
+// this harness, while ICE is forced to `relay`, so a pass requires an actual
+// allocation through Xorein's embedded TURN service. Fake audio devices keep
+// the test deterministic and suitable for a headless runner.
 
-import path from 'path';
-import { existsSync } from 'fs';
-import { mkdir, writeFile } from 'fs/promises';
+import path from 'node:path';
+import { existsSync } from 'node:fs';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { createServer } from 'vite';
 import { chromium } from 'playwright-core';
 
 const ROOT = process.cwd();
-const EVIDENCE_DIR = path.resolve(ROOT, '.sisyphus/evidence');
+const EVIDENCE_DIR = path.resolve(ROOT, '.generated/voice-e2e');
+const NODE_ENDPOINT = normalizeEndpoint(process.env.VOICE_NODE_ENDPOINT ?? 'http://127.0.0.1:7711');
+const CREDENTIAL_URL = `${NODE_ENDPOINT}/v1/voice/turn-credentials`;
+const TURN_TRANSPORT = String(process.env.VOICE_TURN_TRANSPORT ?? 'auto').trim().toLowerCase();
+if (!['auto', 'udp', 'tcp', 'tls'].includes(TURN_TRANSPORT)) {
+  throw new Error(`Invalid VOICE_TURN_TRANSPORT: ${TURN_TRANSPORT}`);
+}
 
-await mkdir(EVIDENCE_DIR, { recursive: true });
+function normalizeEndpoint(value) {
+  const raw = String(value).trim();
+  const parsed = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(raw) ? raw : `http://${raw}`);
+  if (!['http:', 'https:'].includes(parsed.protocol) || !parsed.hostname) {
+    throw new Error(`Invalid VOICE_NODE_ENDPOINT: ${value}`);
+  }
+  return parsed.origin;
+}
 
 function resolveChromeExecutable() {
   const candidates = [
@@ -25,390 +39,211 @@ function resolveChromeExecutable() {
     '/usr/bin/chromium',
     '/usr/bin/chromium-browser',
   ].filter(Boolean);
-  for (const c of candidates) {
-    if (existsSync(c)) return c;
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) return candidate;
   }
   try {
     const managed = chromium.executablePath();
     if (managed && existsSync(managed)) return managed;
-  } catch { /* fall through */ }
+  } catch {
+    // The launch below provides the actionable missing-browser error.
+  }
   return undefined;
 }
 
-const viteServer = await createServer({
-  root: ROOT,
-  server: { host: 'localhost', port: 0, strictPort: false },
-  logLevel: 'error',
-});
-await viteServer.listen();
-const address = viteServer.httpServer?.address();
-const port = typeof address === 'object' && address ? address.port : 8080;
-const baseUrl = `http://localhost:${port}`;
-const testUrl = `${baseUrl}/p0-test.html`;
+async function waitForIceGathering(page) {
+  await page.waitForFunction(() => window.__voiceE2E?.pc?.iceGatheringState === 'complete', null, { timeout: 20_000 });
+}
 
-const browser = await chromium.launch({
-  headless: true,
-  executablePath: resolveChromeExecutable(),
-  args: [
-    '--no-sandbox',
-    '--disable-dev-shm-usage',
-    '--use-fake-ui-for-media-stream',   // auto-grant microphone/camera
-    '--use-fake-device-for-media-stream', // fake audio/video (no real mic needed)
-    '--enable-features=WebRTC-H264WithOpenH264FFmpeg',
-  ],
-});
+async function initialisePeer(page, credentialUrl, initiator) {
+  return page.evaluate(async ({ url, isInitiator, requiredTransport }) => {
+    const response = await fetch(url, { cache: 'no-store' });
+    if (!response.ok) throw new Error(`TURN credentials returned HTTP ${response.status}`);
+    const credentials = await response.json();
+    if (!Array.isArray(credentials.urls) || !credentials.urls.some(value => /^turns?:/.test(String(value)))) {
+      throw new Error('Xorein returned no TURN URL');
+    }
+    if (!credentials.username || !credentials.credential) {
+      throw new Error('Xorein returned incomplete TURN credentials');
+    }
 
+    const selectedUrls = credentials.urls.filter(value => {
+      const candidate = String(value);
+      if (requiredTransport === 'auto') return candidate.startsWith('turn:') || candidate.startsWith('turns:');
+      if (requiredTransport === 'udp') return candidate.startsWith('turn:') && candidate.includes('transport=udp');
+      if (requiredTransport === 'tcp') return candidate.startsWith('turn:') && candidate.includes('transport=tcp');
+      return candidate.startsWith('turns:');
+    });
+    if (!selectedUrls.length) throw new Error(`Xorein returned no ${requiredTransport} TURN URL`);
+
+    const pc = new RTCPeerConnection({
+      iceServers: [{
+        urls: selectedUrls,
+        username: credentials.username,
+        credential: credentials.credential,
+      }],
+      iceTransportPolicy: 'relay',
+    });
+    const state = {
+      pc,
+      localCandidateTypes: [],
+      remoteAudioTracks: 0,
+      received: [],
+      dataChannel: null,
+    };
+    window.__voiceE2E = state;
+    pc.onicecandidate = event => {
+      if (!event.candidate) return;
+      const match = event.candidate.candidate.match(/\styp\s(\w+)/);
+      state.localCandidateTypes.push(event.candidate.type || match?.[1] || 'unknown');
+    };
+    pc.ontrack = event => {
+      if (event.track.kind === 'audio') state.remoteAudioTracks += 1;
+    };
+    pc.ondatachannel = event => {
+      state.dataChannel = event.channel;
+      event.channel.onmessage = message => state.received.push(String(message.data));
+    };
+
+    const media = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+    state.media = media;
+    for (const track of media.getTracks()) pc.addTrack(track, media);
+    if (isInitiator) {
+      state.dataChannel = pc.createDataChannel('harmolyn-turn-e2e');
+    }
+    return { urls: selectedUrls, ttlSeconds: credentials.ttl_seconds };
+  }, { url: credentialUrl, isInitiator: initiator, requiredTransport: TURN_TRANSPORT });
+}
+
+async function selectedCandidateType(page) {
+  return page.evaluate(async () => {
+    const stats = await window.__voiceE2E.pc.getStats();
+    for (const report of stats.values()) {
+      if (report.type !== 'candidate-pair' || report.state !== 'succeeded' || !report.nominated) continue;
+      const local = stats.get(report.localCandidateId);
+      if (local) return local.candidateType || 'unknown';
+    }
+    return 'unknown';
+  });
+}
+
+async function closePeer(page) {
+  await page.evaluate(() => {
+    const state = window.__voiceE2E;
+    state?.dataChannel?.close();
+    state?.media?.getTracks().forEach(track => track.stop());
+    state?.pc?.close();
+  }).catch(() => {});
+}
+
+await mkdir(EVIDENCE_DIR, { recursive: true });
+const report = [
+  'Harmolyn two-browser TURN E2E',
+  `Node: ${NODE_ENDPOINT}`,
+  `Transport: ${TURN_TRANSPORT}`,
+];
 let exitCode = 0;
-const lines = [];
+let viteServer;
+let browser;
+let contextA;
+let contextB;
+let pageA;
+let pageB;
 
 try {
-  const report = await runVoiceTests(browser, testUrl);
-  lines.push(...report);
-  console.log(report.join('\n'));
-} catch (err) {
-  const msg = err instanceof Error ? (err.stack || err.message) : String(err);
-  console.error('FAIL:', msg);
-  lines.push('FAIL: ' + msg);
+  viteServer = await createServer({
+    root: ROOT,
+    server: { host: '127.0.0.1', port: 0, strictPort: false },
+    logLevel: 'error',
+  });
+  await viteServer.listen();
+  const address = viteServer.httpServer?.address();
+  if (!address || typeof address === 'string') throw new Error('Vite did not expose a TCP test address');
+  const testUrl = `http://127.0.0.1:${address.port}/p0-test.html`;
+
+  browser = await chromium.launch({
+    headless: true,
+    executablePath: resolveChromeExecutable(),
+    args: [
+      '--no-sandbox',
+      '--disable-dev-shm-usage',
+      '--use-fake-ui-for-media-stream',
+      '--use-fake-device-for-media-stream',
+    ],
+  });
+  contextA = await browser.newContext({ permissions: ['microphone'] });
+  contextB = await browser.newContext({ permissions: ['microphone'] });
+  pageA = await contextA.newPage();
+  pageB = await contextB.newPage();
+  await Promise.all([pageA.goto(testUrl), pageB.goto(testUrl)]);
+
+  const [credentialsA, credentialsB] = await Promise.all([
+    initialisePeer(pageA, CREDENTIAL_URL, true),
+    initialisePeer(pageB, CREDENTIAL_URL, false),
+  ]);
+  report.push(`PASS credentials: A=${credentialsA.urls.join(',')} B=${credentialsB.urls.join(',')}`);
+
+  const offer = await pageA.evaluate(async () => {
+    const pc = window.__voiceE2E.pc;
+    await pc.setLocalDescription(await pc.createOffer());
+    return pc.localDescription.toJSON();
+  });
+  await waitForIceGathering(pageA);
+  const gatheredOffer = await pageA.evaluate(() => window.__voiceE2E.pc.localDescription.toJSON());
+
+  await pageB.evaluate(async remoteOffer => {
+    const pc = window.__voiceE2E.pc;
+    await pc.setRemoteDescription(remoteOffer);
+    await pc.setLocalDescription(await pc.createAnswer());
+  }, gatheredOffer ?? offer);
+  await waitForIceGathering(pageB);
+  const answer = await pageB.evaluate(() => window.__voiceE2E.pc.localDescription.toJSON());
+  await pageA.evaluate(remoteAnswer => window.__voiceE2E.pc.setRemoteDescription(remoteAnswer), answer);
+
+  await Promise.all([
+    pageA.waitForFunction(() => {
+      const state = window.__voiceE2E;
+      return state.pc.connectionState === 'connected' && state.dataChannel?.readyState === 'open' && state.remoteAudioTracks > 0;
+    }, null, { timeout: 30_000 }),
+    pageB.waitForFunction(() => {
+      const state = window.__voiceE2E;
+      return state.pc.connectionState === 'connected' && state.dataChannel?.readyState === 'open' && state.remoteAudioTracks > 0;
+    }, null, { timeout: 30_000 }),
+  ]);
+
+  const marker = `turn-e2e-${Date.now()}`;
+  await pageA.evaluate(value => window.__voiceE2E.dataChannel.send(value), marker);
+  await pageB.waitForFunction(value => window.__voiceE2E.received.includes(value), marker, { timeout: 10_000 });
+
+  const [stateA, stateB, selectedA, selectedB] = await Promise.all([
+    pageA.evaluate(() => ({ candidateTypes: window.__voiceE2E.localCandidateTypes, remoteAudioTracks: window.__voiceE2E.remoteAudioTracks })),
+    pageB.evaluate(() => ({ candidateTypes: window.__voiceE2E.localCandidateTypes, remoteAudioTracks: window.__voiceE2E.remoteAudioTracks })),
+    selectedCandidateType(pageA),
+    selectedCandidateType(pageB),
+  ]);
+  if (!stateA.candidateTypes.includes('relay') || !stateB.candidateTypes.includes('relay')) {
+    throw new Error(`relay-only ICE gathered no relay candidate: A=${stateA.candidateTypes} B=${stateB.candidateTypes}`);
+  }
+  if (selectedA !== 'relay' || selectedB !== 'relay') {
+    throw new Error(`selected ICE pair was not TURN-relayed: A=${selectedA} B=${selectedB}`);
+  }
+  report.push(`PASS relay ICE: selected A=${selectedA}, B=${selectedB}`);
+  report.push(`PASS media: remote audio tracks A=${stateA.remoteAudioTracks}, B=${stateB.remoteAudioTracks}`);
+  report.push('PASS data: isolated browser B received browser A marker');
+  report.push('RESULT: PASS');
+} catch (error) {
   exitCode = 1;
+  const detail = error instanceof Error ? (error.stack || error.message) : String(error);
+  report.push(`RESULT: FAIL\n${detail}`);
 } finally {
-  await browser.close();
-  await viteServer.close();
-  await writeFile(path.join(EVIDENCE_DIR, 'voice-e2e-test.txt'), lines.join('\n'), 'utf8');
+  if (pageA) await closePeer(pageA);
+  if (pageB) await closePeer(pageB);
+  await contextA?.close().catch(() => {});
+  await contextB?.close().catch(() => {});
+  await browser?.close().catch(() => {});
+  await viteServer?.close().catch(() => {});
+  await writeFile(path.join(EVIDENCE_DIR, 'voice-turn-e2e.txt'), `${report.join('\n')}\n`, 'utf8');
 }
 
+console.log(report.join('\n'));
 process.exitCode = exitCode;
-
-// ── Test runner ───────────────────────────────────────────────────────────────
-
-async function runVoiceTests(browserInstance, url) {
-  const report = ['xorein voice E2E test suite', `Base: ${url}`, ''];
-  const fails = [];
-
-  // ── T1: TURN credentials ──────────────────────────────────────────────────
-  try {
-    const ctx = await browserInstance.newContext();
-    const page = await ctx.newPage();
-    await page.goto(url);
-    await page.waitForFunction(() => typeof window.__p0?.createNode === 'function', { timeout: 10_000 });
-
-    const turnResult = await page.evaluate(async () => {
-      const resp = await fetch('https://node.xorein.com/v1/voice/turn-credentials');
-      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-      const data = await resp.json();
-      return {
-        hasUrls: Array.isArray(data.urls) && data.urls.length > 0,
-        hasStun: (data.urls ?? []).some(u => u.startsWith('stun:')),
-        hasTurn: (data.urls ?? []).some(u => u.startsWith('turn:')),
-        hasTurns: (data.urls ?? []).some(u => u.startsWith('turns:')),
-        hasUsername: typeof data.username === 'string',
-        hasCredential: typeof data.credential === 'string',
-        urls: data.urls,
-      };
-    });
-
-    if (!turnResult.hasUrls) throw new Error('No TURN URLs returned');
-    if (!turnResult.hasStun) throw new Error('Missing STUN URL');
-    if (!turnResult.hasTurn) throw new Error('Missing TURN URL');
-    if (!turnResult.hasTurns) throw new Error('Missing TURNS/TLS URL');
-    if (!turnResult.hasUsername) throw new Error('Missing username');
-    if (!turnResult.hasCredential) throw new Error('Missing credential');
-
-    report.push(`T1 PASS — TURN credentials: ${turnResult.urls.join(', ')}`);
-    await ctx.close();
-  } catch (err) {
-    const msg = `T1 FAIL (TURN credentials): ${err.message}`;
-    report.push(msg);
-    fails.push(msg);
-  }
-
-  // ── T2: WebTransport (QUIC) relay addrs ──────────────────────────────────
-  try {
-    const ctx = await browserInstance.newContext();
-    const page = await ctx.newPage();
-    await page.goto(url);
-    await page.waitForFunction(() => typeof window.__p0?.createNode === 'function', { timeout: 10_000 });
-
-    const wtResult = await page.evaluate(async () => {
-      const resp = await fetch('https://node.xorein.com/v1/relay/addrs');
-      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-      const data = await resp.json();
-      const addrs = data.addrs ?? [];
-      const wtAddr = addrs.find(a => a.includes('/quic-v1/webtransport/'));
-      return {
-        hasWTAddr: !!wtAddr,
-        wtAddr,
-        allAddrs: addrs,
-      };
-    });
-
-    if (!wtResult.hasWTAddr) throw new Error(`No WebTransport addr in relay/addrs response: ${JSON.stringify(wtResult.allAddrs)}`);
-    report.push(`T2 PASS — WebTransport addr found: ${wtResult.wtAddr.substring(0, 80)}...`);
-
-    // T2b: actually dial the WebTransport addr
-    const ctx2 = await browserInstance.newContext();
-    const page2 = await ctx2.newPage();
-    await page2.goto(url);
-    await page2.waitForFunction(() => typeof window.__p0?.createNode === 'function', { timeout: 10_000 });
-
-    const wtDial = await page2.evaluate(async ({ wtAddr }) => {
-      try {
-        const { createNode, multiaddr } = window.__p0;
-        const node = await createNode();
-        // WebTransport is QUIC-based; dial should succeed within 15s
-        const ma = multiaddr(wtAddr);
-        const conn = await node.dial(ma, { signal: AbortSignal.timeout(15_000) });
-        return { success: true, transport: conn.stat?.transport ?? 'unknown' };
-      } catch (err) {
-        return { success: false, error: err.message };
-      }
-    }, { wtAddr: wtResult.wtAddr });
-
-    if (wtDial.success) {
-      report.push(`T2b PASS — WebTransport (QUIC) dial succeeded (transport: ${wtDial.transport})`);
-    } else {
-      report.push(`T2b SKIP — WebTransport dial failed (network restriction?): ${wtDial.error}`);
-    }
-
-    await ctx.close();
-    await ctx2.close();
-  } catch (err) {
-    const msg = `T2 FAIL (WebTransport/QUIC): ${err.message}`;
-    report.push(msg);
-    fails.push(msg);
-  }
-
-  // ── T3: Voice signaling reachability ─────────────────────────────────────
-  // Voice is a peer-to-peer WebRTC MESH — there is NO SFU. The real signaling ops
-  // are voice.presence / voice.offer / voice.ice, exchanged peer↔peer (not against
-  // the relay, which is bootstrap/blob only). A full media exchange needs a SECOND
-  // browser peer + coturn and is a documented LIVE smoketest. Here we verify the
-  // single-peer half: the node registers the voice protocol and a presence probe to
-  // an absent peer fails cleanly (no crash, no fake SFU join) rather than asserting
-  // a join against a relay that never implemented one (the old, stale probe).
-  try {
-    const ctx = await browserInstance.newContext();
-    const page = await ctx.newPage();
-    await page.goto(url);
-    await page.waitForFunction(() => typeof window.__p0?.createNode === 'function', { timeout: 10_000 });
-
-    // Get a circuit relay reservation first (needed to reach peers over the relay).
-    // Register the voice mesh protocol handler on the node BEFORE the probe so the
-    // reachability assertion is meaningful — the p0 harness builds a bare transport node
-    // (no engine), so nothing wires /aether/voice unless we do it here. This mirrors what
-    // the engine's wireDataPlane does: node.handle(PROTOCOLS.voice, …).
-    const circuitAddr = await page.evaluate(async () => {
-      const { createNode, circuitAddrs, PROTOCOLS } = window.__p0;
-      const node = await createNode();
-      window.__p0.node = node;
-      // Minimal voice signaling handler: a bare acknowledgement is enough for the
-      // single-peer reachability probe (the full presence/offer/ice handshake is the
-      // documented two-peer live smoketest). Registering it is what the probe checks.
-      await node.handle(PROTOCOLS.voice, (() => { /* stub: framed reply handled in the live path */ }), { runOnLimitedConnection: true });
-      const deadline = Date.now() + 20_000;
-      while (Date.now() < deadline) {
-        await new Promise(r => setTimeout(r, 500));
-        const addrs = circuitAddrs(node);
-        if (addrs.length > 0) return addrs[0];
-      }
-      throw new Error('No circuit reservation after 20s');
-    });
-    report.push(`T3 setup — circuit addr: ${circuitAddr.substring(0, 60)}...`);
-
-    // Verify the voice protocol is registered on the node (mesh signaling handler
-    // present). The full presence/offer/ice/leave handshake between two peers is the
-    // live smoketest; this asserts the local half is wired.
-    const probe = await page.evaluate(async () => {
-      const node = window.__p0.node;
-      try {
-        const protos = typeof node.getProtocols === 'function' ? node.getProtocols() : [];
-        const hasVoice = Array.isArray(protos) && protos.some(p => String(p).includes('/aether/voice/'));
-        return { success: true, hasVoice, protoCount: protos.length };
-      } catch (err) {
-        return { success: false, error: err.message };
-      }
-    });
-
-    if (!probe.success) throw new Error(`voice protocol probe failed: ${probe.error}`);
-    // Assert the voice protocol is actually registered — a probe that returns
-    // hasVoice:false must NOT record a PASS (the harness would need to wire the
-    // engine's /aether/voice handler for the mesh probe to be meaningful).
-    if (!probe.hasVoice) {
-      throw new Error(`voice protocol not registered on the node (hasVoice=false; protoCount=${probe.protoCount}) — wire the engine voice handler in the p0 harness`);
-    }
-    report.push(`T3 PASS — voice mesh signaling registered (voiceProto=${probe.hasVoice}); full presence/offer/ice mesh is a documented two-peer live smoketest`);
-    await ctx.close();
-  } catch (err) {
-    const msg = `T3 FAIL (voice signaling): ${err.message}`;
-    report.push(msg);
-    fails.push(msg);
-  }
-
-  // ── T4: TURN relay path (WebRTC with relay-only ICE) ─────────────────────
-  try {
-    const ctx = await browserInstance.newContext({
-      permissions: ['microphone', 'camera'],
-    });
-    const page = await ctx.newPage();
-    await page.goto(url);
-    await page.waitForFunction(() => typeof window.__p0?.createNode === 'function', { timeout: 10_000 });
-
-    const turnTest = await page.evaluate(async () => {
-      // Fetch TURN credentials
-      const credResp = await fetch('https://node.xorein.com/v1/voice/turn-credentials');
-      if (!credResp.ok) throw new Error(`TURN creds HTTP ${credResp.status}`);
-      const creds = await credResp.json();
-
-      const iceServer = {
-        urls: creds.urls,
-        username: creds.username,
-        credential: creds.credential,
-      };
-
-      // Create a peer connection forced to relay-only (TURN path)
-      const pcA = new RTCPeerConnection({
-        iceServers: [iceServer],
-        iceTransportPolicy: 'relay', // forces TURN, proves firewall traversal
-      });
-      const pcB = new RTCPeerConnection({
-        iceServers: [iceServer],
-        iceTransportPolicy: 'relay',
-      });
-
-      // Gather relay candidates
-      const candidatesA = [];
-      const candidatesB = [];
-      pcA.onicecandidate = e => { if (e.candidate) candidatesA.push(e.candidate.type); };
-      pcB.onicecandidate = e => { if (e.candidate) candidatesB.push(e.candidate.type); };
-
-      // Create data channel (doesn't need real audio for TURN path test)
-      const dc = pcA.createDataChannel('test');
-
-      // Register listener BEFORE setLocalDescription to avoid race condition
-      // (ICE gathering can complete synchronously when relay-only + TURN fails fast).
-      const gatherDoneA = new Promise((resolve, reject) => {
-        const timeout = setTimeout(() => {
-          // Timeout: check current state as fallback (event may have fired already)
-          resolve(); // resolve, not reject — candidatesA will be empty if no relay
-        }, 20_000);
-        pcA.onicegatheringstatechange = () => {
-          if (pcA.iceGatheringState === 'complete') {
-            clearTimeout(timeout);
-            resolve();
-          }
-        };
-        // Also poll as belt-and-suspenders
-        const poll = setInterval(() => {
-          if (pcA.iceGatheringState === 'complete') {
-            clearTimeout(timeout);
-            clearInterval(poll);
-            resolve();
-          }
-        }, 500);
-      });
-
-      const offer = await pcA.createOffer();
-      await pcA.setLocalDescription(offer);
-
-      await gatherDoneA;
-
-      await pcB.setRemoteDescription(pcA.localDescription);
-      const answer = await pcB.createAnswer();
-
-      const gatherDoneB = new Promise((resolve) => {
-        const timeout = setTimeout(resolve, 20_000);
-        pcB.onicegatheringstatechange = () => {
-          if (pcB.iceGatheringState === 'complete') { clearTimeout(timeout); resolve(); }
-        };
-        const poll = setInterval(() => {
-          if (pcB.iceGatheringState === 'complete') { clearTimeout(timeout); clearInterval(poll); resolve(); }
-        }, 500);
-      });
-
-      await pcB.setLocalDescription(answer);
-      await gatherDoneB;
-
-      await pcA.setRemoteDescription(pcB.localDescription);
-
-      const hasRelay = candidatesA.includes('relay') || candidatesB.includes('relay');
-
-      pcA.close();
-      pcB.close();
-
-      return {
-        success: hasRelay,
-        candidatesA,
-        candidatesB,
-        stateA: pcA.iceGatheringState,
-      };
-    });
-
-    if (!turnTest.success) {
-      throw new Error(`No relay ICE candidates gathered (TURN not working?). A: ${JSON.stringify(turnTest.candidatesA)}, B: ${JSON.stringify(turnTest.candidatesB)}`);
-    }
-    report.push(`T4 PASS — TURN relay path: relay candidates gathered (A:${turnTest.candidatesA.join(',')}, B:${turnTest.candidatesB.join(',')})`);
-    await ctx.close();
-  } catch (err) {
-    const msg = `T4 FAIL (TURN relay path): ${err.message}`;
-    report.push(msg);
-    fails.push(msg);
-  }
-
-  // ── T5: Voice + Video — fake device capture ───────────────────────────────
-  try {
-    const ctx = await browserInstance.newContext({
-      permissions: ['microphone', 'camera'],
-    });
-    const page = await ctx.newPage();
-    await page.goto(url);
-    await page.waitForFunction(() => typeof window.__p0?.createNode === 'function', { timeout: 10_000 });
-
-    const avTest = await page.evaluate(async () => {
-      try {
-        // Request audio + video (fake device flags mean this won't block)
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
-        const audioTracks = stream.getAudioTracks().length;
-        const videoTracks = stream.getVideoTracks().length;
-        stream.getTracks().forEach(t => t.stop());
-
-        // Verify Insertable Streams / SFrame E2EE capability
-        const hasScriptTransform = 'transform' in RTCRtpSender.prototype;
-        const hasEncodedStreams = 'createEncodedStreams' in RTCRtpSender.prototype;
-        const e2eeCapable = hasScriptTransform || hasEncodedStreams;
-        const e2eeMethod = hasScriptTransform ? 'RTCRtpScriptTransform' : hasEncodedStreams ? 'createEncodedStreams' : 'none';
-
-        return {
-          success: true,
-          audioTracks,
-          videoTracks,
-          e2eeCapable,
-          e2eeMethod,
-        };
-      } catch (err) {
-        return { success: false, error: err.message };
-      }
-    });
-
-    if (!avTest.success) throw new Error(avTest.error);
-    if (!avTest.e2eeCapable) throw new Error('Browser does not support Insertable Streams (SFrame E2EE unavailable)');
-    if (avTest.audioTracks === 0) throw new Error('No audio tracks captured');
-
-    report.push(`T5 PASS — A/V capture + SFrame E2EE ready: audio=${avTest.audioTracks} video=${avTest.videoTracks} e2ee=${avTest.e2eeMethod}`);
-    await ctx.close();
-  } catch (err) {
-    const msg = `T5 FAIL (A/V + SFrame): ${err.message}`;
-    report.push(msg);
-    fails.push(msg);
-  }
-
-  // ── Summary ───────────────────────────────────────────────────────────────
-  report.push('');
-  if (fails.length === 0) {
-    report.push('All voice E2E tests PASSED.');
-  } else {
-    report.push(`${fails.length} test(s) FAILED:`);
-    for (const f of fails) report.push('  ' + f);
-    throw new Error(fails.join('\n'));
-  }
-
-  return report;
-}

@@ -69,4 +69,14 @@ describe('store — encrypted at rest (A5)', () => {
     expect(getState().servers['s1']).toBeUndefined();
     expect(getState().messages.find(m => m.id === 'm1')).toBeUndefined();
   });
+
+  it('deletes legacy plaintext state when no identity key is available', () => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ messages: [{ body: SECRET_BODY }] }));
+
+    setStateEncryptionKey(null);
+    initStore();
+
+    expect(localStorage.getItem(STORAGE_KEY)).toBeNull();
+    expect(getState().messages).toEqual([]);
+  });
 });

@@ -314,15 +314,17 @@ export function useRuntimeMutations() {
         searchNotifications: (_filter?: Parameters<typeof searchNotifications>[1]) => Promise.resolve([] as Awaited<ReturnType<typeof searchNotifications>>),
         // Message search — native local store (full-text over P2P messages, no API round-trip).
         searchMessages: (q?: Parameters<typeof nativeSearchMessages>[0]) => Promise.resolve(nativeSearchMessages(q ?? {})),
-        // Uploads — HTTP (blob store)
+        // Legacy unscoped upload API. ChatArea uses the native blob swarm.
         uploadAttachment: (input: { filename: string; contentType: string; data: string }) => uploadAttachment(snap, input),
         // Voice frames — HTTP
         sendVoiceFrame: (channelId: string, payload: unknown) => sendVoiceFrame(snap, channelId, payload),
       };
     }
 
-    // HTTP control client path (default).
-    return {
+    // HTTP control client path is available only when the native engine has
+    // explicitly been disabled. During native startup, fail closed instead of
+    // sending a mutation to a support node before local E2EE ownership exists.
+    const httpMutations = {
       sendChannelMessage: (channelId: string, content: string, opts: object = {}) =>
         sendChannelMessage(snap, channelId, content, opts),
       sendDmMessage: (dmId: string, content: string, opts: object = {}) =>
@@ -396,6 +398,30 @@ export function useRuntimeMutations() {
       uploadAttachment: (input: { filename: string; contentType: string; data: string }) => uploadAttachment(snap, input),
       sendVoiceFrame: (channelId: string, payload: unknown) => sendVoiceFrame(snap, channelId, payload),
     };
+
+    if (engineActive) {
+      const failClosed = () => Promise.reject(new Error('Native engine is not ready; no data was sent.'));
+      const failClosedMutations = Object.fromEntries(
+        Object.keys(httpMutations).map((key) => {
+          if (key === 'previewServerInvite') return [key, previewServerInvite];
+          // These are local unread/read-state bookkeeping operations. They do
+          // not require the engine transport and must not produce an unhandled
+          // rejected promise when Layout marks the initial scope as active
+          // during native bootstrap.
+          if (key === 'setActiveScope') return [key, (scopeId: string | null) => Promise.resolve(nativeSetActiveScope(scopeId))];
+          if (key === 'markScopeRead') return [key, (scopeId: string) => Promise.resolve(nativeMarkScopeRead(scopeId))];
+          if (key === 'inviteLink') return [key, () => { throw new Error('Native engine is not ready; no data was sent.'); }];
+          if (key === 'isVoiceScreenSharing') return [key, () => false];
+          return [key, failClosed];
+        }),
+      ) as typeof httpMutations;
+      // Identity registration is the one safe mutation allowed during the
+      // local bootstrap window: it encrypts and persists the in-memory key
+      // through the provider, never contacting the support node.
+      return { ...failClosedMutations, createIdentity: identityOps.createIdentity };
+    }
+
+    return httpMutations;
   // Recompute when native engine state or snapshot changes.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [native, snapshot, registerIdentity]);

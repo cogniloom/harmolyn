@@ -72,6 +72,24 @@ describe('FrameDecoder', () => {
   });
 });
 
+describe('PeerStreamRequest capability interop', () => {
+  it('round-trips repeated advertised capabilities used by Go negotiation', () => {
+    const decoded = decodePeerStreamRequest(encodePeerStreamRequest({
+      operation: 'sync.coverage',
+      advertisedCaps: ['cap.sync', 'cap.peer.transport'],
+      requestId: 'caps-1',
+    }));
+    expect(decoded.advertisedCaps).toEqual(['cap.sync', 'cap.peer.transport']);
+  });
+
+  it('rejects an oversized advertised capability', () => {
+    expect(() => encodePeerStreamRequest({
+      operation: 'peer.info',
+      advertisedCaps: ['x'.repeat(129)],
+    })).toThrow(/capability exceeds limit/);
+  });
+});
+
 /** Controllable inbound stream fake. */
 function inboundStream() {
   const sent: Uint8Array[] = [];
@@ -265,6 +283,15 @@ describe('protobuf decoder hardening (malformed frames)', () => {
     // Field 1 (operation), wire type 2, length 200, but only 3 bytes follow.
     const req = decodePeerStreamRequest(new Uint8Array([0x0a, 0xc8, 0x01, 1, 2, 3]));
     expect(req.operation).toBe('');
+  });
+
+  it('rejects oversized operation and request-id fields before decoding them', () => {
+    // Build malformed wire bytes directly because the safe encoder rejects
+    // these fields before they can leave the process.
+    const oversizedOperation = new Uint8Array([0x0a, 0x81, 0x01, ...new TextEncoder().encode('x'.repeat(129))]);
+    const oversizedRequestID = new Uint8Array([0x0a, 0x09, ...new TextEncoder().encode('chat.send'), 0x3a, 0x81, 0x01, ...new TextEncoder().encode('x'.repeat(129))]);
+    expect(decodePeerStreamRequest(oversizedOperation).malformed).toBe(true);
+    expect(decodePeerStreamRequest(oversizedRequestID).malformed).toBe(true);
   });
 
   it('terminates on a truncated varint with no terminating byte', () => {

@@ -1,10 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { Shield, Upload, KeyRound, ArrowRight, ArrowLeft, X, Users, Loader2, Check } from 'lucide-react';
-import { importToVault, activateFromVault } from '@/native/identity/storage';
+import { importToVault, activateFromVault, MAX_IDENTITY_BACKUP_BYTES } from '@/native/identity/storage';
 import { useEnginePassphrase } from '@/lib/xoreinClientProvider';
 import { useNativeEngine } from '@/native/engine/provider';
 import { RECOVERY_DELIVERED_EVENT, type RecoveryDelivery } from '@/native/recovery/recovery';
-import { PENDING_STATE_KEY } from '@/native/state/stateSync';
+import { isEncryptedSyncBlob, PENDING_STATE_KEY, type EncryptedSyncBlob } from '@/native/state/stateSync';
 import { SecurityNote } from '@/components/SecurityNote';
 
 interface RestoreStepProps {
@@ -46,13 +46,21 @@ export const RestoreStep: React.FC<RestoreStepProps> = ({ onRestored, onBack, on
   useEffect(() => {
     const handler = (e: Event) => {
       const d = (e as CustomEvent<RecoveryDelivery>).detail;
-      if (!d?.blob) return;
-      setBackupText(JSON.stringify(d.blob));
+      if (!d) return;
+      if (d.state !== undefined && !isEncryptedSyncBlob(d.state)) {
+        setFriendStatus('error');
+        setFriendError('Your friend sent an invalid account-state backup; the identity blob was not imported.');
+        return;
+      }
       // Stash the encrypted account-state snapshot (servers/DMs/profile). The
       // engine decrypts + applies it on start once the identity is recovered.
       try {
         if (d.state) localStorage.setItem(PENDING_STATE_KEY, JSON.stringify(d.state));
       } catch { /* non-fatal */ }
+      // A chunk set can complete before or after the smaller identity packet.
+      // State-only completion must not erase an identity that already arrived.
+      if (d.blob === undefined) return;
+      setBackupText(JSON.stringify(d.blob));
       setFriendStatus('received');
     };
     window.addEventListener(RECOVERY_DELIVERED_EVENT, handler);
@@ -68,7 +76,7 @@ export const RestoreStep: React.FC<RestoreStepProps> = ({ onRestored, onBack, on
     setFriendStatus('waiting');
     try {
       const res = await engine.requestRecovery(guardian, owner);
-      if (res.pending) {
+      if (res.pending || res.queued) {
         setFriendStatus('waiting'); // waiting for the friend's manual approval
       } else {
         setFriendStatus('error');
@@ -84,6 +92,10 @@ export const RestoreStep: React.FC<RestoreStepProps> = ({ onRestored, onBack, on
     const file = e.target.files?.[0];
     e.currentTarget.value = '';
     if (!file) return;
+    if (file.size > MAX_IDENTITY_BACKUP_BYTES) {
+      setError('That identity backup is too large.');
+      return;
+    }
     const reader = new FileReader();
     reader.onload = (event) => setBackupText(String(event.target?.result ?? ''));
     reader.readAsText(file);
@@ -95,6 +107,10 @@ export const RestoreStep: React.FC<RestoreStepProps> = ({ onRestored, onBack, on
     const backup = backupText.trim();
     const name = displayName.trim();
     if (!backup) { setError('Paste your backup or upload the backup file.'); return; }
+    if (new TextEncoder().encode(backup).length > MAX_IDENTITY_BACKUP_BYTES) {
+      setError('That identity backup is too large.');
+      return;
+    }
     if (!passphrase.trim()) { setError('Enter the password for this backup.'); return; }
     if (!name) { setError('Choose a nickname to show for this account.'); return; }
     setBusy(true);
@@ -104,19 +120,32 @@ export const RestoreStep: React.FC<RestoreStepProps> = ({ onRestored, onBack, on
       // blob) and stash the state so the engine restores servers/DMs/profile on
       // start. A raw identity blob (older backups / friend delivery) is used as-is.
       let identityJson = backup;
+      let pendingState: EncryptedSyncBlob | undefined;
+      let parsed: unknown;
       try {
-        const parsed = JSON.parse(backup) as { v?: number; identity?: unknown; state?: unknown };
-        if (parsed && parsed.v === 2 && parsed.identity) {
-          identityJson = JSON.stringify(parsed.identity);
-          if (parsed.state) localStorage.setItem(PENDING_STATE_KEY, JSON.stringify(parsed.state));
+        parsed = JSON.parse(backup) as unknown;
+      } catch {
+        parsed = undefined;
+      }
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+        && (parsed as { v?: unknown }).v === 2) {
+        const wrapped = parsed as { identity?: unknown; state?: unknown };
+        if (!wrapped.identity) throw new Error('Identity backup is missing its encrypted identity.');
+        identityJson = JSON.stringify(wrapped.identity);
+        if (wrapped.state !== undefined) {
+          if (!isEncryptedSyncBlob(wrapped.state)) throw new Error('Identity backup account state is not encrypted.');
+          pendingState = wrapped.state;
         }
-      } catch { /* not JSON-wrapped — treat as a raw identity blob */ }
+      }
       // Decrypts the blob (validates the password) and saves it to the vault, then
       // promotes it to the active 'local' identity. Throws on a wrong password.
       // Use passphrase exactly as entered — trimming would break accounts whose
       // password legitimately contains leading/trailing whitespace.
       const entry = await importToVault(identityJson, passphrase);
       await activateFromVault(entry.peerId);
+      if (pendingState) {
+        try { localStorage.setItem(PENDING_STATE_KEY, JSON.stringify(pendingState)); } catch { /* best effort */ }
+      }
       // The backup carries no nickname — seed the chosen one so the engine restores
       // it and the "guest" banner stays gone after the engine picks the identity up.
       try {

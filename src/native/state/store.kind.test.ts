@@ -1,8 +1,10 @@
 // Channel `kind` (text/forum/announcement) is part of the server structure: it is
 // stored on the channel record, survives a reload (persisted state), and is exposed
 // through the runtime snapshot so every surface renders the same channel type.
-import { beforeEach, describe, expect, it } from 'vitest';
-import { initStore, getState, addServer, addChannel, updateChannel, toRuntimeSnapshot } from './store';
+import { beforeEach, afterEach, describe, expect, it } from 'vitest';
+import { initStore, getState, addServer, addChannel, updateChannel, toRuntimeSnapshot, setStateEncryptionKey } from './store';
+
+const TEST_STATE_KEY = new Uint8Array(32).fill(8);
 
 function seedServerWithChannel() {
   addServer({
@@ -17,8 +19,11 @@ function seedServerWithChannel() {
 
 beforeEach(() => {
   localStorage.clear();
+  setStateEncryptionKey(TEST_STATE_KEY);
   initStore();
 });
+
+afterEach(() => setStateEncryptionKey(null));
 
 describe('store channel kind', () => {
   it('updateChannel stores the kind on the channel record', () => {

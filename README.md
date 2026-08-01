@@ -1,195 +1,210 @@
-<div align="center">
-  <h1>Harmolyn</h1>
-  <p><b>Advanced chat client</b> for the <b>xorein</b> network — Discord-like UX with explicit, verifiable security modes.</p>
+# Harmolyn
 
-  <p>
-    <img alt="status" src="https://img.shields.io/badge/status-active-blue" />
-    <img alt="protocol" src="https://img.shields.io/badge/protocol-xorein-black" />
-    <img alt="security" src="https://img.shields.io/badge/security-explicit%20modes%20%2B%20E2EE-success" />
-    <img alt="local-api" src="https://img.shields.io/badge/local%20API-local--only%20transport-important" />
-  </p>
+Harmolyn is a browser and native desktop client for the Xorein peer-owned
+communication network. The application contains its own browser-compatible
+libp2p engine; a dedicated Xorein node improves discovery, storage, relay, and
+NAT traversal, but it is not trusted with message plaintext and is not the
+authority for user data.
 
-  <p>
-    <a href="https://github.com/kylhuk/harmolyn/releases"><img alt="release" src="https://img.shields.io/github/v/release/kylhuk/harmolyn?display_name=tag&sort=semver" /></a>
-    <a href="https://github.com/kylhuk/harmolyn/releases"><img alt="downloads" src="https://img.shields.io/github/downloads/kylhuk/harmolyn/total" /></a>
-    <a href="https://github.com/kylhuk/harmolyn/actions"><img alt="build" src="https://img.shields.io/github/actions/workflow/status/kylhuk/harmolyn/ci.yml" /></a>
-    <a href="https://github.com/kylhuk/harmolyn/security"><img alt="security-policy" src="https://img.shields.io/badge/security-policy-blue" /></a>
-    <a href="https://opensource.org/licenses/AGPL-3.0"><img alt="license" src="https://img.shields.io/github/license/kylhuk/harmolyn" /></a>
-  </p>
+Current version: `1.0.0-rc.1`. This is a release candidate, not an evidence-free
+claim that v1.0 has shipped. The remaining release gates are listed below.
 
-  <p>
-    <a href="https://github.com/kylhuk/harmolyn/blob/main/README.md#security-model">Security</a> ·
-    <a href="https://github.com/kylhuk/harmolyn/blob/main/README.md#what-e2ee-can-and-cannot-do">Limits</a> ·
-    <a href="https://github.com/kylhuk/harmolyn/blob/main/README.md#verification">Verification</a> ·
-    <a href="https://github.com/kylhuk/xorein">xorein protocol</a>
-  </p>
-</div>
+## What is implemented
 
----
+- Hybrid classical/post-quantum identities and signatures.
+- Seal direct messages using hybrid X3DH plus a Double Ratchet.
+- End-to-end encrypted spaces with automatic key-management selection:
+  Tree through 50 members, Crowd from 51 members, and Crowd-to-Tree re-entry at
+  40 members to prevent mode flapping.
+- A fresh signed epoch/root on authoritative membership changes. Room size
+  never selects weaker cryptography and there is no plaintext fallback.
+- Signed invites, joins, friends, presence, DMs, channel history, notifications,
+  and bounded multi-hop peer routing.
+- Recipient-addressed encrypted inbox replication and retry for offline peers.
+- Encrypted attachment fragmentation, content-address verification, node-first
+  retrieval, and round-robin peer fallback.
+- Encrypted identity/account backups held by chosen recovery contacts and
+  replicated as recipient-sealed, integrity-checked chunks with identity keys
+  prioritized first. A storage provider cannot test the recovery password or
+  read the backup.
+- WebRTC voice/video with application media encryption. Xorein Nodes
+  automatically provide short-lived credentials for embedded TURN
+  over UDP/TCP and optional TLS.
+- Node switching with an explicit `Test Node` action and persistent user choice.
+- Signed native application updates from the official Cogniloom GitHub release
+  repositories. Updates replace application binaries, not user data directories.
 
-## What Harmolyn is
+See [Peer-owned network](docs/PEER_OWNED_NETWORK.md) for routing and zero-node
+behavior, [crypto compatibility and upgrade risk](docs/CRYPTO_COMPATIBILITY.md),
+the [security review guide](AUDIT.md), and
+[release process](docs/RELEASES.md) for the signing pipeline.
 
-Harmolyn is a **batteries-included xorein peer** — the full protocol (hybrid
-post-quantum identity, Seal/Crowd E2EE, and the P2P families) runs **inside the
-app itself**, including in the browser. There is no sidecar to install.
-
-- The UI and the network engine are both Harmolyn (`src/native/`).
-- Peer-to-peer links are established with **libp2p Noise** end-to-end to the
-  target peer; message bodies are additionally **E2E-encrypted at the
-  application layer** (Seal X3DH+Double-Ratchet for DMs, Crowd sender-key
-  broadcast for channels) so neither the relay nor any other peer reads them.
-- The hosted node (`node.xorein.com`) is an **untrusted support service** reached
-  over WSS: libp2p **circuit relay + bootstrap** for first contact, an opaque
-  store-and-forward mailbox, and blob/identity-backup storage. It is not the
-  engine and is not trusted for plaintext.
-
-> Status / honesty note: the in-app engine is the default data path
-> (`nativeEngine: true`). A subset of operations (identity backup/restore,
-> moderation/roles, notifications, file uploads, voice frames) still use the
-> support node's HTTP control API; those are being migrated. See
-> `docs/PROTOCOL_GAPS.md` and `docs/xorein-native-roadmap.md` for the precise,
-> current wiring state — including which features are real vs. still gated off.
-
-If you care about *how* it works, Harmolyn is for you: the UI surfaces real
-security state (mode, coverage, retention) instead of hiding it behind marketing
-words.
-
----
-
-## Key features (end-user, power-user friendly)
-
-- **Explicit security modes per conversation surface** (no silent E2EE “toggle”)
-- **E2EE by default where it makes sense**, and **Clear** mode must be labeled
-- **Coverage labels** for search and history (Full / Partial / Empty)
-- **Retention-aware history** (no pretending history is “infinite”)
-- **Runs on a P2P network**; relays help reliability but are not trusted for plaintext
-- **Signed + reproducible release artifacts** (verify what you run)
-
----
-
-## Security model
-
-Every conversation shows a badge in the header:
-
-- **Seal** — 1:1 E2EE (X3DH + Double Ratchet)
-- **Tree** — small-group E2EE (MLS)
-- **Crowd / Channel** — large-scale E2EE using epoch rotation (revocation happens on rotation)
-- **Clear** — readable by infrastructure (explicitly labeled; not default for private spaces)
-
-Tap the badge to see:
-- the mode name,
-- algorithm family,
-- whether history is locked across epochs,
-- search coverage label,
-- connection type (direct vs relay).
-
----
-
-## What E2EE can and cannot do
-
-E2EE protects **content** (message bodies, attachments; media where supported). It does not magically remove:
-- metadata (who/when/where routing),
-- endpoint compromise risk,
-- usability trade-offs (e.g., server-side full-text search is not available in strict E2EE chats).
-
-Harmolyn shows this honestly in the UI via labels instead of burying it in docs.
-
----
-
-## Quick start
-
-1) Install from Releases  
-- Download Harmolyn (and the bundled xorein runtime if your build ships them together).
-
-2) First launch  
-- Create your identity.
-- Make an encrypted backup (recommended immediately).
-
-3) Connect  
-- Add a friend via key / QR / deep link, or join a space via invite.
-
-## Choosing a node
-
-On first launch Harmolyn opens a node picker before the main UI. Enter a trusted local control endpoint such as `http://127.0.0.1:7711`, or use the bundled default node if your build provides one.
-
-- The chosen endpoint is remembered for the next launch.
-- You can reopen the picker from `Settings -> Network -> Switch Node`.
-- The app only accepts loopback endpoints or the preconfigured public endpoint baked into the build.
-
----
-
-## Verification
-
-Harmolyn releases ship with:
-- checksums,
-- code signatures **when signing secrets are configured** (the release workflow
-  otherwise produces unsigned artifacts — see Releasing below),
-- a release manifest recording build inputs.
-
-Note: bit-for-bit reproducible builds are a goal, not yet a guarantee — the
-manifest currently records a build timestamp and the updater public key must be
-configured before updater signatures verify. Verify checksums/signatures before
-running if you’re strict about supply chain.
-
-## Local build
-
-To build Harmolyn for Linux x64 on your machine, run:
+## Run Harmolyn locally
 
 ```bash
-npm run build:linux:x64
+npm ci
+npm run dev
 ```
 
-This produces the local Tauri bundles for `x86_64-unknown-linux-gnu` without using GitHub Actions.
-
----
-
-## FAQ (short)
-
-**Can the network read my DMs?**  
-No in Seal mode (E2EE). The network can still see unavoidable routing metadata.
-
-**Why does search say “Partial”?**  
-Because E2EE prevents plaintext server-side indexing. “Partial” means your device searched only the history it currently has access to.
-
-**Can I run my own relay?**  
-Yes — xorein can run in relay/bootstrap modes. Harmolyn stays a client.
-
----
-
-## Releasing
-
-Releases are created automatically by pushing a semver tag:
+Vite listens on `0.0.0.0:8080`. The production web container listens on host
+port `8909` by default:
 
 ```bash
-git tag v1.2.3 && git push origin v1.2.3
+docker compose up --build
 ```
 
-This triggers `.github/workflows/release.yml` which builds signed installers for Linux (`.deb`, `.AppImage`), macOS (`.dmg`), and Windows (`.msi`, `.exe`), then publishes a GitHub Release with auto-generated notes.
+The JavaScript still runs in the user's browser when the site is served from a
+container. Therefore `localhost` and `127.0.0.1` in the node picker refer to the
+browser's machine, not to the Nginx container.
 
-**Required GitHub repository secrets:**
+## Run a local Xorein Node
 
-| Secret | Purpose |
-|--------|---------|
-| `TAURI_SIGNING_PRIVATE_KEY` | Updater bundle signing key (generate: `npx tauri signer generate`) |
-| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | Password for the above key |
-| `APPLE_CERTIFICATE` | Base64-encoded Developer ID Application certificate (macOS signing) |
-| `APPLE_CERTIFICATE_PASSWORD` | Password for the certificate |
-| `APPLE_SIGNING_IDENTITY` | Developer ID string (e.g. `Developer ID Application: Your Name (TEAMID)`) |
-| `APPLE_ID` | Apple ID email (notarization) |
-| `APPLE_PASSWORD` | App-specific password (notarization) |
-| `APPLE_TEAM_ID` | Apple Developer Team ID |
-| `WINDOWS_CERTIFICATE` | Base64-encoded Windows code-signing certificate (optional) |
-| `WINDOWS_CERTIFICATE_PASSWORD` | Password for the Windows certificate |
+From the sibling Xorein repository:
 
-If signing secrets are absent the workflow still produces unsigned artifacts.
+```bash
+make build
+./bin/aether
+```
 
-To update the updater public key in `src-tauri/tauri.conf.json`, run `npx tauri signer generate` once and paste the public key into the `plugins.updater.pubkey` field.
+Aether requires no parameters. It starts a full Xorein Node from safe binary
+defaults, overlays a discovered `aether.toml`, then overlays explicit flags.
+See the Xorein repository's `config/aether.toml` for the annotated template.
+The defaults are:
 
-**Icons:** Replace the placeholder files in `src-tauri/icons/` with real icons. Run `npx tauri icon path/to/your-icon-1024.png` to auto-generate all required sizes from a single source image.
+| Purpose | Default |
+|---|---|
+| Browser-safe status/bootstrap gateway | TCP `7711` |
+| Browser libp2p WebSocket transport | TCP `9999` |
+| STUN/TURN over UDP | UDP `3478` |
+| TURN over TCP | TCP `3478` |
+| TURN over TLS | TCP `5349`, active only with a configured certificate/key |
+| TURN media allocations | UDP `49152-65535` |
+| Private mutation/control API | Unix socket, or private loopback address on Windows |
 
----
+Then enter `127.0.0.1:7711` in Harmolyn and press **Test Node**. For another
+device, use the actual LAN address of the Xorein machine and allow the listed
+ports through the firewall. Do not bind the private `--control` API to `7711`;
+it requires a bearer token and is intentionally unusable by a web client.
+
+For Internet TURN, `--turn-public-ip` must resolve to the externally reachable
+IPv4 address and UDP/TCP `3478` plus the UDP allocation range must be forwarded.
+TURN/TLS additionally needs a publicly trusted certificate matching the client
+hostname and TCP `5349`. No program inside a general NAT or Docker network can
+infer an arbitrary router's public mapping with certainty.
+
+An HTTPS-hosted Harmolyn page also requires an HTTPS/WSS browser gateway because
+browsers block active HTTP mixed content. Native builds and locally served HTTP
+builds may use private-LAN HTTP directly.
+
+## Security and availability model
+
+Dedicated nodes are untrusted accelerators. They may observe unavoidable
+routing metadata, but accepted records are signed by their authors and message
+contents remain end-to-end encrypted. Harmolyn prefers nodes for bandwidth and
+storage, then falls back to known peers. It periodically cross-checks retrieved
+history and attachment data, rejects invalid signatures/hashes, and quarantines
+locally observed corrupt providers.
+
+With no dedicated nodes, known peers can continue direct communication, route
+bounded requests, hold sealed recipient inboxes, and reconstruct data from peer
+storage. A completely new client still needs one initial address from an
+invite, cache, LAN discovery, configured seed, or reachable peer. No protocol
+can discover an address or retrieve bytes when no reachable device possesses
+either information.
+
+Recovery is not MFA. A local encrypted key file plus its password is one
+knowledge-protected credential. Recovery contacts improve hardware-loss
+survivability; they do not create a second authentication factor. Choose a
+strong, unique password because a guardian who receives the custody ciphertext
+can attempt offline guesses.
+
+## Verification commands
+
+```bash
+npm run lint
+npm run typecheck
+npm run build
+npm test
+npm run test:protocol
+npm run test:browser:all
+```
+
+The real TURN smoke requires a running Xorein relay and creates two isolated
+Chromium contexts with relay-only ICE, bidirectional fake audio, and a data
+channel:
+
+```bash
+VOICE_NODE_ENDPOINT=http://127.0.0.1:7711 npm run test:voice:e2e
+# Restrictive-network path: expose only TURN/TCP to both browsers.
+VOICE_NODE_ENDPOINT=http://127.0.0.1:7711 VOICE_TURN_TRANSPORT=tcp npm run test:voice:e2e
+```
+
+Desktop checks:
+
+```bash
+cargo test --locked --manifest-path src-tauri/Cargo.toml
+npm run tauri:build
+```
+
+## Releases and updates
+
+`.github/workflows/release.yml` is manually dispatched against `staging` with a
+`stable`, `patch`, `minor`, or `major` version choice. It validates the exact
+candidate tree, builds every platform before promotion, signs platform packages
+and updater artifacts, atomically advances `staging` and `main` with the release
+tag, then publishes the official GitHub release. The release tag is OpenPGP
+signed and a failed post-promotion publication can be resumed without minting a
+different version.
+
+The workflow fails closed when any updater, Apple, or Windows signing credential
+is absent. Configure these as environment secrets in the protected
+`official-release` GitHub environment, using the exact value types shown:
+
+| Secret | Expected value |
+|---|---|
+| `TAURI_SIGNING_PRIVATE_KEY` | Complete private-key text emitted by `npm exec tauri signer generate` |
+| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | The non-empty password used by that key |
+| `APPLE_CERTIFICATE` | Base64 of a Developer ID Application certificate and private key exported together as `.p12` |
+| `APPLE_CERTIFICATE_PASSWORD` | Export password of that `.p12` |
+| `APPLE_SIGNING_IDENTITY` | Exact Keychain name, normally `Developer ID Application: Legal Name (TEAMID)` |
+| `APPLE_ID` | Apple Account email authorized for notarization |
+| `APPLE_PASSWORD` | Apple app-specific password, not the normal account password |
+| `APPLE_TEAM_ID` | Ten-character Apple Developer Team ID |
+| `WINDOWS_CERTIFICATE` | Base64 of an Authenticode certificate and private key exported together as `.pfx` |
+| `WINDOWS_CERTIFICATE_PASSWORD` | Export password of that `.pfx` |
+| `RELEASE_TAG_GPG_PRIVATE_KEY` | Complete ASCII-armored, passphrase-protected OpenPGP private key dedicated to official release tags |
+| `RELEASE_TAG_GPG_PASSPHRASE` | Non-empty passphrase protecting that OpenPGP private key |
+| `RELEASE_TAG_GPG_FINGERPRINT` | Exact 40-character uppercase hexadecimal primary-key fingerprint; register its public key on the official GitHub release identity |
+
+Do not add shell quotes or JSON wrappers to secret values. See
+[Release process](docs/RELEASES.md) for runner labels, key backup requirements,
+and the complete release sequence.
+
+Native Harmolyn checks only
+`cogniloom/harmolyn` release metadata and accepts only artifacts bearing the
+public updater key compiled into the application. Signed native updates are
+checked and downloaded automatically by default. Installation waits for the
+user's explicit **Install & restart** action so an active call or unsaved draft
+is not terminated; account data and settings remain outside the application
+bundle. Browser deployments update when their operator deploys a new web build.
+
+## Remaining v1.0 release gates
+
+- Run and retain successful signed macOS and Windows builds and native updater
+  install/rollback tests on those operating systems.
+- Provision all Apple/Windows signing secrets and retain a successful signed
+  release run; exact formats are documented in the release guide.
+- Retain a long-duration churn test for owner-issued portable invites. They now
+  seal and sign one exact future epoch transition that peers can enact while the
+  owner is offline; they do not delegate arbitrary owner powers or permit an
+  ordinary member to invent a different roster transition.
+- Perform a multi-host, real-WAN soak with churn, partitions, restrictive NATs,
+  and hostile storage providers. The checked-in 1,000-peer result is a
+  deterministic model, not 1,000 live browsers.
+- Obtain an independent cryptographic/protocol review of the custom Tree/Crowd
+  implementation before describing it as audited MLS-grade security.
 
 ## License
 
-- Runtime/client code: **AGPL-3.0** (see LICENSE)
-- Protocol/spec text: **CC-BY-SA 4.0** (see spec files)
+- Application/runtime code: AGPL-3.0-or-later.
+- Xorein protocol specification text: CC BY-SA 4.0.

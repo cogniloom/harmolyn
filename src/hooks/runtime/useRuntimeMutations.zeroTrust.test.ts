@@ -132,4 +132,22 @@ describe('useRuntimeMutations — invite preview stays local on the native path'
     expect(preview).toBeNull();
     expect(discoverServerByInvite).not.toHaveBeenCalled();
   });
+
+  it('rejects ordinary mutations while native bootstrap is incomplete', async () => {
+    engineHolder.engine = null;
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const { result } = renderHook(() => useRuntimeMutations());
+
+    await expect(result.current.sendChannelMessage('channel-1', 'private message')).rejects.toThrow(/no data was sent/);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps local read-state bookkeeping available during native bootstrap', async () => {
+    engineHolder.engine = null;
+    const { result } = renderHook(() => useRuntimeMutations());
+
+    await expect(result.current.setActiveScope?.('channel-1')).resolves.toBeUndefined();
+    await expect(result.current.markScopeRead?.('channel-1')).resolves.toBeUndefined();
+  });
 });

@@ -1,26 +1,26 @@
 [package]
 name = "harmolyn"
-version = "0.1.0"
+version = "1.0.0-rc.1"
+edition = "2021"
+rust-version = "1.77"
+description = "Harmolyn — secure chat client for the xorein network"
+authors = []
+license = "AGPL-3.0"
+repository = "https://github.com/cogniloom/harmolyn"
 
 [lib]
 name = "harmolyn_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
-description = "Harmolyn — secure chat client for the xorein network"
-authors = []
-license = "AGPL-3.0"
-repository = "https://github.com/kylhuk/harmolyn"
-edition = "2021"
-rust-version = "1.77"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "=2.10.1", features = [] }
+tauri = { version = "=2.11.5", features = [] }
 tauri-plugin-deep-link = "2"
 tauri-plugin-single-instance = "2"
-tauri-plugin-updater = "2"
-tauri-plugin-shell = "2"
+tauri-plugin-updater = "2.10.1"
+tauri-plugin-process = "2.3.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 dirs-next = "2"

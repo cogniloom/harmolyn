@@ -7,6 +7,7 @@ import {
   loadEncryptedIdentity,
   type VaultEntry,
 } from '@/native/identity/storage';
+import { isEncryptedSyncBlob, type EncryptedSyncBlob } from '@/native/state/stateSync';
 
 const NATIVE_STATE_KEY = 'harmolyn:native:state';
 
@@ -54,7 +55,10 @@ export async function unlockAndActivateVaultIdentity(
  * so restoring brings back servers/DMs/profile too; otherwise downloads the raw
  * identity blob (back-compatible with restore, which detects both shapes).
  */
-export function downloadIdentityBackup(blob: VaultEntry['blob'], peerId: string, state?: unknown): void {
+export function downloadIdentityBackup(blob: VaultEntry['blob'], peerId: string, state?: EncryptedSyncBlob | null): void {
+  if (state !== undefined && state !== null && !isEncryptedSyncBlob(state)) {
+    throw new Error('Identity backup account state must be encrypted.');
+  }
   const payload = state ? { v: 2, identity: blob, state } : blob;
   const json = JSON.stringify(payload, null, 2);
   const file = new Blob([json], { type: 'application/json' });
@@ -72,7 +76,7 @@ export function downloadIdentityBackup(blob: VaultEntry['blob'], peerId: string,
  * password the user just chose, so no extra passphrase prompt is needed.
  * Returns false if there is no persisted identity to back up.
  */
-export async function downloadActiveIdentityBackup(peerId: string, state?: unknown): Promise<boolean> {
+export async function downloadActiveIdentityBackup(peerId: string, state?: EncryptedSyncBlob | null): Promise<boolean> {
   const blob = await loadEncryptedIdentity();
   if (!blob) return false;
   downloadIdentityBackup(blob, peerId, state);

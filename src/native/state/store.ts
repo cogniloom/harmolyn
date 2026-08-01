@@ -20,6 +20,14 @@ import type {
   XoreinReport,
   XoreinOutboxEntry,
 } from '../../types.js';
+import {
+  decodeBase64Strict,
+  hasControlCharacters,
+  isPlainObject,
+  normalizeSafeAttachments,
+  MAX_CHAT_BODY_BYTES,
+} from '../security/limits.js';
+import { verifySignedHistoryMessage } from '../sync/signedHistory.js';
 
 const STORAGE_KEY = 'harmolyn:native:state';
 
@@ -32,9 +40,79 @@ const MAX_PERSISTED_MESSAGES = 5000;
 const STATE_KEY_LABEL = 'xorein/state/v1/at-rest';
 
 // AES-256 key for encrypting the at-rest state blob, derived from the unlocked
-// identity seed and held only in memory. Null before unlock (or in tests) — see
-// persist()/load() for the plaintext-legacy fallback used only when it is null.
+// identity seed and held only in memory. Null before unlock (or for a guest) —
+// persistence is memory-only until an identity-derived key is installed.
 let _stateKey: Uint8Array | null = null;
+
+function boundedStateText(value: unknown, maxBytes: number, allowEmpty = false): value is string {
+  return typeof value === 'string'
+    && (allowEmpty || value.length > 0)
+    && value.length <= maxBytes
+    && !hasControlCharacters(value);
+}
+
+function isSafeRuntimeMessage(value: unknown): value is XoreinRuntimeMessage {
+  if (!isPlainObject(value)
+    || !boundedStateText(value.id, 256)
+    || (value.scope_type !== 'channel' && value.scope_type !== 'dm')
+    || !boundedStateText(value.scope_id, 256)
+    || !boundedStateText(value.sender_peer_id, 256)
+    || typeof value.body !== 'string'
+    || new TextEncoder().encode(value.body).length > MAX_CHAT_BODY_BYTES) return false;
+  const media = normalizeSafeAttachments(value.media);
+  if (media === null) return false;
+  if (value.server_id !== undefined && !boundedStateText(value.server_id, 256)) return false;
+  if (value.security_mode !== undefined
+    && value.security_mode !== 'seal' && value.security_mode !== 'tree'
+    && value.security_mode !== 'crowd' && value.security_mode !== 'clear') return false;
+  if (value.encrypted !== undefined && typeof value.encrypted !== 'boolean') return false;
+  if (value.reply_to !== undefined && !boundedStateText(value.reply_to, 256)) return false;
+  if (value.created_at !== undefined && !boundedStateText(value.created_at, 96, true)) return false;
+  if (value.updated_at !== undefined && !boundedStateText(value.updated_at, 96, true)) return false;
+  return true;
+}
+
+function isSafeJoinedServer(value: unknown, expectedServerId: string): value is XoreinRuntimeServer {
+  if (!isPlainObject(value)
+    || !boundedStateText(expectedServerId, 256)
+    || value.id !== expectedServerId
+    || !boundedStateText(value.id, 256)
+    || !boundedStateText(value.name, 512)
+    || !boundedStateText(value.owner_peer_id, 256)
+    || value.invite_secret !== undefined
+    || !Array.isArray(value.members)
+    || value.members.length > 1000
+    || !value.members.every(member => boundedStateText(member, 256))
+    || !isPlainObject(value.channels)
+    || Object.keys(value.channels).length > 500) return false;
+  if (value.crowd_root !== undefined
+    && (typeof value.crowd_root !== 'string' || decodeBase64Strict(value.crowd_root, 32)?.length !== 32)) return false;
+  if (value.channel_security_mode !== undefined
+    && value.channel_security_mode !== 'tree' && value.channel_security_mode !== 'crowd') return false;
+  if (value.channel_crypto_profile !== undefined
+    && value.channel_crypto_profile !== 'scope-aad-v2') return false;
+  if (value.replica_secret !== undefined
+    && (typeof value.replica_secret !== 'string'
+      || decodeBase64Strict(value.replica_secret, 32)?.length !== 32)) return false;
+  for (const [channelId, channelValue] of Object.entries(value.channels)) {
+    if (!isPlainObject(channelValue)
+      || !boundedStateText(channelId, 256)
+      || channelValue.id !== channelId
+      || channelValue.server_id !== expectedServerId
+      || !boundedStateText(channelValue.name, 512)) return false;
+  }
+  if (value.description !== undefined && !boundedStateText(value.description, 4096, true)) return false;
+  if (value.created_at !== undefined && !boundedStateText(value.created_at, 96, true)) return false;
+  if (value.updated_at !== undefined && !boundedStateText(value.updated_at, 96, true)) return false;
+  const crowdEpoch = value.crowd_epoch;
+  if (crowdEpoch !== undefined
+    && (typeof crowdEpoch !== 'number' || !Number.isSafeInteger(crowdEpoch)
+      || crowdEpoch < 0 || crowdEpoch > 0xffffffff)) return false;
+  const serverRev = value.server_rev;
+  if (serverRev !== undefined
+    && (typeof serverRev !== 'number' || !Number.isSafeInteger(serverRev) || serverRev < 0)) return false;
+  return true;
+}
 
 /**
  * Install (or clear) the at-rest encryption key from the unlocked identity seed.
@@ -42,7 +120,7 @@ let _stateKey: Uint8Array | null = null;
  * Passing null clears the key (e.g. on lock/logout).
  */
 export function setStateEncryptionKey(seed: Uint8Array | null): void {
-  _stateKey = seed && seed.length > 0 ? deriveKey(seed, null, STATE_KEY_LABEL, 32) : null;
+  _stateKey = seed && seed.length === 32 ? deriveKey(seed, null, STATE_KEY_LABEL, 32) : null;
 }
 
 function b64encode(b: Uint8Array): string {
@@ -52,6 +130,10 @@ function b64encode(b: Uint8Array): string {
 }
 
 function b64decode(s: string): Uint8Array {
+  if (typeof s !== 'string' || s.length > 12 * 1024 * 1024
+    || s.length % 4 === 1 || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(s)) {
+    throw new Error('native state: invalid base64');
+  }
   const bin = atob(s);
   const out = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
@@ -84,6 +166,8 @@ export interface NativeState {
   friends: XoreinFriendRecord[];
   friend_requests: XoreinFriendRecord[];
   voice_sessions: XoreinRuntimeVoiceSession[];
+  /** Live transport state; reset on reload because reachability is never durable. */
+  transport_state: 'connecting' | 'connected' | 'disconnected';
   relay_addrs: string[];
   presence: Record<string, XoreinPresenceEntry>;
   /** Per-scope unread counts (channel id / dm id → count). Persisted. */
@@ -92,6 +176,11 @@ export interface NativeState {
   reports: XoreinReport[];
   /** Durable outbound queue: encrypted envelopes awaiting a live transport. */
   outbox: XoreinOutboxEntry[];
+  /**
+   * Recently applied recipient-inbox packet ids. Persisted inside the encrypted
+   * state blob so replicas cannot replay a durable operation after a reload.
+   */
+  seen_inbox_delivery_ids: string[];
   /**
    * The scope (channel/dm) the user is currently viewing. In-memory only — never
    * restored from storage, so a reload doesn't suppress unread for a scope the
@@ -110,11 +199,13 @@ const EMPTY: NativeState = {
   friends: [],
   friend_requests: [],
   voice_sessions: [],
+  transport_state: 'disconnected',
   relay_addrs: [],
   presence: {},
   unread: {},
   reports: [],
   outbox: [],
+  seen_inbox_delivery_ids: [],
   active_scope: null,
 };
 
@@ -124,26 +215,46 @@ let _state: NativeState = { ...EMPTY, servers: {}, dms: {} };
  * Read and decode the persisted state blob. Handles two formats:
  *   • v2 `{v:2,n,ct}` — AES-256-GCM encrypted under `_stateKey` (the only format
  *     production ever writes once an identity is unlocked).
- *   • legacy plaintext JSON — migrated forward on the next persist(). Kept only so
- *     existing installs upgrade seamlessly; new writes are always encrypted.
+ *   • legacy plaintext JSON — migrated forward on the next persist() only after
+ *     the identity-derived key is installed. A locked context deletes legacy
+ *     plaintext immediately instead of retaining recoverable communication data.
  * Returns null when nothing is stored or it can't be decoded.
  */
 function readPersistedState(): NativeState | null {
   const raw = _storage()?.getItem(STORAGE_KEY) ?? null;
   if (!raw) return null;
   let outer: unknown;
-  try { outer = JSON.parse(raw); } catch { return null; }
+  try {
+    outer = JSON.parse(raw);
+  } catch {
+    // An unreadable blob cannot be migrated and must not remain as an unknown
+    // plaintext cache. Encrypted v2 data is valid JSON and is handled below.
+    if (!_stateKey) {
+      try { _storage()?.removeItem(STORAGE_KEY); } catch { /* best effort */ }
+    }
+    return null;
+  }
   if (outer && typeof outer === 'object' && (outer as { v?: number }).v === 2) {
     const env = outer as { n?: string; ct?: string };
     if (!_stateKey || typeof env.n !== 'string' || typeof env.ct !== 'string') return null;
     try {
-      const pt = gcm(_stateKey, b64decode(env.n)).decrypt(b64decode(env.ct));
-      return JSON.parse(new TextDecoder().decode(pt)) as NativeState;
+      const nonce = b64decode(env.n);
+      const ciphertext = b64decode(env.ct);
+      if (nonce.length !== 12 || ciphertext.length < 16 || ciphertext.length > 8 * 1024 * 1024) return null;
+      const decoded: unknown = JSON.parse(new TextDecoder().decode(gcm(_stateKey, nonce).decrypt(ciphertext)));
+      return decoded && typeof decoded === 'object' && !Array.isArray(decoded) ? decoded as NativeState : null;
     } catch {
       return null; // wrong key / tampered — start fresh rather than surface garbage
     }
   }
-  // Legacy plaintext (pre-encryption). Accept once so it migrates on next persist.
+  // Legacy plaintext is only readable after the identity-derived key has been
+  // installed. A locked/guest context cannot surface it and must not leave a
+  // recoverable copy behind in browser storage.
+  if (!_stateKey) {
+    try { _storage()?.removeItem(STORAGE_KEY); } catch { /* best effort */ }
+    return null;
+  }
+  if (!outer || typeof outer !== 'object' || Array.isArray(outer)) return null;
   return outer as NativeState;
 }
 
@@ -200,11 +311,17 @@ function load(): NativeState {
         // WebRTC connections — never restore them, or a reload leaves you "in" a
         // channel with no live session and no controls. You start out of voice.
         voice_sessions: [],
+        transport_state: 'disconnected',
         relay_addrs: [],
         presence: parsed.presence ?? {},
         unread: parsed.unread ?? {},
         reports: parsed.reports ?? [],
         outbox: parsed.outbox ?? [],
+        seen_inbox_delivery_ids: Array.isArray(parsed.seen_inbox_delivery_ids)
+          ? parsed.seen_inbox_delivery_ids
+            .filter(id => typeof id === 'string' && id.length >= 8 && id.length <= 128)
+            .slice(-10_000)
+          : [],
         // active_scope is view state, not persisted — start with none selected.
         active_scope: null,
       };
@@ -227,29 +344,35 @@ function persist(): void {
   try {
     const store = _storage();
     if (!store) return;
+    // Locked and guest contexts are memory-only. Never serialize or persist
+    // state until the registered identity-derived key is available.
+    if (!_stateKey) return;
     // Trim persisted messages to the retention cap (keep the most recent). The live
     // in-memory state keeps everything for this session; only the disk copy is bounded.
     const toPersist: NativeState = _state.messages.length > MAX_PERSISTED_MESSAGES
       ? { ..._state, messages: _state.messages.slice(-MAX_PERSISTED_MESSAGES) }
       : _state;
     const json = JSON.stringify(toPersist);
-    if (_stateKey) {
-      // Encrypt at rest: crowd_root, invite_secret, and every message body are in
-      // this blob — they must never touch disk in cleartext.
-      const nonce = crypto.getRandomValues(new Uint8Array(12));
-      const ct = gcm(_stateKey, nonce).encrypt(new TextEncoder().encode(json));
-      store.setItem(STORAGE_KEY, JSON.stringify({ v: 2, n: b64encode(nonce), ct: b64encode(ct) }));
-    } else {
-      // No key yet (pre-unlock / tests). No sensitive data exists before an identity
-      // is unlocked; writing plaintext here keeps dev/test round-trips working and is
-      // migrated to v2 as soon as a key is installed.
-      store.setItem(STORAGE_KEY, json);
-    }
+    // Encrypt at rest: crowd_root, invite_secret, and every message body are in
+    // this blob — they must never touch disk in cleartext.
+    const nonce = crypto.getRandomValues(new Uint8Array(12));
+    const ct = gcm(_stateKey, nonce).encrypt(new TextEncoder().encode(json));
+    store.setItem(STORAGE_KEY, JSON.stringify({ v: 2, n: b64encode(nonce), ct: b64encode(ct) }));
   } catch { /* quota exceeded / private browsing — best effort */ }
 }
 
 export function initStore(): NativeState {
+  const rawBeforeLoad = _storage()?.getItem(STORAGE_KEY);
   _state = load();
+  // Migrate legacy plaintext only after an identity key is active. A v2 blob is
+  // never overwritten here, which preserves data when the wrong identity key is
+  // supplied and decryption correctly fails closed.
+  if (_stateKey && rawBeforeLoad) {
+    try {
+      const outer: unknown = JSON.parse(rawBeforeLoad);
+      if (!outer || typeof outer !== 'object' || (outer as { v?: number }).v !== 2) persist();
+    } catch { /* corrupt storage stays unreadable */ }
+  }
   return _state;
 }
 
@@ -262,6 +385,11 @@ export function updateState(updater: (s: NativeState) => Partial<NativeState>): 
   _state = { ..._state, ...patch };
   persist();
   return _state;
+}
+
+/** Publish the actual browser P2P transport lifecycle, never the local control endpoint. */
+export function setTransportState(transport_state: NativeState['transport_state']): void {
+  updateState(() => ({ transport_state }));
 }
 
 // ── Identity ───────────────────────────────────────────────────────────────
@@ -323,11 +451,7 @@ export function applyJoinedServer(
   server: XoreinRuntimeServer,
   messages: XoreinRuntimeMessage[] = [],
 ): boolean {
-  if (!server?.id || !expectedServerId || server.id !== expectedServerId) {
-    console.warn(
-      '[xorein/join] discarding server record: asked for',
-      expectedServerId, 'but peer returned', server?.id,
-    );
+  if (!isSafeJoinedServer(server, expectedServerId)) {
     return false;
   }
   const channelIds = new Set(Object.keys(server.channels ?? {}));
@@ -345,7 +469,7 @@ export function applyJoinedServer(
     // This also runs on every reconciliation re-pull, not just first join, so
     // the check applies unconditionally on every call, forever.
     const merged = messages.filter(m =>
-      m && m.id && !existingIds.has(m.id) &&
+      isSafeRuntimeMessage(m) && !existingIds.has(m.id) &&
       m.scope_type === 'channel' && m.server_id === server.id && channelIds.has(m.scope_id),
     );
     return {
@@ -364,13 +488,40 @@ export function applyJoinedServer(
  * de-duplicating by message id. Returns the number of NEW messages actually added,
  * so the caller (UI load-older) can tell whether the page advanced anything.
  */
-export function mergeHistoryMessages(messages: XoreinRuntimeMessage[]): number {
+export function mergeHistoryMessages(
+  messages: XoreinRuntimeMessage[],
+  options: { allowUnsignedFromPeerId?: string } = {},
+): number {
   let added = 0;
   updateState(s => {
-    const existingIds = new Set(s.messages.map(m => m.id));
-    const fresh = messages.filter(m => m && m.id && !existingIds.has(m.id));
-    added = fresh.length;
-    return fresh.length ? { messages: [...fresh, ...s.messages] } : {};
+    const incoming = messages.filter(isSafeRuntimeMessage);
+    const acceptsPortableAuthor = (message: XoreinRuntimeMessage): boolean => {
+      if (verifySignedHistoryMessage(message).ok) return true;
+      // Compatibility is deliberately narrow: only a proof-less record from
+      // the authenticated legacy Space Owner may pass. A malformed proof is
+      // never downgraded to legacy, and replicated/member providers get no such
+      // exception.
+      return message.author_proof === undefined
+        && options.allowUnsignedFromPeerId !== undefined
+        && message.sender_peer_id === options.allowUnsignedFromPeerId;
+    };
+    const byID = new Map(incoming.map(message => [message.id, message]));
+    const replaced = s.messages.map(current => {
+      const candidate = byID.get(current.id);
+      if (!candidate) return current;
+      byID.delete(current.id);
+      // A higher revision replaces an older copy only when the ORIGINAL author
+      // verifies it. The provider's identity/score is irrelevant to authority.
+      if ((candidate.author_revision ?? 0) > (current.author_revision ?? 0)
+        && acceptsPortableAuthor(candidate)) {
+        added++;
+        return candidate;
+      }
+      return current;
+    });
+    const fresh = [...byID.values()].filter(acceptsPortableAuthor);
+    added += fresh.length;
+    return fresh.length || added ? { messages: [...fresh, ...replaced] } : {};
   });
   return added;
 }
@@ -487,6 +638,26 @@ export function getOutbox(): XoreinOutboxEntry[] {
   return _state.outbox;
 }
 
+/** True when a replicated durable-inbox packet was already applied. */
+export function hasSeenInboxDelivery(id: string): boolean {
+  return _state.seen_inbox_delivery_ids.includes(id);
+}
+
+/**
+ * Persist a successfully applied durable-inbox packet id. The bounded receipt
+ * set stops three storage replicas (or a malicious replaying provider) from
+ * applying the same friend request/message more than once across reloads.
+ */
+export function markInboxDeliverySeen(id: string): void {
+  if (!id || id.length < 8 || id.length > 128) return;
+  updateState(state => {
+    if (state.seen_inbox_delivery_ids.includes(id)) return {};
+    return {
+      seen_inbox_delivery_ids: [...state.seen_inbox_delivery_ids, id].slice(-10_000),
+    };
+  });
+}
+
 /** Append an abuse report (deduped by id). Newest first. */
 export function addReport(report: XoreinReport): void {
   updateState(s => {
@@ -600,6 +771,16 @@ export function editMessage(messageId: string, body: string): void {
         ? { ...m, body, updated_at: new Date().toISOString() }
         : m,
     ),
+  }));
+}
+
+/** Apply an already-authorized, author-signed message version atomically. */
+export function updateMessageVersion(
+  messageId: string,
+  patch: Partial<XoreinRuntimeMessage>,
+): void {
+  updateState(s => ({
+    messages: s.messages.map(m => m.id === messageId ? { ...m, ...patch, id: m.id } : m),
   }));
 }
 
@@ -784,6 +965,17 @@ export function addFriendRequest(record: XoreinFriendRecord): void {
       ...s.friend_requests.filter(r => r.id !== record.id),
       record,
     ],
+  }));
+}
+
+/** Update delivery of a locally-originated friend request without changing its relationship status. */
+export function setFriendRequestDeliveryStatus(
+  requestId: string,
+  delivery_status: NonNullable<XoreinFriendRecord['delivery_status']>,
+): void {
+  updateState(s => ({
+    friend_requests: s.friend_requests.map(record =>
+      record.id === requestId ? { ...record, delivery_status } : record),
   }));
 }
 
@@ -976,12 +1168,12 @@ export function setActiveScope(scopeId: string | null): void {
 
 export function toRuntimeSnapshot(): XoreinRuntimeSnapshot {
   const s = _state;
-  // Strip owner-only cryptographic secrets before exposing to React render state.
-  // crowd_root and invite_secret are E2EE / invite-authority material that must
+  // Strip member/owner cryptographic secrets before exposing to React render state.
+  // crowd_root, replica_secret, and invite_secret are E2EE / capability material that must
   // never appear in the runtime snapshot — only the encrypted store and the crypto
   // layer (secureEnvelope.ts / invite.ts) read them directly via getState().
   const serverPublic = (srv: XoreinRuntimeServer): XoreinRuntimeServer => {
-    const { crowd_root: _cr, invite_secret: _is, ...pub } = srv;
+    const { crowd_root: _cr, replica_secret: _rs, invite_secret: _is, ...pub } = srv;
     return pub as XoreinRuntimeServer;
   };
   return {
@@ -995,6 +1187,7 @@ export function toRuntimeSnapshot(): XoreinRuntimeSnapshot {
     friends: s.friends,
     friend_requests: s.friend_requests,
     voice_sessions: s.voice_sessions,
+    transport_state: s.transport_state,
     relay_addrs: s.relay_addrs,
     presence: s.presence,
     unread: s.unread,

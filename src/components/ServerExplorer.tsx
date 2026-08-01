@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Compass, Search, Users, Shield, Zap, TrendingUp, ArrowRight, Link as LinkIcon } from 'lucide-react';
 import type { Server, XoreinRuntimeSnapshot } from '@/types';
 import { resolveAvatarSrc } from '@/lib/avatar';
-import { discoverServerByInvite, type XoreinServerPreview } from '@/lib/xoreinControl';
+import { useRuntimeMutations, type XoreinServerPreview } from '@/hooks/runtime/useRuntimeMutations';
 
 interface ServerExplorerProps {
     servers: Server[];
@@ -11,7 +11,10 @@ interface ServerExplorerProps {
     onOpenJoin: (initialValue?: string) => void;
 }
 
-export const ServerExplorer: React.FC<ServerExplorerProps> = ({ servers, runtimeSnapshot, onSelectServer, onOpenJoin }) => {
+export const ServerExplorer: React.FC<ServerExplorerProps> = ({ servers, onSelectServer, onOpenJoin }) => {
+    const { previewServerInvite } = useRuntimeMutations();
+    const previewServerInviteRef = React.useRef(previewServerInvite);
+    previewServerInviteRef.current = previewServerInvite;
     const [query, setQuery] = useState('');
     const [discoveredServer, setDiscoveredServer] = useState<XoreinServerPreview | null>(null);
     const [discoveryLoading, setDiscoveryLoading] = useState(false);
@@ -30,7 +33,7 @@ export const ServerExplorer: React.FC<ServerExplorerProps> = ({ servers, runtime
         const timeoutId = window.setTimeout(async () => {
             setDiscoveryLoading(true);
             try {
-                const nextPreview = await discoverServerByInvite(runtimeSnapshot, trimmed);
+                const nextPreview = await previewServerInviteRef.current(trimmed);
                 if (cancelled) {
                     return;
                 }
@@ -53,7 +56,7 @@ export const ServerExplorer: React.FC<ServerExplorerProps> = ({ servers, runtime
             cancelled = true;
             window.clearTimeout(timeoutId);
         };
-    }, [query, runtimeSnapshot]);
+    }, [query]);
 
     const trackedServers = useMemo(() => [...servers].sort((left, right) => left.name.localeCompare(right.name)), [servers]);
     const discoveredAlreadyJoined = discoveredServer ? trackedServers.some((server) => server.id === discoveredServer.manifest.server_id) : false;
@@ -62,7 +65,7 @@ export const ServerExplorer: React.FC<ServerExplorerProps> = ({ servers, runtime
         <div className="flex-1 bg-bg-0 overflow-y-auto h-full animate-in fade-in duration-500 no-scrollbar relative">
             <div className="relative h-[320px] flex items-center justify-center overflow-hidden border-b border-white/5">
                 <div className="absolute inset-0 bg-gradient-to-b from-primary/10 to-bg-0 z-0"></div>
-                <div className="absolute inset-0 bg-[url('https://images.unsplash.com/photo-1550745679-5651f72db371?w=1600&h=900&fit=crop')] bg-cover bg-center opacity-10 mix-blend-screen scale-110"></div>
+                <div className="absolute inset-0 bg-gradient-to-br from-primary/10 via-transparent to-accent/10 opacity-70 mix-blend-screen scale-110"></div>
                 <div className="absolute inset-0 grid-overlay opacity-20"></div>
 
                 <div className="relative z-10 text-center max-w-2xl px-5">
@@ -70,7 +73,7 @@ export const ServerExplorer: React.FC<ServerExplorerProps> = ({ servers, runtime
                         <TrendingUp size={12} /> Global Stream Explorer
                     </div>
                     <h1 className="text-3xl md:text-4xl font-bold text-white mb-5 font-display text-glow leading-[1.1]">Join the Underground Network.</h1>
-                    <p className="text-white/40 mb-8 text-base font-light tracking-tight">Paste a signed `xorein://join/...` or `xorein://invite/...` invite to discover a live xorein server before joining, or browse the nodes already tracked by your local runtime.</p>
+                    <p className="text-white/40 mb-8 text-base font-light tracking-tight">Paste a signed `xorein://join/...` or `xorein://invite/...` invite to inspect a Space before joining, or browse the Spaces already tracked by your local runtime.</p>
 
                     <div className="relative max-w-2xl mx-auto group">
                         <div className="absolute inset-0 bg-primary/20 rounded-full blur-xl group-focus-within:bg-primary/30 transition-all opacity-0 group-focus-within:opacity-100"></div>
@@ -80,7 +83,7 @@ export const ServerExplorer: React.FC<ServerExplorerProps> = ({ servers, runtime
                                 type="text"
                                 value={query}
                                 onChange={(event) => setQuery(event.target.value)}
-                                placeholder="xorein://join/server-id?invite=..."
+                                placeholder="xorein://join/space-id?invite=..."
                                 className="w-full bg-transparent py-2.5 text-white focus:outline-none text-base font-light placeholder-white/20"
                             />
                             <button onClick={() => onOpenJoin(query.trim())} className="bg-primary text-bg-0 px-6 py-2.5 rounded-full font-bold micro-label tracking-tight hover:shadow-glow hover:scale-[1.02] transition-all ml-1.5 disabled:opacity-50" disabled={!query.trim()}>
@@ -149,7 +152,7 @@ export const ServerExplorer: React.FC<ServerExplorerProps> = ({ servers, runtime
                                 <div className="flex flex-col gap-3 shrink-0">
                                     {discoveredAlreadyJoined ? (
                                         <button onClick={() => onSelectServer(discoveredServer.manifest.server_id)} className="h-12 px-6 rounded-full bg-primary text-bg-0 font-bold text-body-strong flex items-center justify-center gap-2 hover:shadow-glow transition-all">
-                                            <ArrowRight size={16} /> Open Joined Server
+                                            <ArrowRight size={16} /> Open Joined Space
                                         </button>
                                     ) : (
                                         <button onClick={() => onOpenJoin(query.trim())} className="h-12 px-6 rounded-full bg-primary text-bg-0 font-bold text-body-strong flex items-center justify-center gap-2 hover:shadow-glow transition-all">
@@ -169,7 +172,7 @@ export const ServerExplorer: React.FC<ServerExplorerProps> = ({ servers, runtime
 
                     {!discoveryLoading && !discoveredServer && !query.trim() && (
                         <div className="glass-card rounded-r2 border border-white/10 px-6 py-5 text-sm text-white/40">
-                            Paste a signed `aether://join/&lt;server-id&gt;?invite=...` or `xorein://invite/...` deeplink to discover a server through the local runtime without joining it yet.
+                            Paste a signed `aether://join/&lt;space-id&gt;?invite=...` or `xorein://invite/...` deeplink to inspect a Space through the local runtime without joining it yet.
                         </div>
                     )}
                 </section>
@@ -178,7 +181,7 @@ export const ServerExplorer: React.FC<ServerExplorerProps> = ({ servers, runtime
                     <div className="flex items-center justify-between mb-8 gap-4 flex-wrap">
                         <h2 className="micro-label text-white tracking-[0.2em] flex items-center gap-2.5">
                             <div className="w-1.5 h-1.5 rounded-full bg-primary shadow-glow"></div>
-                            Tracked Nodes
+                            Joined Spaces
                         </h2>
                         <div className="text-[10px] tracking-[0.18em] text-white/30 uppercase">Backed by `GET /v1/state`</div>
                     </div>
@@ -188,8 +191,8 @@ export const ServerExplorer: React.FC<ServerExplorerProps> = ({ servers, runtime
                             <div className="inline-flex items-center justify-center w-14 h-14 rounded-full bg-white/5 border border-white/10 text-primary mb-4">
                                 <Compass size={22} />
                             </div>
-                            <h3 className="text-white font-bold text-lg mb-2">No tracked servers yet</h3>
-                            <p className="text-white/40 max-w-xl mx-auto mb-6">Your local xorein runtime has not joined or created any servers that can be surfaced here yet. Use a signed invite or create a new node to populate the rail.</p>
+                            <h3 className="text-white font-bold text-lg mb-2">No joined Spaces yet</h3>
+                            <p className="text-white/40 max-w-xl mx-auto mb-6">You have not joined or created a Space yet. Use a signed invite or create a Space to populate the rail.</p>
                             <button onClick={() => onOpenJoin()} className="h-11 px-6 rounded-full border border-primary/30 text-primary hover:bg-primary/10 transition-all font-bold text-sm">
                                 Open Join Flow
                             </button>
@@ -206,7 +209,7 @@ export const ServerExplorer: React.FC<ServerExplorerProps> = ({ servers, runtime
                                         )}
                                         <div className="absolute inset-0 bg-gradient-to-t from-bg-0 to-transparent"></div>
                                         <div className="absolute top-3 right-3 bg-bg-0/80 backdrop-blur-md px-2.5 py-0.5 rounded-full border border-white/10 micro-label text-[7px] text-primary flex items-center gap-1">
-                                            <Zap size={8} /> Runtime Node {idx + 1}
+                                            <Zap size={8} /> Space {idx + 1}
                                         </div>
                                     </div>
                                     <div className="p-5 pt-0 relative">
@@ -218,7 +221,7 @@ export const ServerExplorer: React.FC<ServerExplorerProps> = ({ servers, runtime
                                                 {server.name}
                                                 <div className="w-2.5 h-2.5 rounded-full bg-accent-success shadow-glow-success" title="Reachable in local runtime"></div>
                                             </h3>
-                                            <p className="text-white/40 text-xs font-light leading-relaxed line-clamp-2 mb-5 h-8">{server.description || 'Tracked by the local xorein runtime.'}</p>
+                                            <p className="text-white/40 text-xs font-light leading-relaxed line-clamp-2 mb-5 h-8">{server.description || 'Joined on this device.'}</p>
 
                                             <div className="flex items-center justify-between border-t border-white/5 pt-3">
                                                 <div className="flex items-center gap-3 text-[9px] micro-label text-white/20">

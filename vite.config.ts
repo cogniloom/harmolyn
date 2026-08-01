@@ -18,6 +18,12 @@ export default defineConfig(({ mode }) => {
       server: {
         port: 8080,
         host: '0.0.0.0',
+        headers: {
+          'X-Content-Type-Options': 'nosniff',
+          'X-Frame-Options': 'DENY',
+          'Referrer-Policy': 'no-referrer',
+          'Permissions-Policy': 'camera=(self), microphone=(self), geolocation=(), payment=(), usb=()'
+        },
       },
       plugins: [
         react(),
@@ -34,7 +40,7 @@ export default defineConfig(({ mode }) => {
           output: {
             manualChunks(id: string) {
               if (id.includes('node_modules')) {
-                if (id.includes('react-router') || id.includes('react-dom') || id.includes('/react/') || id.includes('/scheduler/')) {
+                if (id.includes('react-dom') || id.includes('/react/') || id.includes('/scheduler/')) {
                   return 'react-vendor';
                 }
                 if (id.includes('framer-motion')) {

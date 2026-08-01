@@ -12,6 +12,7 @@ import type { VoicePresenceResponse } from './signaling.js';
 
 const ME = 'me-peer';
 const ALICE = 'alice-peer';
+const BOB = 'bob-peer';
 const SRV = 'srv';
 const CHAN = 'voice-chan';
 
@@ -89,11 +90,37 @@ describe('voice presence handshake roster symmetry', () => {
   });
 
   it('a responder who is NOT in the channel is not added to the roster', async () => {
-    registerPeerSync(fakePeerSync({ ok: true, in_channel: false, muted: false, video: false, screen_sharing: false }));
+    const peerSync = fakePeerSync({ ok: true, in_channel: false, muted: false, video: false, screen_sharing: false });
+    registerPeerSync(peerSync);
     const session = new VoiceSession(CHAN, {} as never, ME, {});
     await session.start();
     try {
       expect(Object.keys(voiceParticipants(CHAN))).toEqual([ME]);
+      // One initial request plus one race-closing retry; a stable non-participant
+      // is not probed in every retry round.
+      await vi.waitFor(() => expect(peerSync.requestScope).toHaveBeenCalledTimes(2));
+    } finally {
+      await session.stop();
+    }
+  });
+
+  it('does not retry a member who never answers the presence request', async () => {
+    getState().servers[SRV]!.members.push(BOB);
+    const peerSync = fakePeerSync({
+      ok: true, in_channel: true, muted: false, video: false, screen_sharing: false,
+    });
+    registerPeerSync(peerSync);
+
+    const session = new VoiceSession(CHAN, {} as never, ME, {});
+    await session.start();
+    try {
+      await vi.waitFor(() => expect(peerSync.requestScope).toHaveBeenCalledTimes(1));
+      expect(peerSync.requestScope).toHaveBeenCalledWith(
+        expect.arrayContaining([ALICE, BOB]),
+        expect.any(String),
+        expect.any(String),
+        expect.any(Object),
+      );
     } finally {
       await session.stop();
     }

@@ -1,7 +1,0 @@
-- generic [ref=e3]:
-  - heading "xorein P0 transport spike" [level=2] [ref=e4]
-  - paragraph [ref=e5]:
-    - text: Use
-    - code [ref=e6]: window.__p0.createNode()
-    - text: to start a libp2p node.
-  - generic [ref=e7]: ready

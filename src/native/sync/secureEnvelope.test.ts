@@ -23,9 +23,9 @@ describe('secureEnvelope — encrypted attachments', () => {
       name: 'secret-plans.png',
       content_type: 'image/png',
       size: 4096,
-      key: 'S3CRET-KEY-BASE64URL',
-      nonce: 'NONCE-BASE64URL',
-      content_hash: 'deadbeef',
+      key: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+      nonce: 'AAAAAAAAAAAAAAAA',
+      content_hash: '0000000000000000000000000000000000000000000000000000000000000000',
     }];
 
     // Alice's device encrypts a DM (with attachment) to bob.
@@ -36,8 +36,8 @@ describe('secureEnvelope — encrypted attachments', () => {
 
     // The attachment key/nonce MUST NOT appear anywhere in the wire envelope.
     const wire = JSON.stringify(envelope);
-    expect(wire).not.toContain('S3CRET-KEY-BASE64URL');
-    expect(wire).not.toContain('NONCE-BASE64URL');
+    expect(wire).not.toContain('AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA');
+    expect(wire).not.toContain('AAAAAAAAAAAAAAAA');
     expect(wire).not.toContain('here are the plans');
 
     // Bob's device decrypts it.
