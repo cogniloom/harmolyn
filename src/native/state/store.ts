@@ -27,6 +27,7 @@ import {
   normalizeSafeAttachments,
   MAX_CHAT_BODY_BYTES,
 } from '../security/limits.js';
+import { verifySignedHistoryMessage } from '../sync/signedHistory.js';
 
 const STORAGE_KEY = 'harmolyn:native:state';
 
@@ -61,6 +62,10 @@ function isSafeRuntimeMessage(value: unknown): value is XoreinRuntimeMessage {
   const media = normalizeSafeAttachments(value.media);
   if (media === null) return false;
   if (value.server_id !== undefined && !boundedStateText(value.server_id, 256)) return false;
+  if (value.security_mode !== undefined
+    && value.security_mode !== 'seal' && value.security_mode !== 'tree'
+    && value.security_mode !== 'crowd' && value.security_mode !== 'clear') return false;
+  if (value.encrypted !== undefined && typeof value.encrypted !== 'boolean') return false;
   if (value.reply_to !== undefined && !boundedStateText(value.reply_to, 256)) return false;
   if (value.created_at !== undefined && !boundedStateText(value.created_at, 96, true)) return false;
   if (value.updated_at !== undefined && !boundedStateText(value.updated_at, 96, true)) return false;
@@ -82,6 +87,13 @@ function isSafeJoinedServer(value: unknown, expectedServerId: string): value is 
     || Object.keys(value.channels).length > 500) return false;
   if (value.crowd_root !== undefined
     && (typeof value.crowd_root !== 'string' || decodeBase64Strict(value.crowd_root, 32)?.length !== 32)) return false;
+  if (value.channel_security_mode !== undefined
+    && value.channel_security_mode !== 'tree' && value.channel_security_mode !== 'crowd') return false;
+  if (value.channel_crypto_profile !== undefined
+    && value.channel_crypto_profile !== 'scope-aad-v2') return false;
+  if (value.replica_secret !== undefined
+    && (typeof value.replica_secret !== 'string'
+      || decodeBase64Strict(value.replica_secret, 32)?.length !== 32)) return false;
   for (const [channelId, channelValue] of Object.entries(value.channels)) {
     if (!isPlainObject(channelValue)
       || !boundedStateText(channelId, 256)
@@ -154,6 +166,8 @@ export interface NativeState {
   friends: XoreinFriendRecord[];
   friend_requests: XoreinFriendRecord[];
   voice_sessions: XoreinRuntimeVoiceSession[];
+  /** Live transport state; reset on reload because reachability is never durable. */
+  transport_state: 'connecting' | 'connected' | 'disconnected';
   relay_addrs: string[];
   presence: Record<string, XoreinPresenceEntry>;
   /** Per-scope unread counts (channel id / dm id → count). Persisted. */
@@ -162,6 +176,11 @@ export interface NativeState {
   reports: XoreinReport[];
   /** Durable outbound queue: encrypted envelopes awaiting a live transport. */
   outbox: XoreinOutboxEntry[];
+  /**
+   * Recently applied recipient-inbox packet ids. Persisted inside the encrypted
+   * state blob so replicas cannot replay a durable operation after a reload.
+   */
+  seen_inbox_delivery_ids: string[];
   /**
    * The scope (channel/dm) the user is currently viewing. In-memory only — never
    * restored from storage, so a reload doesn't suppress unread for a scope the
@@ -180,11 +199,13 @@ const EMPTY: NativeState = {
   friends: [],
   friend_requests: [],
   voice_sessions: [],
+  transport_state: 'disconnected',
   relay_addrs: [],
   presence: {},
   unread: {},
   reports: [],
   outbox: [],
+  seen_inbox_delivery_ids: [],
   active_scope: null,
 };
 
@@ -194,15 +215,25 @@ let _state: NativeState = { ...EMPTY, servers: {}, dms: {} };
  * Read and decode the persisted state blob. Handles two formats:
  *   • v2 `{v:2,n,ct}` — AES-256-GCM encrypted under `_stateKey` (the only format
  *     production ever writes once an identity is unlocked).
- *   • legacy plaintext JSON — migrated forward on the next persist(). Kept only so
- *     existing installs upgrade seamlessly; new writes are always encrypted.
+ *   • legacy plaintext JSON — migrated forward on the next persist() only after
+ *     the identity-derived key is installed. A locked context deletes legacy
+ *     plaintext immediately instead of retaining recoverable communication data.
  * Returns null when nothing is stored or it can't be decoded.
  */
 function readPersistedState(): NativeState | null {
   const raw = _storage()?.getItem(STORAGE_KEY) ?? null;
   if (!raw) return null;
   let outer: unknown;
-  try { outer = JSON.parse(raw); } catch { return null; }
+  try {
+    outer = JSON.parse(raw);
+  } catch {
+    // An unreadable blob cannot be migrated and must not remain as an unknown
+    // plaintext cache. Encrypted v2 data is valid JSON and is handled below.
+    if (!_stateKey) {
+      try { _storage()?.removeItem(STORAGE_KEY); } catch { /* best effort */ }
+    }
+    return null;
+  }
   if (outer && typeof outer === 'object' && (outer as { v?: number }).v === 2) {
     const env = outer as { n?: string; ct?: string };
     if (!_stateKey || typeof env.n !== 'string' || typeof env.ct !== 'string') return null;
@@ -217,8 +248,13 @@ function readPersistedState(): NativeState | null {
     }
   }
   // Legacy plaintext is only readable after the identity-derived key has been
-  // installed, so a locked/guest context cannot surface old communication data.
-  if (!_stateKey || !outer || typeof outer !== 'object' || Array.isArray(outer)) return null;
+  // installed. A locked/guest context cannot surface it and must not leave a
+  // recoverable copy behind in browser storage.
+  if (!_stateKey) {
+    try { _storage()?.removeItem(STORAGE_KEY); } catch { /* best effort */ }
+    return null;
+  }
+  if (!outer || typeof outer !== 'object' || Array.isArray(outer)) return null;
   return outer as NativeState;
 }
 
@@ -275,11 +311,17 @@ function load(): NativeState {
         // WebRTC connections — never restore them, or a reload leaves you "in" a
         // channel with no live session and no controls. You start out of voice.
         voice_sessions: [],
+        transport_state: 'disconnected',
         relay_addrs: [],
         presence: parsed.presence ?? {},
         unread: parsed.unread ?? {},
         reports: parsed.reports ?? [],
         outbox: parsed.outbox ?? [],
+        seen_inbox_delivery_ids: Array.isArray(parsed.seen_inbox_delivery_ids)
+          ? parsed.seen_inbox_delivery_ids
+            .filter(id => typeof id === 'string' && id.length >= 8 && id.length <= 128)
+            .slice(-10_000)
+          : [],
         // active_scope is view state, not persisted — start with none selected.
         active_scope: null,
       };
@@ -343,6 +385,11 @@ export function updateState(updater: (s: NativeState) => Partial<NativeState>): 
   _state = { ..._state, ...patch };
   persist();
   return _state;
+}
+
+/** Publish the actual browser P2P transport lifecycle, never the local control endpoint. */
+export function setTransportState(transport_state: NativeState['transport_state']): void {
+  updateState(() => ({ transport_state }));
 }
 
 // ── Identity ───────────────────────────────────────────────────────────────
@@ -444,10 +491,24 @@ export function applyJoinedServer(
 export function mergeHistoryMessages(messages: XoreinRuntimeMessage[]): number {
   let added = 0;
   updateState(s => {
-    const existingIds = new Set(s.messages.map(m => m.id));
-    const fresh = messages.filter(m => isSafeRuntimeMessage(m) && !existingIds.has(m.id));
-    added = fresh.length;
-    return fresh.length ? { messages: [...fresh, ...s.messages] } : {};
+    const incoming = messages.filter(isSafeRuntimeMessage);
+    const byID = new Map(incoming.map(message => [message.id, message]));
+    const replaced = s.messages.map(current => {
+      const candidate = byID.get(current.id);
+      if (!candidate) return current;
+      byID.delete(current.id);
+      // A higher revision replaces an older copy only when the ORIGINAL author
+      // verifies it. The provider's identity/score is irrelevant to authority.
+      if ((candidate.author_revision ?? 0) > (current.author_revision ?? 0)
+        && verifySignedHistoryMessage(candidate).ok) {
+        added++;
+        return candidate;
+      }
+      return current;
+    });
+    const fresh = [...byID.values()];
+    added += fresh.length;
+    return fresh.length || added ? { messages: [...fresh, ...replaced] } : {};
   });
   return added;
 }
@@ -564,6 +625,26 @@ export function getOutbox(): XoreinOutboxEntry[] {
   return _state.outbox;
 }
 
+/** True when a replicated durable-inbox packet was already applied. */
+export function hasSeenInboxDelivery(id: string): boolean {
+  return _state.seen_inbox_delivery_ids.includes(id);
+}
+
+/**
+ * Persist a successfully applied durable-inbox packet id. The bounded receipt
+ * set stops three storage replicas (or a malicious replaying provider) from
+ * applying the same friend request/message more than once across reloads.
+ */
+export function markInboxDeliverySeen(id: string): void {
+  if (!id || id.length < 8 || id.length > 128) return;
+  updateState(state => {
+    if (state.seen_inbox_delivery_ids.includes(id)) return {};
+    return {
+      seen_inbox_delivery_ids: [...state.seen_inbox_delivery_ids, id].slice(-10_000),
+    };
+  });
+}
+
 /** Append an abuse report (deduped by id). Newest first. */
 export function addReport(report: XoreinReport): void {
   updateState(s => {
@@ -677,6 +758,16 @@ export function editMessage(messageId: string, body: string): void {
         ? { ...m, body, updated_at: new Date().toISOString() }
         : m,
     ),
+  }));
+}
+
+/** Apply an already-authorized, author-signed message version atomically. */
+export function updateMessageVersion(
+  messageId: string,
+  patch: Partial<XoreinRuntimeMessage>,
+): void {
+  updateState(s => ({
+    messages: s.messages.map(m => m.id === messageId ? { ...m, ...patch, id: m.id } : m),
   }));
 }
 
@@ -861,6 +952,17 @@ export function addFriendRequest(record: XoreinFriendRecord): void {
       ...s.friend_requests.filter(r => r.id !== record.id),
       record,
     ],
+  }));
+}
+
+/** Update delivery of a locally-originated friend request without changing its relationship status. */
+export function setFriendRequestDeliveryStatus(
+  requestId: string,
+  delivery_status: NonNullable<XoreinFriendRecord['delivery_status']>,
+): void {
+  updateState(s => ({
+    friend_requests: s.friend_requests.map(record =>
+      record.id === requestId ? { ...record, delivery_status } : record),
   }));
 }
 
@@ -1053,12 +1155,12 @@ export function setActiveScope(scopeId: string | null): void {
 
 export function toRuntimeSnapshot(): XoreinRuntimeSnapshot {
   const s = _state;
-  // Strip owner-only cryptographic secrets before exposing to React render state.
-  // crowd_root and invite_secret are E2EE / invite-authority material that must
+  // Strip member/owner cryptographic secrets before exposing to React render state.
+  // crowd_root, replica_secret, and invite_secret are E2EE / capability material that must
   // never appear in the runtime snapshot — only the encrypted store and the crypto
   // layer (secureEnvelope.ts / invite.ts) read them directly via getState().
   const serverPublic = (srv: XoreinRuntimeServer): XoreinRuntimeServer => {
-    const { crowd_root: _cr, invite_secret: _is, ...pub } = srv;
+    const { crowd_root: _cr, replica_secret: _rs, invite_secret: _is, ...pub } = srv;
     return pub as XoreinRuntimeServer;
   };
   return {
@@ -1072,6 +1174,7 @@ export function toRuntimeSnapshot(): XoreinRuntimeSnapshot {
     friends: s.friends,
     friend_requests: s.friend_requests,
     voice_sessions: s.voice_sessions,
+    transport_state: s.transport_state,
     relay_addrs: s.relay_addrs,
     presence: s.presence,
     unread: s.unread,

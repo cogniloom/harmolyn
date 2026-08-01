@@ -18,6 +18,12 @@ export default defineConfig(({ mode }) => {
       server: {
         port: 8080,
         host: '0.0.0.0',
+        headers: {
+          'X-Content-Type-Options': 'nosniff',
+          'X-Frame-Options': 'DENY',
+          'Referrer-Policy': 'no-referrer',
+          'Permissions-Policy': 'camera=(self), microphone=(self), geolocation=(), payment=(), usb=()'
+        },
       },
       plugins: [
         react(),

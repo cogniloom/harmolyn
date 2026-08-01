@@ -185,7 +185,7 @@ export const CAPABILITY_MAP: CapabilityEntry[] = [
 
   // ── Blobs / uploads ───────────────────────────────────────────────────────
   { name: 'uploadAttachment', route: 'http', p2pPropagated: false,
-    description: 'Upload an E2EE attachment ciphertext via HTTP blob store (filename/type anonymized on the wire)' },
+    description: 'Legacy unscoped HTTP blob upload retained for old callers; ChatArea v1 attachments use the native node-preferred replica swarm' },
 ];
 
 /** Quick lookup: route for a capability name. */

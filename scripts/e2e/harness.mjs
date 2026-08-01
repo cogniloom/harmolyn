@@ -1,9 +1,10 @@
 // Two-client E2E harness for the local xorein stack.
 //
 // Prereqs (started outside this script):
-//   - aether relay with --ws-listen (see scripts/local-support-node.mjs header)
-//   - scripts/local-support-node.mjs on :7711
-//   - Vite dev server on :8080 with .env pointing at both
+//   - a current Xorein relay/archivist with its browser gateway and WebSocket
+//     listener enabled (the turnkey relay defaults do this)
+//   - Vite dev server on :8080
+//   - XOREIN_NODE_ENDPOINT set to that browser-gateway origin
 //
 // Each client() is an isolated browser context (own IndexedDB/localStorage) —
 // a genuinely independent harmolyn peer. Evidence (screenshots, console logs,
@@ -61,6 +62,12 @@ export class Scenario {
       viewport: { width: 1440, height: 900 },
       permissions: ['microphone', 'camera', 'clipboard-read', 'clipboard-write'],
     });
+    const selectedNodeEndpoint = process.env.XOREIN_NODE_ENDPOINT?.trim();
+    if (selectedNodeEndpoint) {
+      await context.addInitScript((endpoint) => {
+        localStorage.setItem('harmolyn:xorein:selected-control-endpoint', endpoint);
+      }, selectedNodeEndpoint);
+    }
     const page = await context.newPage();
     const logs = [];
     page.on('console', msg => logs.push({ t: Date.now(), kind: msg.type(), text: msg.text() }));

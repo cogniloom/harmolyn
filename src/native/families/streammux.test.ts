@@ -23,13 +23,14 @@ import {
   callFamily,
   muxPoolSize,
   isDirectAddr,
+  SINGLE_SHOT_RESPONSE_TIMEOUT_MS,
 } from './peerstream';
-import { MuxChannel, MuxStreamError } from './streammux';
+import { MuxChannel, MuxStreamError, REQUEST_TIMEOUT_MS } from './streammux';
 import { FEATURE_OVERRIDES_STORAGE_KEY } from '../../config/featureFlags';
 
 const PEER = '12D3KooWNNQp1tmRbcLMrqS866jRJbzoPF6sNEZRoPEVdVwLqTv6';
 const CIRCUIT = `/ip4/127.0.0.1/tcp/9999/ws/p2p/12D3KooWDsujzQH69Gq2LQb1gHMUCbDaJVACYmoVymK9dej5zh4T/p2p-circuit/p2p/${PEER}`;
-const PROTO = '/aether/chat/0.1.0';
+const PROTO = '/aether/chat/0.2.0';
 
 function respFrame(payload: string, requestId?: string): Uint8Array {
   return frameMessage(encodePeerStreamResponse({ payload: new TextEncoder().encode(payload), requestId }));
@@ -135,7 +136,7 @@ describe('persistent mux callFamily', () => {
     const s1 = muxStream(); const s2 = muxStream();
     const { node, dialProtocol } = fakeNode(s1, s2);
 
-    const p1 = callFamily(node, CIRCUIT, '/aether/chat/0.1.0', 'chat.send', undefined, 'c1');
+    const p1 = callFamily(node, CIRCUIT, '/aether/chat/0.2.0', 'chat.send', undefined, 'c1');
     const p2 = callFamily(node, CIRCUIT, '/aether/presence/0.2.0', 'presence.update', undefined, 'p1');
     await tick();
     expect(dialProtocol).toHaveBeenCalledTimes(2);
@@ -206,11 +207,33 @@ describe('persistent mux callFamily', () => {
       await vi.advanceTimersByTimeAsync(0);
       retry.respond('{"ok":"after-timeout"}', 'r1');
       retry.end();
-      await vi.advanceTimersByTimeAsync(15_000);
+      await vi.advanceTimersByTimeAsync(REQUEST_TIMEOUT_MS);
 
       const resp = await p; // settled via the single-shot retry
       expect(new TextDecoder().decode(resp.payload)).toBe('{"ok":"after-timeout"}');
       expect(zombie.aborted).toBeTruthy(); // zombie stream was torn down
+      expect(dialProtocol).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('bounds an unresponsive single-shot retry so peer routing and inbox fallback can run', async () => {
+    vi.useFakeTimers();
+    try {
+      const zombie = muxStream();
+      const silentRetry = muxStream();
+      const { node, dialProtocol } = fakeNode(zombie, silentRetry);
+
+      const request = callFamily(node, CIRCUIT, PROTO, 'friends.request', undefined, 'silent-1');
+      const rejected = expect(request).rejects.toThrow('no single-shot response');
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(REQUEST_TIMEOUT_MS);
+      await vi.advanceTimersByTimeAsync(SINGLE_SHOT_RESPONSE_TIMEOUT_MS);
+      await rejected;
+
+      expect(zombie.aborted).toBeTruthy();
+      expect(silentRetry.aborted?.message).toContain('no single-shot response');
       expect(dialProtocol).toHaveBeenCalledTimes(2);
     } finally {
       vi.useRealTimers();

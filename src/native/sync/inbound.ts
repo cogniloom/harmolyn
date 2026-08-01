@@ -1,20 +1,45 @@
 // Inbound PeerStream family handlers: receive chat messages, reactions, and
 // presence/typing updates from remote peers and apply them to the local store.
 import type { Libp2p } from 'libp2p';
-import type { XoreinRuntimeServer, XoreinRuntimeMessage } from '../../types.js';
+import type { XoreinRuntimeServer, XoreinRuntimeMessage, XoreinMessageAuthorProof } from '../../types.js';
 import {
   frameMessage, encodePeerStreamResponse, serveFamilyStream,
   type InboundFamilyStream, type PeerStreamRequest,
 } from '../families/peerstream.js';
-import { PROTOCOLS } from '../families/families.js';
-import { addMessage, editMessage as storeEditMessage, deleteMessage as storeDeleteMessage, pinMessage as storePinMessage, updatePresenceEntry, addReaction, removeReaction, getState, updateServer, upsertPeer, addFriendRequest, acceptFriendByPeer, ensureDm, bumpUnread, getActiveScope, removeServerMembership, removeServerMember, addPollVote, memberHasPermission, isScopeMember, addReport } from '../state/store.js';
-import { nativeAnnouncePresence, broadcastServerUpdate, rotateCrowdEpoch } from '../state/mutations.js';
+import { PROTOCOLS, RECOVERY_OPS } from '../families/families.js';
+import { addMessage, editMessage as storeEditMessage, deleteMessage as storeDeleteMessage, updateMessageVersion, pinMessage as storePinMessage, updatePresenceEntry, addReaction, removeReaction, getState, updateServer, upsertPeer, addFriendRequest, acceptFriendByPeer, ensureDm, bumpUnread, getActiveScope, removeServerMembership, removeServerMember, addPollVote, memberHasPermission, isScopeMember, addReport } from '../state/store.js';
+import { nativeAnnouncePresence, broadcastServerUpdate, rotateChannelEpoch } from '../state/mutations.js';
 import { publishNativeSnapshot, schedulePublishNativeSnapshot } from '../state/snapshot.js';
-import { decryptInboundEnvelope, getScopeCrypto, applyCrowdRoot, type DecryptedMessage } from './secureEnvelope.js';
-import { verifyInviteToken } from './invite.js';
+import { decryptInboundEnvelope, getScopeCrypto, applyChannelRoot, channelModeForServer, type DecryptedMessage } from './secureEnvelope.js';
+import { isChannelSecurityMode } from '../security/channelMode.js';
+import { verifyInviteToken, verifySignedInviteCapability } from './invite.js';
 import { rekeyVoiceForServer } from '../voice/registry.js';
 import type { PeerSync } from './peersync.js';
+import { isTrustedPeerCircuitMultiaddr } from '../transport/node.js';
 import { hasControlCharacters, MAX_CHAT_BODY_BYTES } from '../security/limits.js';
+import { verifySignedHistoryMessage } from './signedHistory.js';
+import { verifyServerRecord } from './signedServer.js';
+import {
+  knownSignedPeerRecords,
+} from './peerDiscovery.js';
+import {
+  claimRoutedRequest,
+  openRoutedRequest,
+  sealRoutedResponse,
+  verifyRoutedRequest,
+  type RoutedInnerRequest,
+  type RoutedRequest,
+} from './routedRequest.js';
+import { handleBlobSyncRequest } from '../blobs/swarm.js';
+import { handlePeerMailboxRequest } from '../delivery/peerMailbox.js';
+import { handlePeerRendezvousRequest } from '../transport/peerRendezvous.js';
+import {
+  handleRecoveryDeliver,
+  handleRecoveryDeliverChunk,
+  handleRecoveryRequest,
+  handleRecoveryStore,
+  handleRecoveryStoreChunk,
+} from '../recovery/recovery.js';
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -31,7 +56,9 @@ const FUTURE_EPOCH_BUFFER = new Map<string, { payload: Record<string, unknown>; 
 const MAX_FUTURE_EPOCH_BUFFERED = 100;
 
 function bufferFutureEpochChannelMessage(payload: Record<string, unknown>, remotePeerId: string, scopeId: string): void {
-  const wire = payload.crowd as { epoch?: number } | undefined;
+  const mode = payload.enc;
+  if (!isChannelSecurityMode(mode)) return;
+  const wire = payload[mode] as { epoch?: number } | undefined;
   if (!wire || typeof wire.epoch !== 'number') return;
   const state = getState();
   const server = Object.values(state.servers).find(s => Object.keys(s.channels ?? {}).includes(scopeId));
@@ -163,13 +190,28 @@ function okResponse(requestId?: string): Uint8Array {
 }
 
 /**
- * The encryption mode every message in a given scope MUST carry: DMs are Seal
- * (X3DH + Double Ratchet), channels are Crowd (sender-key broadcast). This is the
- * fail-closed policy — an inbound message whose `enc` does not match is rejected,
- * never decoded as plaintext, so a peer cannot downgrade a conversation to cleartext.
+ * Validate the explicit channel mode against the owner-authored server state.
+ * The immediately previous mode/epoch is accepted only for in-flight traffic
+ * during a signed mode transition; anything older or mode-less is rejected.
  */
-function requiredEnc(scopeType: 'channel' | 'dm'): 'seal' | 'crowd' {
-  return scopeType === 'dm' ? 'seal' : 'crowd';
+function channelEnvelopeModeAllowed(
+  encMode: string,
+  payload: Record<string, unknown>,
+  scopeId: string,
+): boolean {
+  if (!isChannelSecurityMode(encMode)) return false;
+  const server = Object.values(getState().servers).find(s =>
+    Object.keys(s.channels ?? {}).includes(scopeId),
+  );
+  if (!server) return false;
+  const currentMode = channelModeForServer(server.id);
+  if (encMode === currentMode) return true;
+  const wire = payload[encMode] as { epoch?: unknown } | undefined;
+  const currentEpoch = typeof server.crowd_epoch === 'number' ? server.crowd_epoch : 0;
+  return typeof wire?.epoch === 'number'
+    && Number.isSafeInteger(wire.epoch)
+    && currentEpoch > 0
+    && wire.epoch === currentEpoch - 1;
 }
 
 function boundedPayloadString(value: unknown, maxBytes: number, allowEmpty = false): string | null {
@@ -197,7 +239,7 @@ function handleChatSend(payload: Record<string, unknown>, remotePeerId: string):
   const decoded = decodeInboundMessage(payload, remotePeerId, scopeId, scopeType);
   if (!scopeId) return;
   if (!decoded) {
-    // A crowd message under a not-yet-installed (future) epoch can't decrypt yet because
+    // A channel message under a not-yet-installed (future) epoch can't decrypt yet because
     // the rotation root is still in flight — buffer it for replay instead of dropping it.
     if (scopeType === 'channel') bufferFutureEpochChannelMessage(payload, remotePeerId, scopeId);
     return;
@@ -249,7 +291,13 @@ function handleChatSend(payload: Record<string, unknown>, remotePeerId: string):
   // Idempotent: drop redelivered/echoed messages (resil-5).
   if (state.messages.some(m => m.id === messageId)) return;
 
-  addMessage({
+  const createdAt = boundedPayloadString(payload.created_at, 96, true) || new Date().toISOString();
+  const authorRevision = Number.isSafeInteger(payload.author_revision)
+    && Number(payload.author_revision) >= 0
+    ? Number(payload.author_revision)
+    : 0;
+  const authorProof = payload.author_proof as XoreinMessageAuthorProof | undefined;
+  const message: XoreinRuntimeMessage = {
     id: messageId,
     scope_type: scopeType,
     scope_id: scopeId,
@@ -261,11 +309,23 @@ function handleChatSend(payload: Record<string, unknown>, remotePeerId: string):
     ...(boundedPayloadString(payload.reply_to, 256)
       ? { reply_to: boundedPayloadString(payload.reply_to, 256) as string }
       : {}),
-    // A message only reaches this point after successful decryption (requiredEnc
+    ...(boundedPayloadString(payload.forwarded_from, 256)
+      ? { forwarded_from: boundedPayloadString(payload.forwarded_from, 256) as string }
+      : {}),
+    // A message only reaches this point after successful mode validation and decryption
     // rejects anything unencrypted), so it is genuinely E2EE — stamp the real mode.
     ...(mode ? { security_mode: mode, encrypted: true } : {}),
-    created_at: new Date().toISOString(),
-  });
+    created_at: createdAt,
+    author_revision: authorRevision,
+    ...(authorProof ? { author_proof: authorProof } : {}),
+  };
+  // Every channel sender knows the shared epoch root and can therefore derive
+  // every symmetric sender key. Sender identity MUST come from the author's
+  // hybrid signature even on a live Noise-authenticated path, because routed or
+  // replayed ciphertext can outlive that path. v1 has no unsigned channel mode.
+  if (scopeType === 'channel' && (!authorProof || !verifySignedHistoryMessage(message).ok)) return;
+  if (scopeType === 'dm' && authorProof && !verifySignedHistoryMessage(message).ok) return;
+  addMessage(message);
 
   // The message itself proves the sender stopped typing — clear the indicator
   // NOW instead of waiting for their (deferred) presence.update, so the typing
@@ -305,7 +365,7 @@ function handleChatSend(payload: Record<string, unknown>, remotePeerId: string):
 
 /**
  * Decode an inbound chat message. FAIL-CLOSED: the envelope MUST carry the exact
- * encryption the scope requires (seal for DMs, crowd for channels) — anything else
+ * encryption the scope requires (Seal for DMs, owner-authored Tree/Crowd for channels) — anything else
  * (a missing `enc`, a plaintext body, or a mode mismatch) is rejected with `null`
  * and never decoded as cleartext. This is what makes the "verifiable security"
  * promise real: a peer cannot downgrade a conversation to plaintext, and a message
@@ -318,7 +378,7 @@ function decodeInboundMessage(
   scopeType: 'channel' | 'dm',
 ): DecryptedMessage | null {
   const enc = typeof payload.enc === 'string' ? payload.enc : '';
-  if (enc !== requiredEnc(scopeType)) return null;
+  if (scopeType === 'dm' ? enc !== 'seal' : !channelEnvelopeModeAllowed(enc, payload, scopeId)) return null;
   return decryptInboundEnvelope(enc, payload, remotePeerId, scopeId, scopeType);
 }
 
@@ -341,7 +401,32 @@ function handleChatEdit(payload: Record<string, unknown>, remotePeerId: string):
   const decoded = decodeInboundMessage(payload, remotePeerId, msg.scope_id, msg.scope_type as 'channel' | 'dm');
   if (!decoded?.body) return;
 
-  storeEditMessage(messageId, decoded.body);
+  const editedAt = boundedPayloadString(payload.edited_at, 96, true) || new Date().toISOString();
+  const revision = Number.isSafeInteger(payload.author_revision)
+    ? Number(payload.author_revision)
+    : (msg.author_revision ?? 0) + 1;
+  if (revision <= (msg.author_revision ?? 0)) return;
+  const proof = payload.author_proof as XoreinMessageAuthorProof | undefined;
+  const next: XoreinRuntimeMessage = {
+    ...msg,
+    body: decoded.body,
+    updated_at: editedAt,
+    author_revision: revision,
+    ...(proof ? { author_proof: proof } : {}),
+  };
+  if (msg.scope_type === 'channel' && (!proof || !verifySignedHistoryMessage(next).ok)) return;
+  if (msg.scope_type === 'dm' && proof && !verifySignedHistoryMessage(next).ok) return;
+  if (proof) {
+    updateMessageVersion(messageId, {
+      body: decoded.body,
+      updated_at: editedAt,
+      author_revision: revision,
+      author_proof: proof,
+    });
+  } else {
+    storeEditMessage(messageId, decoded.body);
+    updateMessageVersion(messageId, { author_proof: undefined, author_revision: revision });
+  }
   schedulePublishNativeSnapshot();
 }
 
@@ -356,7 +441,32 @@ function handleChatDelete(payload: Record<string, unknown>, remotePeerId: string
   // SECURITY: only the original sender may delete their own message.
   if (msg.sender_peer_id !== remotePeerId) return;
 
-  storeDeleteMessage(messageId);
+  const deletedAt = boundedPayloadString(payload.deleted_at, 96, true) || new Date().toISOString();
+  const revision = Number.isSafeInteger(payload.author_revision)
+    ? Number(payload.author_revision)
+    : (msg.author_revision ?? 0) + 1;
+  if (revision <= (msg.author_revision ?? 0)) return;
+  const proof = payload.author_proof as XoreinMessageAuthorProof | undefined;
+  const next: XoreinRuntimeMessage = {
+    ...msg,
+    deleted: true,
+    updated_at: deletedAt,
+    author_revision: revision,
+    ...(proof ? { author_proof: proof } : {}),
+  };
+  if (msg.scope_type === 'channel' && (!proof || !verifySignedHistoryMessage(next).ok)) return;
+  if (msg.scope_type === 'dm' && proof && !verifySignedHistoryMessage(next).ok) return;
+  if (proof) {
+    updateMessageVersion(messageId, {
+      deleted: true,
+      updated_at: deletedAt,
+      author_revision: revision,
+      author_proof: proof,
+    });
+  } else {
+    storeDeleteMessage(messageId);
+    updateMessageVersion(messageId, { author_proof: undefined, author_revision: revision });
+  }
   schedulePublishNativeSnapshot();
 }
 
@@ -375,14 +485,12 @@ function handleChatOp(payload: Record<string, unknown>, remotePeerId: string, op
 // ── Presence/typing inbound ────────────────────────────────────────────────
 
 /** Extract advertised circuit addresses from a peer payload. */
-function circuitAddrsFromPayload(payload: Record<string, unknown>): string[] {
+function circuitAddrsFromPayload(payload: Record<string, unknown>, expectedPeerId?: string): string[] {
   const a = payload.addresses;
   return Array.isArray(a)
     ? a
       .filter((x): x is string => typeof x === 'string'
-        && x.length <= 512
-        && !hasControlCharacters(x)
-        && x.includes('p2p-circuit'))
+        && isTrustedPeerCircuitMultiaddr(x, expectedPeerId))
       .slice(0, 8)
     : [];
 }
@@ -440,7 +548,7 @@ function handlePresenceUpdate(payload: Record<string, unknown>, remotePeerId: st
   // Learn the peer's reachable circuit addresses for cross-relay delivery, plus
   // any profile (display name / avatar) they rode along with presence so it
   // propagates to everyone who sees them.
-  const addrs = circuitAddrsFromPayload(payload);
+  const addrs = circuitAddrsFromPayload(payload, remotePeerId);
   const displayName = boundedPayloadString(payload.display_name, 256, true)?.trim() || undefined;
   const avatar = boundedPayloadString(payload.avatar, 512 * 1024, true)?.trim() || undefined;
   if (addrs.length || displayName || avatar) {
@@ -564,6 +672,7 @@ export function handleSyncRequest(operation: string, payload: Record<string, unk
   // an attacker must not turn an arbitrary family operation plus an invite token
   // into an accidental history oracle.
   if (operation !== 'sync.join' && operation !== 'sync.pull'
+    && operation !== 'sync.coverage' && operation !== 'sync.fetch'
     && operation !== 'sync.update' && operation !== 'sync.leave'
     && operation !== 'sync.delete' && operation !== 'sync.remove') {
     return { ok: false, error: 'unsupported_operation' };
@@ -582,6 +691,10 @@ export function handleSyncRequest(operation: string, payload: Record<string, unk
   if (operation === 'sync.update') {
     const incoming = payload.server as Partial<XoreinRuntimeServer> | undefined;
     if (incoming && remotePeerId === server.owner_peer_id && !isOwner) {
+      if (incoming.owner_proof
+        && !verifyServerRecord(incoming as XoreinRuntimeServer)) {
+        return { ok: false, error: 'invalid_owner_proof' };
+      }
       // Reject a STALE whole snapshot: broadcastServerUpdate is fire-and-forget on
       // independent streams, so an older update can arrive after a newer one. Applying
       // it would restore roles/permissions/membership the owner just changed. Gate the
@@ -591,27 +704,58 @@ export function handleSyncRequest(operation: string, payload: Record<string, unk
       if (incomingRev !== undefined && incomingRev <= storedRev) {
         return { ok: true };
       }
-      // Apply the owner-authoritative fields. CRITICAL: this must include
-      // crowd_root/crowd_epoch (channel-key rotation) and roles/member_roles —
+      // Apply the owner-authoritative fields. CRITICAL: this must include the
+      // channel mode/root/epoch tuple and roles/member_roles —
       // previously they were silently dropped here, so kicks never revoked keys
       // and role changes never reached members.
       const nextRoot = typeof incoming.crowd_root === 'string' ? incoming.crowd_root : undefined;
       const nextEpoch = typeof incoming.crowd_epoch === 'number' ? incoming.crowd_epoch : undefined;
+      if (incoming.channel_security_mode !== undefined
+        && !isChannelSecurityMode(incoming.channel_security_mode)) {
+        return { ok: false, error: 'invalid_channel_security_mode' };
+      }
+      if (incoming.channel_crypto_profile !== undefined
+        && incoming.channel_crypto_profile !== 'scope-aad-v2') {
+        return { ok: false, error: 'unsupported_channel_crypto_profile' };
+      }
+      const nextMode = isChannelSecurityMode(incoming.channel_security_mode)
+        ? incoming.channel_security_mode
+        : 'crowd';
       // crowd_epoch is monotonic. Because broadcastServerUpdate is fire-and-forget on
       // independent streams, an OLDER update can arrive after a newer rotation — persist
       // the root/epoch only when it advances (>= stored), or the store would regress to
       // an obsolete key and fail to decrypt current-epoch traffic after a reload.
       const storedEpoch = typeof server.crowd_epoch === 'number' ? server.crowd_epoch : -1;
-      const applyCrowd = nextRoot !== undefined && nextEpoch !== undefined && nextEpoch >= storedEpoch;
+      const storedMode = channelModeForServer(serverId);
+      const modeChanged = nextMode !== storedMode;
+      if (nextRoot !== undefined && nextEpoch === storedEpoch
+        && (modeChanged || nextRoot !== server.crowd_root)) {
+        return { ok: false, error: 'channel_epoch_reused' };
+      }
+      const applyChannel = nextRoot !== undefined && nextEpoch !== undefined
+        && (nextEpoch > storedEpoch
+          || (nextEpoch === storedEpoch && !modeChanged && nextRoot === server.crowd_root));
       updateServer(serverId, {
         ...(incoming.channels ? { channels: incoming.channels } : {}),
         ...(Array.isArray(incoming.members) ? { members: incoming.members } : {}),
         ...(incoming.manifest ? { manifest: incoming.manifest } : {}),
         ...(typeof incoming.name === 'string' && incoming.name ? { name: incoming.name } : {}),
         ...(typeof incoming.description === 'string' ? { description: incoming.description } : {}),
-        ...(applyCrowd ? { crowd_root: nextRoot, crowd_epoch: nextEpoch } : {}),
+        ...(applyChannel ? {
+          crowd_root: nextRoot,
+          crowd_epoch: nextEpoch,
+          channel_security_mode: nextMode,
+          channel_crypto_profile: incoming.channel_crypto_profile ?? 'scope-aad-v2',
+        } : {}),
+        ...(typeof incoming.replica_secret === 'string'
+          ? { replica_secret: incoming.replica_secret }
+          : {}),
         ...(Array.isArray(incoming.roles) ? { roles: incoming.roles } : {}),
         ...(incoming.member_roles && typeof incoming.member_roles === 'object' ? { member_roles: incoming.member_roles } : {}),
+        ...(incoming.owner_proof ? { owner_proof: incoming.owner_proof } : {}),
+        ...(typeof incoming.invite_generation === 'number'
+          ? { invite_generation: incoming.invite_generation }
+          : {}),
         // Persist the owner-authoritative join boundaries (member_since). Every member
         // answers sync.pull for this server, so every member needs the boundary map to
         // enforce the pre-join history policy — it is join-time metadata (who joined
@@ -623,8 +767,8 @@ export function handleSyncRequest(operation: string, payload: Record<string, unk
       });
       // Install the (possibly rotated) root into the live crypto so the new epoch
       // takes effect immediately — only when we actually persisted an advancing root.
-      if (applyCrowd) {
-        applyCrowdRoot(serverId);
+      if (applyChannel) {
+        applyChannelRoot(serverId);
         // The new root may unlock channel messages that raced ahead of it — replay any
         // buffered future-epoch ciphertext now that this epoch's key is installed.
         replayBufferedChannelMessages(serverId);
@@ -644,7 +788,7 @@ export function handleSyncRequest(operation: string, payload: Record<string, unk
   if (operation === 'sync.leave') {
     if (isOwner && remotePeerId && server.members.includes(remotePeerId)) {
       removeServerMember(serverId, remotePeerId);
-      rotateCrowdEpoch(serverId);
+      rotateChannelEpoch(serverId);
       schedulePublishNativeSnapshot();
       broadcastServerUpdate(serverId);
     }
@@ -668,13 +812,21 @@ export function handleSyncRequest(operation: string, payload: Record<string, unk
     return { ok: true };
   }
 
-  // SECURITY: a non-member must present a valid invite-capability token before we
-  // admit them or serve any history. Existing members re-pulling are exempt.
-  // Servers without an invite_secret are treated as closed (verifyInviteToken
-  // returns false) — use nativeCreateServer to get a fresh invite_secret.
+  // SECURITY: a non-member must present either the legacy owner-only HMAC token
+  // or a portable owner-signed capability for the current invite generation.
+  // The latter is independently verifiable by every member, so owner downtime
+  // cannot turn a valid invite into a dead link.
   const alreadyMember = !!remotePeerId && server.members.includes(remotePeerId);
-	const inviteToken = boundedPayloadString(payload.invite_token, 4096, true) ?? '';
-	if (!alreadyMember && !verifyInviteToken(server.invite_secret, serverId, inviteToken)) {
+	const inviteToken = boundedPayloadString(payload.invite_token, 12_288, true) ?? '';
+  const signedInvite = verifySignedInviteCapability(
+    inviteToken,
+    serverId,
+    server.owner_peer_id,
+    server.invite_generation ?? 0,
+  );
+  const legacyOwnerInvite = isOwner
+    && verifyInviteToken(server.invite_secret, serverId, inviteToken);
+	if (!alreadyMember && !signedInvite && !legacyOwnerInvite) {
 		return { ok: false, error: 'invalid_invite' };
 	}
 	// A fresh membership response is an owner authorization decision. Existing
@@ -685,7 +837,7 @@ export function handleSyncRequest(operation: string, payload: Record<string, unk
 	if (!alreadyMember && operation !== 'sync.join') {
 		return { ok: false, error: 'owner_required' };
 	}
-	if (operation === 'sync.join' && !alreadyMember && !isOwner) {
+	if (operation === 'sync.join' && !alreadyMember && !isOwner && !signedInvite) {
 		return { ok: false, error: 'owner_required' };
 	}
 
@@ -693,7 +845,7 @@ export function handleSyncRequest(operation: string, payload: Record<string, unk
   // relays (keyed to the authenticated peer) — and their self-declared profile, so
   // the member list shows their name immediately instead of waiting for the next
   // presence heartbeat (~25s).
-  const joinerAddrs = circuitAddrsFromPayload(payload);
+  const joinerAddrs = circuitAddrsFromPayload(payload, remotePeerId);
   const joinerName = typeof payload.display_name === 'string' && payload.display_name.trim()
     ? payload.display_name.trim()
     : undefined;
@@ -712,8 +864,8 @@ export function handleSyncRequest(operation: string, payload: Record<string, unk
   // the previous epoch's sender keys (forward secrecy on join). Existing members
   // receive the fresh root via the broadcast below; the joiner gets it in this
   // response's server record. Re-pulls by existing members do NOT rotate.
-  const isNewJoiner = operation === 'sync.join' && isOwner && remotePeerId && !alreadyMember;
-  if (isNewJoiner) {
+  const isNewOwnerJoiner = operation === 'sync.join' && isOwner && remotePeerId && !alreadyMember;
+  if (isNewOwnerJoiner) {
     // Record the join boundary NOW so it is enforced on every later pull, not just this
     // response — otherwise `alreadyMember` flips true and a subsequent sync.pull would
     // serve the full retention window, leaking the pre-join history the policy withheld.
@@ -722,8 +874,20 @@ export function handleSyncRequest(operation: string, payload: Record<string, unk
       members: [...server.members, remotePeerId],
       member_since: { ...(server.member_since ?? {}), [remotePeerId]: joinedAt },
     });
-    rotateCrowdEpoch(serverId);
+    rotateChannelEpoch(serverId);
     broadcastServerUpdate(serverId);
+    schedulePublishNativeSnapshot();
+  } else if (operation === 'sync.join' && signedInvite && remotePeerId && !alreadyMember) {
+    // Portable admission: the owner already delegated this decision by signing
+    // the capability. A member may add the authenticated requester to its local
+    // effective roster and serve the owner-signed snapshot. No member is allowed
+    // to rewrite channels/policy/key epochs; verifyServerRecord on the joiner
+    // keeps that authority with the owner.
+    const joinedAt = new Date().toISOString();
+    updateServer(serverId, {
+      members: [...server.members, remotePeerId],
+      member_since: { ...(server.member_since ?? {}), [remotePeerId]: joinedAt },
+    });
     schedulePublishNativeSnapshot();
   }
 
@@ -733,7 +897,9 @@ export function handleSyncRequest(operation: string, payload: Record<string, unk
   // so the (created_at, id) cursor is a total order — otherwise a page ending on a
   // timestamp shared by many messages would skip the rest of them on the next pull.
   const allMessages = getState().messages
-    .filter(m => !m.deleted && m.server_id === serverId)
+    // Keep signed deletion tombstones in the replicated log. Omitting them lets
+    // an old-but-valid provider copy resurrect content after a fresh install.
+    .filter(m => m.server_id === serverId)
     .slice()
     .sort((a, b) =>
       String(a.created_at ?? '').localeCompare(String(b.created_at ?? '')) ||
@@ -780,6 +946,54 @@ export function handleSyncRequest(operation: string, payload: Record<string, unk
     ? Math.min(Math.floor(requestedLimit), retention)
     : Math.min(50, retention);
 
+  // Provider-neutral availability exchange. Coverage is only a hint; the
+  // requester verifies every fetched author proof independently.
+  if (operation === 'sync.coverage') {
+    if (!alreadyMember || !pullChannelId) return { ok: false, error: 'member_required' };
+    const scoped = boundaried.filter(m => m.scope_id === pullChannelId).slice(-retention);
+    const older = before
+      ? scoped.filter(m => {
+        const ts = String(m.created_at ?? '');
+        return ts < before || (ts === before && String(m.id) < beforeId);
+      })
+      : scoped;
+    const portableOlder = older
+      .filter(message => verifySignedHistoryMessage(message).ok);
+    const portable = portableOlder.slice(-Math.min(pageLimit, 200));
+    return {
+      ok: true,
+      entries: portable.map(message => ({
+        id: message.id,
+        created_at: message.created_at ?? '',
+        content_hash: message.author_proof!.content_hash,
+        revision: message.author_revision ?? 0,
+      })),
+      has_more: portableOlder.length > portable.length,
+    };
+  }
+
+  // Fetch exact content-addressed records assigned to this provider by the
+  // requester's round-robin planner. Membership, retention, and join boundaries
+  // are re-applied here; an inventory claim is never a read capability.
+  if (operation === 'sync.fetch') {
+    if (!alreadyMember || !pullChannelId) return { ok: false, error: 'member_required' };
+    const ids = Array.isArray(payload.message_ids)
+      ? payload.message_ids.filter((id): id is string =>
+        typeof id === 'string' && id.length > 0 && id.length <= 256 && !hasControlCharacters(id),
+      ).slice(0, 100)
+      : [];
+    if (!ids.length || ids.length !== (payload.message_ids as unknown[] | undefined)?.length) {
+      return { ok: false, error: 'invalid_message_ids' };
+    }
+    const requested = new Set(ids);
+    const messages = boundaried
+      .filter(message => message.scope_id === pullChannelId)
+      .slice(-retention)
+      .filter(message => requested.has(message.id))
+      .filter(message => verifySignedHistoryMessage(message).ok);
+    return { ok: true, messages };
+  }
+
   let messages: XoreinRuntimeMessage[];
   let hasMore = false;
   if (operation === 'sync.pull' && before) {
@@ -816,8 +1030,29 @@ export function handleSyncRequest(operation: string, payload: Record<string, unk
   // member_since is deliberately INCLUDED: it is the owner-authoritative join-boundary
   // map every member needs to enforce the pre-join history policy when they serve
   // sync.pull themselves (join-time metadata, not secret capability material).
-  const { invite_secret: _omit, ...serverForJoiner } = current;
+  const {
+    invite_secret: _omit,
+    admission_capability: _omitAdmission,
+    ...serverForJoiner
+  } = current;
   return { ok: true, server: serverForJoiner, messages, addresses, has_more: hasMore };
+}
+
+/**
+ * Async sync-family dispatcher. Blob fragment operations touch IndexedDB and
+ * therefore cannot use the legacy synchronous server-history responder.
+ */
+export async function handleSyncOperationRequest(
+  operation: string,
+  payload: Record<string, unknown>,
+  remotePeerId: string,
+): Promise<Record<string, unknown>> {
+  if (operation === 'sync.blob.store'
+    || operation === 'sync.blob.inventory'
+    || operation === 'sync.blob.fetch') {
+    return handleBlobSyncRequest(operation, payload, remotePeerId);
+  }
+  return handleSyncRequest(operation, payload, remotePeerId);
 }
 
 /**
@@ -923,7 +1158,7 @@ function parseRequestPayload(req: PeerStreamRequest): Record<string, unknown> {
 
 function makeRequestHandler(
   peerSync: PeerSync,
-  handle: (operation: string, payload: Record<string, unknown>, remotePeerId: string) => Record<string, unknown>,
+  handle: (operation: string, payload: Record<string, unknown>, remotePeerId: string) => unknown | Promise<unknown>,
 ) {
   return async (stream: InboundFamilyStream, connection: { remotePeer: { toString(): string }; remoteAddr: { toString(): string } }) => {
     try {
@@ -933,14 +1168,130 @@ function makeRequestHandler(
 
       // Streams are persistent: serve every framed request the peer sends
       // (legacy one-shot peers half-close after one; the loop then drains).
-      await serveFamilyStream(stream, (req) => {
-        let result: Record<string, unknown>;
-        try { result = handle(req.operation, parseRequestPayload(req), remotePeerId); }
+      await serveFamilyStream(stream, async (req) => {
+        let result: unknown;
+        try { result = await handle(req.operation, parseRequestPayload(req), remotePeerId); }
         catch { result = { ok: false, error: 'handler_error' }; }
         return frameMessage(encodePeerStreamResponse({ payload: enc.encode(JSON.stringify(result)), requestId: req.requestId }));
       });
     } catch { /* non-fatal */ }
   };
+}
+
+export async function dispatchAuthenticatedOperation(
+  inner: RoutedInnerRequest,
+  originPeerId: string,
+  peerSync: PeerSync,
+): Promise<unknown> {
+  if (inner.protocol === PROTOCOLS.peer) {
+    if (inner.operation === 'peer.route') return { ok: false, error: 'nested_route' };
+    return handlePeerRequest(inner.operation, inner.payload, originPeerId, peerSync);
+  }
+  if (inner.protocol === PROTOCOLS.sync) {
+    return handleSyncOperationRequest(inner.operation, inner.payload, originPeerId);
+  }
+  if (inner.protocol === PROTOCOLS.seal && inner.operation === 'seal.bundle') {
+    return handleSealBundle();
+  }
+  if (inner.protocol === PROTOCOLS.chat) {
+    handleChatOp(inner.payload, originPeerId, inner.operation);
+    return { ok: true };
+  }
+  if (inner.protocol === PROTOCOLS.friends) {
+    handleFriendOp(inner.payload, originPeerId, inner.operation);
+    return { ok: true };
+  }
+  if (inner.protocol === PROTOCOLS.presence) {
+    handlePresenceUpdate(inner.payload, originPeerId, inner.operation);
+    return { ok: true };
+  }
+  if (inner.protocol === PROTOCOLS.notify) {
+    handleNotifyPush(inner.payload, originPeerId, inner.operation);
+    return { ok: true };
+  }
+  if (inner.protocol === PROTOCOLS.recovery) {
+    if (inner.operation === RECOVERY_OPS.store) {
+      return handleRecoveryStore(inner.payload, originPeerId);
+    }
+    if (inner.operation === RECOVERY_OPS.storeChunk) {
+      return handleRecoveryStoreChunk(inner.payload, originPeerId);
+    }
+    if (inner.operation === RECOVERY_OPS.request) {
+      return handleRecoveryRequest(inner.payload, originPeerId);
+    }
+    if (inner.operation === RECOVERY_OPS.deliver) {
+      return handleRecoveryDeliver(inner.payload, originPeerId);
+    }
+    if (inner.operation === RECOVERY_OPS.deliverChunk) {
+      return handleRecoveryDeliverChunk(inner.payload, originPeerId);
+    }
+    return { ok: false, error: 'unknown_recovery_operation' };
+  }
+  return { ok: false, error: 'route_protocol_not_allowed' };
+}
+
+async function handlePeerRequest(
+  operation: string,
+  payload: Record<string, unknown>,
+  remotePeerId: string,
+  peerSync: PeerSync,
+): Promise<unknown> {
+  if (operation === 'peer.mailbox.store'
+    || operation === 'peer.mailbox.drain'
+    || operation === 'peer.inbox.store'
+    || operation === 'peer.inbox.drain') {
+    return handlePeerMailboxRequest(operation, payload, remotePeerId);
+  }
+  if (operation === 'peer.rendezvous.mesh.register'
+    || operation === 'peer.rendezvous.mesh.discover') {
+    return handlePeerRendezvousRequest(operation, payload, remotePeerId);
+  }
+  if (operation === 'peer.info') {
+    const state = getState();
+    return {
+      peer_id: state.identity?.peer_id ?? '',
+      role: 'client',
+      addresses: peerSync.localCircuitAddrs(),
+      capabilities: [
+        'cap.peer.transport',
+        'cap.chat',
+        'cap.sync',
+        'cap.mailbox.peer',
+        'cap.inbox.peer',
+        'cap.rendezvous.peer',
+        'cap.blob.peer',
+      ],
+    };
+  }
+  if (operation === 'peer.exchange') {
+    const rawKnown = Array.isArray(payload.known_peer_ids) ? payload.known_peer_ids : [];
+    if (rawKnown.length > 200 || rawKnown.some(id =>
+      typeof id !== 'string' || !id || id.length > 256 || hasControlCharacters(id),
+    )) return [];
+    return knownSignedPeerRecords(new Set(rawKnown as string[]));
+  }
+  if (operation === 'peer.route') {
+    const request = payload as unknown as RoutedRequest;
+    const localPeerId = getState().identity?.peer_id ?? '';
+    if (!localPeerId
+      || !verifyRoutedRequest(request)
+      || request.path.at(-1) !== remotePeerId
+      || request.path.includes(localPeerId)
+      || !claimRoutedRequest(request)) {
+      return { ok: false, error: 'invalid_route' };
+    }
+    if (request.target_peer_id !== localPeerId) {
+      return peerSync.forwardRoutedRequest(request, remotePeerId);
+    }
+    const inner = openRoutedRequest(request);
+    if (!inner) return { ok: false, error: 'route_decrypt_failed' };
+    const result = await dispatchAuthenticatedOperation(inner, request.origin_peer_id, peerSync);
+    const response = sealRoutedResponse(request, result);
+    return response
+      ? { ok: true, response_ciphertext: response }
+      : { ok: false, error: 'route_response_failed' };
+  }
+  return { ok: false, error: 'unsupported_operation' };
 }
 
 
@@ -977,6 +1328,16 @@ export async function registerInboundHandlers(
   const opts = { runOnLimitedConnection: true };
 
   await node.handle(
+    PROTOCOLS.peer,
+    makeRequestHandler(
+      peerSync,
+      (operation, payload, remotePeerId) =>
+        handlePeerRequest(operation, payload, remotePeerId, peerSync),
+    ) as Parameters<typeof node.handle>[1],
+    opts,
+  );
+
+  await node.handle(
     PROTOCOLS.chat,
     makeHandler(localPeerId, peerSync, handleChatOp) as Parameters<typeof node.handle>[1],
     opts,
@@ -997,7 +1358,7 @@ export async function registerInboundHandlers(
   // Server sync: serve manifest/channels/history to joiners and accept members.
   await node.handle(
     PROTOCOLS.sync,
-    makeRequestHandler(peerSync, handleSyncRequest) as Parameters<typeof node.handle>[1],
+    makeRequestHandler(peerSync, handleSyncOperationRequest) as Parameters<typeof node.handle>[1],
     opts,
   );
 

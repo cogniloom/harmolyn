@@ -7,11 +7,28 @@ import type { Libp2p } from 'libp2p';
 import { callFamily } from '../families/peerstream.js';
 import { MAX_FRAME_BYTES } from '../families/peerstream.js';
 import { PROTOCOLS } from '../families/families.js';
-import { RELAY_MULTIADDR } from '../transport/node.js';
+import {
+  isTrustedPeerCircuitMultiaddr,
+  isTrustedRelayMultiaddr,
+  RELAY_MULTIADDR,
+} from '../transport/node.js';
 import { getState } from '../state/store.js';
 import { resolveFeatureFlag } from '../../config/featureFlags.js';
 import type { PrekeyBundle } from '../seal/bundle.js';
-import { hasControlCharacters } from '../security/limits.js';
+import type { XoreinRuntimeMessage } from '../../types.js';
+import type { HistoryCoverage } from './swarmHistory.js';
+import type { SignedPeerRecord } from './peerDiscovery.js';
+import {
+  decryptHistoryReplica,
+  encryptHistoryReplica,
+  historyReplicaNamespace,
+  type EncryptedHistoryReplica,
+} from './replica.js';
+import {
+  createRoutedRequest,
+  openRoutedResponse,
+  type RoutedRequest,
+} from './routedRequest.js';
 
 // Derive the expected circuit address for a peer using the standard relay.
 function circuitAddr(peerId: string, relayMultiaddr = RELAY_MULTIADDR): string {
@@ -31,11 +48,7 @@ function isWebrtcCircuit(addr: string): boolean {
 }
 
 function isPeerCircuitAddress(addr: unknown, peerId: string): addr is string {
-  return typeof addr === 'string'
-    && addr.length <= 1024
-    && !hasControlCharacters(addr)
-    && addr.includes('/p2p-circuit')
-    && addr.endsWith(`/p2p/${peerId}`);
+  return isTrustedPeerCircuitMultiaddr(addr, peerId);
 }
 
 /**
@@ -65,13 +78,104 @@ export function selectPeerAddr(
   }
   const anyCircuit = advertised.find(a => isPeerCircuitAddress(a, peerId));
   if (anyCircuit) return anyCircuit;
-  return circuitAddr(peerId, relayMultiaddr);
+  return circuitAddr(peerId, isTrustedRelayMultiaddr(relayMultiaddr) ? relayMultiaddr : RELAY_MULTIADDR);
 }
 
 function jsonBytes(obj: unknown): Uint8Array {
   const bytes = new TextEncoder().encode(JSON.stringify(obj));
   if (bytes.length > MAX_FRAME_BYTES) throw new RangeError('peer sync payload exceeds frame limit');
   return bytes;
+}
+
+/**
+ * Resolve as soon as one bounded route branch produces a usable answer.
+ *
+ * Route fan-out used to be sequential. One silent neighbor could therefore
+ * consume the whole route TTL before a healthy next hop was even asked. All
+ * branches are already capped at four and carry the same opaque, signed route,
+ * so racing them is bounded and does not expose the inner operation.
+ */
+function firstNonNull<T>(attempts: Array<Promise<T | null>>): Promise<T | null> {
+  if (!attempts.length) return Promise.resolve(null);
+  return new Promise(resolve => {
+    let remaining = attempts.length;
+    let settled = false;
+    for (const attempt of attempts) {
+      void attempt.then(value => {
+        if (settled) return;
+        if (value !== null) {
+          settled = true;
+          resolve(value);
+          return;
+        }
+        remaining--;
+        if (remaining === 0) {
+          settled = true;
+          resolve(null);
+        }
+      }, () => {
+        if (settled) return;
+        remaining--;
+        if (remaining === 0) {
+          settled = true;
+          resolve(null);
+        }
+      });
+    }
+  });
+}
+
+function replicaDiversityKey(addresses: string[]): string {
+  for (const address of addresses) {
+    const ip4 = address.match(/\/ip4\/(\d+)\.(\d+)\./);
+    if (ip4) return `ip4:${ip4[1]}.${ip4[2]}`;
+    const ip6 = address.match(/\/ip6\/([^/]+)/);
+    if (ip6) return `ip6:${ip6[1].split(':').slice(0, 3).join(':')}`;
+    const dns = address.match(/\/dns(?:4|6)?\/([^/]+)/);
+    if (dns) {
+      const labels = dns[1].toLowerCase().split('.');
+      return `dns:${labels.slice(-2).join('.')}`;
+    }
+  }
+  return 'unknown';
+}
+
+/**
+ * Deterministically spread replicas across independently addressed nodes.
+ * Archivists win ties; a message-id rotation prevents every record choosing
+ * the same first three machines when many nodes are available.
+ */
+export function selectReplicaTargets(
+  messageId: string,
+  maxAttempts = 8,
+): string[] {
+  const candidates = Object.values(getState().peers)
+    .filter(peer => peer.role === 'archivist' || peer.role === 'relay')
+    .sort((a, b) => {
+      const tierA = a.role === 'archivist' ? 0 : 1;
+      const tierB = b.role === 'archivist' ? 0 : 1;
+      return tierA - tierB || a.peer_id.localeCompare(b.peer_id);
+    });
+  if (!candidates.length) return [];
+  let seed = 0;
+  for (let i = 0; i < messageId.length; i++) seed = ((seed * 33) ^ messageId.charCodeAt(i)) >>> 0;
+  const offset = seed % candidates.length;
+  const rotated = [...candidates.slice(offset), ...candidates.slice(0, offset)];
+  const distinct: typeof rotated = [];
+  const duplicateDomains: typeof rotated = [];
+  const seenDomains = new Set<string>();
+  for (const peer of rotated) {
+    const key = replicaDiversityKey(peer.addresses ?? []);
+    if (key !== 'unknown' && !seenDomains.has(key)) {
+      seenDomains.add(key);
+      distinct.push(peer);
+    } else {
+      duplicateDomains.push(peer);
+    }
+  }
+  return [...distinct, ...duplicateDomains]
+    .slice(0, Math.max(1, Math.min(16, maxAttempts)))
+    .map(peer => peer.peer_id);
 }
 
 // ── PeerSync ───────────────────────────────────────────────────────────────
@@ -83,13 +187,22 @@ export class PeerSync {
   private peerAddrs = new Map<string, string>();
 
   constructor(relayMultiaddr = RELAY_MULTIADDR) {
-    this.relayMultiaddr = relayMultiaddr;
+    this.relayMultiaddr = isTrustedRelayMultiaddr(relayMultiaddr) ? relayMultiaddr : RELAY_MULTIADDR;
   }
 
   setNode(node: Libp2p): void { this.node = node; }
 
   /** Update the default relay used to derive a peer's fallback circuit address. */
-  setRelay(relayMultiaddr: string): void { this.relayMultiaddr = relayMultiaddr; }
+  setRelay(relayMultiaddr: string): void {
+    if (isTrustedRelayMultiaddr(relayMultiaddr)) this.relayMultiaddr = relayMultiaddr;
+  }
+
+  /** PeerID pinned by the currently selected relay multiaddr. */
+  activeRelayPeerId(): string | null {
+    if (!isTrustedRelayMultiaddr(this.relayMultiaddr)) return null;
+    const parts = this.relayMultiaddr.split('/p2p/');
+    return parts.length > 1 ? parts.at(-1) || null : null;
+  }
 
   /** This node's own reachable circuit addresses (which relay(s) we're on). */
   localCircuitAddrs(): string[] {
@@ -121,13 +234,16 @@ export class PeerSync {
       this.node, this.addrOf(peerId), PROTOCOLS.seal, 'seal.bundle',
       new Uint8Array(0), crypto.randomUUID(),
     ).catch(() => null);
-    if (!resp?.payload) return null;
-    try {
+    if (resp?.payload) try {
       const data = JSON.parse(new TextDecoder().decode(resp.payload)) as { ok?: boolean; bundle?: PrekeyBundle };
-      return data?.ok && data.bundle ? data.bundle : null;
+      if (data?.ok && data.bundle) return data.bundle;
     } catch {
-      return null;
+      // Fall through to the encrypted peer-router path.
     }
+    const routed = await this.routeRequest<{ ok?: boolean; bundle?: PrekeyBundle }>(
+      peerId, PROTOCOLS.seal, 'seal.bundle', {},
+    );
+    return routed?.ok && routed.bundle ? routed.bundle : null;
   }
 
   /** Record a peer's actual circuit address (used when they dial us first). */
@@ -165,6 +281,396 @@ export class PeerSync {
     return this.node?.peerId.toString() ?? '';
   }
 
+  private connectedAddress(peerId: string): string | null {
+    if (!this.node) return null;
+    const connection = this.node.getConnections()
+      .find(candidate => candidate.remotePeer?.toString() === peerId);
+    return connection?.remoteAddr?.toString() ?? null;
+  }
+
+  private routeNeighbors(excluded: ReadonlySet<string>): Array<{ peerId: string; address: string }> {
+    if (!this.node) return [];
+    const unique = new Map<string, string>();
+    for (const connection of this.node.getConnections()) {
+      const peerId = connection.remotePeer?.toString();
+      const address = connection.remoteAddr?.toString();
+      if (!peerId || !address || excluded.has(peerId)) continue;
+      const role = getState().peers[peerId]?.role;
+      // Dedicated infrastructure does not run the browser peer-router. Keep
+      // fan-out on ordinary clients that already have live authenticated paths.
+      if (role === 'relay' || role === 'archivist' || role === 'bootstrap') continue;
+      unique.set(peerId, address);
+    }
+    return [...unique].slice(0, 4).map(([peerId, address]) => ({ peerId, address }));
+  }
+
+  private async sendRouteHop(
+    address: string,
+    request: RoutedRequest,
+  ): Promise<{ ok?: boolean; response_ciphertext?: string; error?: string } | null> {
+    if (!this.node) return null;
+    try {
+      const response = await callFamily(
+        this.node,
+        address,
+        PROTOCOLS.peer,
+        'peer.route',
+        jsonBytes(request),
+        crypto.randomUUID(),
+      );
+      if (!response?.payload) return null;
+      const decoded = JSON.parse(new TextDecoder().decode(response.payload)) as unknown;
+      return decoded && typeof decoded === 'object' && !Array.isArray(decoded)
+        ? decoded as { ok?: boolean; response_ciphertext?: string; error?: string }
+        : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Route an operation across the live peer graph when the target is not
+   * directly dialable. The inner request and response remain pairwise encrypted.
+   */
+  async routeRequest<T = Record<string, unknown>>(
+    targetPeerId: string,
+    protocol: string,
+    operation: string,
+    payload: Record<string, unknown>,
+  ): Promise<T | null> {
+    if (!this.node || !targetPeerId || targetPeerId === this.localPeerId) return null;
+    const request = createRoutedRequest(targetPeerId, { protocol, operation, payload });
+    if (!request) return null;
+    const excluded = new Set([this.localPeerId]);
+    const direct = this.connectedAddress(targetPeerId);
+    const neighbors = [
+      ...(direct ? [{ peerId: targetPeerId, address: direct }] : []),
+      ...this.routeNeighbors(excluded).filter(peer => peer.peerId !== targetPeerId),
+    ].slice(0, 4);
+    return firstNonNull(neighbors.map(async neighbor => {
+      const response = await this.sendRouteHop(neighbor.address, request);
+      if (!response?.ok || typeof response.response_ciphertext !== 'string') return null;
+      const opened = openRoutedResponse<T>(request, response.response_ciphertext);
+      return opened;
+    }));
+  }
+
+  /**
+   * Continue a verified route received from `previousPeerId`. Called only by
+   * the inbound peer.route handler after signature/replay/path validation.
+   */
+  async forwardRoutedRequest(
+    request: RoutedRequest,
+    previousPeerId: string,
+  ): Promise<{ ok?: boolean; response_ciphertext?: string; error?: string }> {
+    if (!this.node || request.path.length >= request.max_hops) {
+      return { ok: false, error: 'hop_limit' };
+    }
+    const forwarded: RoutedRequest = {
+      ...request,
+      path: [...request.path, this.localPeerId],
+    };
+    const excluded = new Set([...forwarded.path, previousPeerId]);
+    const direct = this.connectedAddress(request.target_peer_id);
+    const neighbors = [
+      ...(direct ? [{ peerId: request.target_peer_id, address: direct }] : []),
+      ...this.routeNeighbors(excluded).filter(peer => peer.peerId !== request.target_peer_id),
+    ].slice(0, 4);
+    const response = await firstNonNull(neighbors.map(async neighbor => {
+      const response = await this.sendRouteHop(neighbor.address, forwarded);
+      return response?.ok && typeof response.response_ciphertext === 'string'
+        ? response
+        : null;
+    }));
+    return response ?? { ok: false, error: 'no_route' };
+  }
+
+  /** Gossip signed peer records with a currently reachable peer or node. */
+  async exchangePeersAt(
+    peerAddress: string,
+    knownPeerIds: string[] = [],
+  ): Promise<SignedPeerRecord[] | null> {
+    if (!this.node) return null;
+    try {
+      const resp = await callFamily(
+        this.node,
+        peerAddress,
+        PROTOCOLS.peer,
+        'peer.exchange',
+        jsonBytes({ known_peer_ids: knownPeerIds.slice(0, 200) }),
+        crypto.randomUUID(),
+      );
+      if (!resp?.payload) return null;
+      const decoded = JSON.parse(new TextDecoder().decode(resp.payload)) as unknown;
+      const values = Array.isArray(decoded)
+        ? decoded
+        : decoded && typeof decoded === 'object' && Array.isArray((decoded as { peers?: unknown[] }).peers)
+          ? (decoded as { peers: unknown[] }).peers
+          : null;
+      return values as SignedPeerRecord[] | null;
+    } catch {
+      return null;
+    }
+  }
+
+  async exchangePeersWith(
+    peerId: string,
+    knownPeerIds: string[] = [],
+  ): Promise<SignedPeerRecord[] | null> {
+    if (!peerId || peerId === this.localPeerId) return null;
+    return this.exchangePeersAt(this.addrOf(peerId), knownPeerIds);
+  }
+
+  /**
+   * Store an opaque, blinded-token mailbox body at the active support relay.
+   * The request runs over the existing Noise-authenticated libp2p connection;
+   * no unauthenticated browser HTTP mutation endpoint is involved.
+   */
+  async storeMailboxAtRelay(
+    mailboxToken: string,
+    body: string,
+    deliveryId: string = crypto.randomUUID(),
+  ): Promise<boolean> {
+    if (!this.node || !isTrustedRelayMultiaddr(this.relayMultiaddr)) return false;
+    try {
+      const resp = await callFamily(
+        this.node,
+        this.relayMultiaddr,
+        PROTOCOLS.peer,
+        'peer.relay.store',
+        jsonBytes({
+          mailbox_token: mailboxToken,
+          id: deliveryId,
+          body,
+        }),
+        crypto.randomUUID(),
+      );
+      if (resp.error || !resp.payload) return false;
+      const decoded = JSON.parse(new TextDecoder().decode(resp.payload)) as { queued?: unknown };
+      return decoded.queued === true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Drain opaque mailbox bodies from the active support relay. `null` means
+   * the peer service was unavailable; an empty array is a successful drain.
+   */
+  async drainMailboxAtRelay(mailboxTokens: string[]): Promise<string[] | null> {
+    if (!this.node || !isTrustedRelayMultiaddr(this.relayMultiaddr)) return null;
+    try {
+      const resp = await callFamily(
+        this.node,
+        this.relayMultiaddr,
+        PROTOCOLS.peer,
+        'peer.relay.drain',
+        jsonBytes({ mailbox_tokens: mailboxTokens }),
+        crypto.randomUUID(),
+      );
+      if (resp.error || !resp.payload) return null;
+      const decoded = JSON.parse(new TextDecoder().decode(resp.payload)) as {
+        entries?: Array<{ body?: unknown }>;
+      };
+      if (!Array.isArray(decoded.entries) || decoded.entries.length > 100) return null;
+      const bodies: string[] = [];
+      for (const entry of decoded.entries) {
+        if (typeof entry?.body !== 'string') return null;
+        bodies.push(entry.body);
+      }
+      return bodies;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Store one recipient-addressed sealed packet on the selected support node.
+   * The node validates the daily token against `recipientPeerId`, but cannot
+   * decrypt or forge the packet body.
+   */
+  async storeInboxAtRelay(
+    recipientPeerId: string,
+    inboxToken: string,
+    body: string,
+    deliveryId: string = crypto.randomUUID(),
+  ): Promise<boolean> {
+    if (!this.node || !isTrustedRelayMultiaddr(this.relayMultiaddr)) return false;
+    try {
+      const resp = await callFamily(
+        this.node,
+        this.relayMultiaddr,
+        PROTOCOLS.peer,
+        'peer.inbox.store',
+        jsonBytes({
+          recipient_peer_id: recipientPeerId,
+          token: inboxToken,
+          id: deliveryId,
+          body,
+        }),
+        crypto.randomUUID(),
+      );
+      if (resp.error || !resp.payload) return false;
+      const decoded = JSON.parse(new TextDecoder().decode(resp.payload)) as {
+        ok?: unknown;
+        queued?: unknown;
+      };
+      return decoded.queued === true && decoded.ok !== false;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Read recipient-inbox packets from the selected node, optionally
+   * acknowledging packets that were already applied locally. Requests stay
+   * split into four-token batches for compatibility with older Xorein relays.
+   */
+  async drainInboxAtRelay(
+    inboxTokens: string[],
+    acknowledgeIds: string[] = [],
+  ): Promise<string[] | null> {
+    if (!this.node || !isTrustedRelayMultiaddr(this.relayMultiaddr)) return null;
+    const bodies: string[] = [];
+    let answered = false;
+    const ackBatches = acknowledgeIds.length > 0
+      ? Array.from(
+        { length: Math.ceil(acknowledgeIds.length / 64) },
+        (_, index) => acknowledgeIds.slice(index * 64, (index + 1) * 64),
+      )
+      : [[]];
+    for (let offset = 0; offset < inboxTokens.length; offset += 4) {
+      for (const ackBatch of ackBatches) {
+        try {
+          const resp = await callFamily(
+            this.node,
+            this.relayMultiaddr,
+            PROTOCOLS.peer,
+            'peer.inbox.drain',
+            jsonBytes({
+              tokens: inboxTokens.slice(offset, offset + 4),
+              ...(ackBatch.length > 0 ? { acknowledge_ids: ackBatch } : {}),
+            }),
+            crypto.randomUUID(),
+          );
+          if (resp.error || !resp.payload) continue;
+          const decoded = JSON.parse(new TextDecoder().decode(resp.payload)) as {
+            entries?: Array<{ body?: unknown }>;
+          };
+          if (!Array.isArray(decoded.entries) || decoded.entries.length > 100) continue;
+          const batch: string[] = [];
+          for (const entry of decoded.entries) {
+            if (typeof entry?.body !== 'string') {
+              batch.length = 0;
+              break;
+            }
+            batch.push(entry.body);
+          }
+          answered = true;
+          bodies.push(...batch);
+        } catch {
+          // Try the remaining token windows; another provider may still answer.
+        }
+      }
+    }
+    return answered ? bodies : null;
+  }
+
+  /**
+   * Publish our reachable addresses under a member-secret rendezvous namespace.
+   * Xorein binds the registration to the Noise-authenticated local PeerID.
+   */
+  async registerRendezvousAtRelay(
+    namespace: string,
+    addrs: string[],
+    ttlSeconds = 7200,
+  ): Promise<boolean> {
+    if (!this.node || !isTrustedRelayMultiaddr(this.relayMultiaddr)) return false;
+    try {
+      const resp = await callFamily(
+        this.node,
+        this.relayMultiaddr,
+        PROTOCOLS.peer,
+        'peer.rendezvous.register',
+        jsonBytes({ namespace, addrs, ttl_seconds: ttlSeconds }),
+        crypto.randomUUID(),
+      );
+      if (resp.error || !resp.payload) return false;
+      const decoded = JSON.parse(new TextDecoder().decode(resp.payload)) as { ok?: unknown };
+      return decoded.ok === true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Discover reachable members through the authenticated relay protocol.
+   * `null` means this relay does not provide rendezvous.
+   */
+  async discoverRendezvousAtRelay(
+    namespace: string,
+    limit = 50,
+  ): Promise<Array<{ peer_id: string; addrs: string[]; ttl_remaining_seconds: number }> | null> {
+    if (!this.node || !isTrustedRelayMultiaddr(this.relayMultiaddr)) return null;
+    try {
+      const resp = await callFamily(
+        this.node,
+        this.relayMultiaddr,
+        PROTOCOLS.peer,
+        'peer.rendezvous.discover',
+        jsonBytes({ namespace, limit }),
+        crypto.randomUUID(),
+      );
+      if (resp.error || !resp.payload) return null;
+      const decoded = JSON.parse(new TextDecoder().decode(resp.payload)) as { peers?: unknown };
+      if (!Array.isArray(decoded.peers) || decoded.peers.length > 200) return null;
+      const peers: Array<{ peer_id: string; addrs: string[]; ttl_remaining_seconds: number }> = [];
+      for (const value of decoded.peers) {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+        const peer = value as { peer_id?: unknown; addrs?: unknown; ttl_remaining_seconds?: unknown };
+        if (typeof peer.peer_id !== 'string'
+          || !Array.isArray(peer.addrs)
+          || peer.addrs.some(address => typeof address !== 'string')
+          || typeof peer.ttl_remaining_seconds !== 'number') return null;
+        peers.push({
+          peer_id: peer.peer_id,
+          addrs: peer.addrs as string[],
+          ttl_remaining_seconds: peer.ttl_remaining_seconds,
+        });
+      }
+      return peers;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Authenticate a candidate address and learn its current role/capabilities. */
+  async peerInfoAt(peerAddress: string): Promise<{
+    peer_id?: string;
+    role?: string;
+    addresses?: string[];
+    capabilities?: string[];
+  } | null> {
+    if (!this.node) return null;
+    try {
+      const resp = await callFamily(
+        this.node,
+        peerAddress,
+        PROTOCOLS.peer,
+        'peer.info',
+        new Uint8Array(0),
+        crypto.randomUUID(),
+      );
+      if (!resp?.payload) return null;
+      const decoded = JSON.parse(new TextDecoder().decode(resp.payload)) as unknown;
+      return decoded && typeof decoded === 'object' && !Array.isArray(decoded)
+        ? decoded as { peer_id?: string; role?: string; addresses?: string[]; capabilities?: string[] }
+        : null;
+    } catch {
+      return null;
+    }
+  }
+
   // ── Server join (pull manifest/channels/history from the owner) ─────────
 
   /**
@@ -179,28 +685,35 @@ export class PeerSync {
     inviteToken?: string,
   ): Promise<{ ok?: boolean; error?: string; server?: unknown; messages?: unknown[]; addresses?: string[] } | null> {
     if (!this.node) return null;
-    const resp = await callFamily(
-      this.node,
-      this.addrOf(ownerPeerId),
-      PROTOCOLS.sync,
-      'sync.join',
-      jsonBytes({
-        server_id: serverId,
-        peer_id: this.localPeerId,
-        display_name: displayName,
-        invite_token: inviteToken,
-        // Advertise our reachable circuit addresses so the owner can reach us back
-        // even if we're on a different relay.
-        addresses: this.localCircuitAddrs(),
-      }),
-      crypto.randomUUID(),
-    );
-    if (!resp.payload) return null;
+    const payload = {
+      server_id: serverId,
+      peer_id: this.localPeerId,
+      display_name: displayName,
+      invite_token: inviteToken,
+      // Advertise our reachable circuit addresses so the owner can reach us back
+      // even if we're on a different relay.
+      addresses: this.localCircuitAddrs(),
+    };
     try {
-      return JSON.parse(new TextDecoder().decode(resp.payload)) as { ok?: boolean; error?: string; server?: unknown; messages?: unknown[]; addresses?: string[] };
+      const resp = await callFamily(
+        this.node,
+        this.addrOf(ownerPeerId),
+        PROTOCOLS.sync,
+        'sync.join',
+        jsonBytes(payload),
+        crypto.randomUUID(),
+      );
+      if (resp.payload) {
+        return JSON.parse(new TextDecoder().decode(resp.payload)) as {
+          ok?: boolean; error?: string; server?: unknown; messages?: unknown[]; addresses?: string[];
+        };
+      }
     } catch {
-      return null;
+      // Try the live peer graph below.
     }
+    return this.routeRequest(
+      ownerPeerId, PROTOCOLS.sync, 'sync.join', payload,
+    );
   }
 
   /**
@@ -219,29 +732,213 @@ export class PeerSync {
     inviteToken?: string,
   ): Promise<{ ok?: boolean; messages?: unknown[]; has_more?: boolean } | null> {
     if (!this.node || fromPeerId === this.localPeerId) return null;
+    const payload = {
+      server_id: serverId,
+      channel_id: channelId,
+      peer_id: this.localPeerId,
+      before,
+      before_id: beforeId,
+      limit,
+      invite_token: inviteToken,
+      addresses: this.localCircuitAddrs(),
+    };
     try {
       const resp = await callFamily(
         this.node,
         this.addrOf(fromPeerId),
         PROTOCOLS.sync,
         'sync.pull',
-        jsonBytes({
-          server_id: serverId,
-          channel_id: channelId,
-          peer_id: this.localPeerId,
-          before,
-          before_id: beforeId,
-          limit,
-          invite_token: inviteToken,
-          addresses: this.localCircuitAddrs(),
-        }),
+        jsonBytes(payload),
         crypto.randomUUID(),
       );
       if (!resp?.payload) return null;
       return JSON.parse(new TextDecoder().decode(resp.payload)) as { ok?: boolean; messages?: unknown[]; has_more?: boolean };
     } catch {
-      return null;
+      return this.routeRequest(fromPeerId, PROTOCOLS.sync, 'sync.pull', payload);
     }
+  }
+
+  /** Ask one member/node which signed records it can serve for this page. */
+  async historyCoverage(
+    fromPeerId: string,
+    serverId: string,
+    channelId: string,
+    before: string,
+    beforeId: string,
+    limit: number,
+  ): Promise<HistoryCoverage | null> {
+    if (!this.node || fromPeerId === this.localPeerId) return null;
+    try {
+      const role = getState().peers[fromPeerId]?.role;
+      if (role === 'relay' || role === 'archivist') {
+        const namespace = historyReplicaNamespace(serverId, channelId);
+        if (!namespace) return null;
+        const resp = await callFamily(
+          this.node,
+          this.addrOf(fromPeerId),
+          PROTOCOLS.sync,
+          'sync.replica.coverage',
+          jsonBytes({ namespace, before, before_id: beforeId, limit }),
+          crypto.randomUUID(),
+        );
+        if (!resp?.payload) return null;
+        const data = JSON.parse(new TextDecoder().decode(resp.payload)) as HistoryCoverage;
+        return data.ok && Array.isArray(data.entries) ? data : null;
+      }
+      const payload = {
+        server_id: serverId,
+        channel_id: channelId,
+        before,
+        before_id: beforeId,
+        limit,
+        addresses: this.localCircuitAddrs(),
+      };
+      const resp = await callFamily(
+        this.node,
+        this.addrOf(fromPeerId),
+        PROTOCOLS.sync,
+        'sync.coverage',
+        jsonBytes(payload),
+        crypto.randomUUID(),
+      );
+      if (!resp?.payload) return null;
+      return JSON.parse(new TextDecoder().decode(resp.payload)) as HistoryCoverage;
+    } catch {
+      const role = getState().peers[fromPeerId]?.role;
+      if (role === 'relay' || role === 'archivist') return null;
+      return this.routeRequest(fromPeerId, PROTOCOLS.sync, 'sync.coverage', {
+        server_id: serverId,
+        channel_id: channelId,
+        before,
+        before_id: beforeId,
+        limit,
+        addresses: this.localCircuitAddrs(),
+      });
+    }
+  }
+
+  /** Fetch the exact IDs assigned to this provider by the swarm scheduler. */
+  async fetchHistoryRecords(
+    fromPeerId: string,
+    serverId: string,
+    channelId: string,
+    messageIds: string[],
+  ): Promise<XoreinRuntimeMessage[] | null> {
+    if (!this.node || fromPeerId === this.localPeerId || !messageIds.length) return null;
+    try {
+      const role = getState().peers[fromPeerId]?.role;
+      if (role === 'relay' || role === 'archivist') {
+        const namespace = historyReplicaNamespace(serverId, channelId);
+        if (!namespace) return null;
+        const resp = await callFamily(
+          this.node,
+          this.addrOf(fromPeerId),
+          PROTOCOLS.sync,
+          'sync.replica.fetch',
+          jsonBytes({ namespace, message_ids: messageIds.slice(0, 100) }),
+          crypto.randomUUID(),
+        );
+        if (!resp?.payload) return null;
+        const data = JSON.parse(new TextDecoder().decode(resp.payload)) as {
+          ok?: boolean;
+          replicas?: EncryptedHistoryReplica[];
+        };
+        if (!data.ok || !Array.isArray(data.replicas)) return null;
+        return data.replicas
+          .map(replica => decryptHistoryReplica(replica, serverId, channelId))
+          .filter((message): message is XoreinRuntimeMessage => message !== null);
+      }
+      const resp = await callFamily(
+        this.node,
+        this.addrOf(fromPeerId),
+        PROTOCOLS.sync,
+        'sync.fetch',
+        jsonBytes({
+          server_id: serverId,
+          channel_id: channelId,
+          message_ids: messageIds.slice(0, 100),
+          addresses: this.localCircuitAddrs(),
+        }),
+        crypto.randomUUID(),
+      );
+      if (!resp?.payload) return null;
+      const data = JSON.parse(new TextDecoder().decode(resp.payload)) as {
+        ok?: boolean;
+        messages?: XoreinRuntimeMessage[];
+      };
+      return data.ok && Array.isArray(data.messages) ? data.messages : null;
+    } catch {
+      const role = getState().peers[fromPeerId]?.role;
+      if (role === 'relay' || role === 'archivist') return null;
+      const routed = await this.routeRequest<{
+        ok?: boolean;
+        messages?: XoreinRuntimeMessage[];
+      }>(fromPeerId, PROTOCOLS.sync, 'sync.fetch', {
+        server_id: serverId,
+        channel_id: channelId,
+        message_ids: messageIds.slice(0, 100),
+        addresses: this.localCircuitAddrs(),
+      });
+      return routed?.ok && Array.isArray(routed.messages) ? routed.messages : null;
+    }
+  }
+
+  /**
+   * Store one freshly encrypted author-signed history record on an untrusted
+   * support node. A true result means only "this node acknowledged a copy".
+   */
+  async storeHistoryReplica(
+    nodePeerId: string,
+    message: XoreinRuntimeMessage,
+  ): Promise<boolean> {
+    if (!this.node || nodePeerId === this.localPeerId) return false;
+    const role = getState().peers[nodePeerId]?.role;
+    if (role !== 'relay' && role !== 'archivist') return false;
+    const replica = encryptHistoryReplica(message);
+    if (!replica) return false;
+    try {
+      const resp = await callFamily(
+        this.node,
+        this.addrOf(nodePeerId),
+        PROTOCOLS.sync,
+        'sync.replica.store',
+        jsonBytes({ namespace: replica.namespace, replicas: [replica] }),
+        crypto.randomUUID(),
+      );
+      if (!resp?.payload) return false;
+      const result = JSON.parse(new TextDecoder().decode(resp.payload)) as {
+        ok?: boolean;
+        accepted_count?: number;
+        duplicate_count?: number;
+        rejected_count?: number;
+      };
+      return result.ok === true
+        && (Number(result.accepted_count) + Number(result.duplicate_count)) >= 1
+        && Number(result.rejected_count ?? 0) === 0;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Repair one record toward three node-held copies. Failed nodes are skipped
+   * and later candidates are tried; periodic engine scans retry deficits when
+   * new infrastructure appears.
+   */
+  async repairHistoryReplica(
+    message: XoreinRuntimeMessage,
+    targetCopies = 3,
+  ): Promise<{ acknowledgements: number; attempted: number }> {
+    const target = Math.max(1, Math.min(5, Math.floor(targetCopies)));
+    const candidates = selectReplicaTargets(message.id, Math.max(8, target));
+    let acknowledgements = 0;
+    let attempted = 0;
+    for (const peerId of candidates) {
+      if (acknowledgements >= target) break;
+      attempted++;
+      if (await this.storeHistoryReplica(peerId, message)) acknowledgements++;
+    }
+    return { acknowledgements, attempted };
   }
 
   // ── Outbound: broadcast to scope members ───────────────────────────────
@@ -261,16 +958,25 @@ export class PeerSync {
     const targets = memberPeerIds.filter(p => p !== self);
     const undelivered: string[] = [];
     await Promise.allSettled(
-      targets.map(peerId =>
-        callFamily(
-          this.node!,
-          this.addrOf(peerId),
-          protocol,
-          operation,
-          jsonBytes(payload),
-          crypto.randomUUID(),
-        ).catch(() => { undelivered.push(peerId); }),
-      ),
+      targets.map(async peerId => {
+        try {
+          await callFamily(
+            this.node!,
+            this.addrOf(peerId),
+            protocol,
+            operation,
+            jsonBytes(payload),
+            crypto.randomUUID(),
+          );
+        } catch {
+          const routed = payload && typeof payload === 'object' && !Array.isArray(payload)
+            ? await this.routeRequest<Record<string, unknown>>(
+              peerId, protocol, operation, payload as Record<string, unknown>,
+            )
+            : null;
+          if (routed?.ok !== true) undelivered.push(peerId);
+        }
+      }),
     );
     return undelivered;
   }
@@ -285,7 +991,12 @@ export class PeerSync {
       await callFamily(this.node, this.addrOf(peerId), protocol, operation, jsonBytes(payload), crypto.randomUUID());
       return true;
     } catch {
-      return false;
+      const routed = payload && typeof payload === 'object' && !Array.isArray(payload)
+        ? await this.routeRequest<Record<string, unknown>>(
+          peerId, protocol, operation, payload as Record<string, unknown>,
+        )
+        : null;
+      return routed?.ok === true;
     }
   }
 
@@ -306,7 +1017,9 @@ export class PeerSync {
       if (!resp?.payload) return null;
       return JSON.parse(new TextDecoder().decode(resp.payload)) as T;
     } catch {
-      return null;
+      return payload && typeof payload === 'object' && !Array.isArray(payload)
+        ? this.routeRequest<T>(peerId, protocol, operation, payload as Record<string, unknown>)
+        : null;
     }
   }
 

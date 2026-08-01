@@ -2,6 +2,7 @@ import { safeStorageGet } from '@/lib/browserStorage';
 import { formatDateTime } from '@/lib/locale';
 import { escapeSvgText } from '@/lib/svg';
 import { isSafeAvatarSource } from '@/lib/avatar';
+import { isSafeAttachment } from '@/native/security/limits';
 import type {
   Channel,
   ConnectionState,
@@ -144,40 +145,76 @@ export function deriveConnectionState(
     : activeServerId;
   const scopedServer = runtimeSnapshot.servers?.find((server) => server.id === scopedServerId) ?? null;
   if (!scopedServerId || !scopedServer) {
+    if (runtimeSnapshot.transport_state !== 'connected' && runtimeSnapshot.transport_state !== 'disconnected') {
+      return {
+        status: 'reconnecting',
+        label: 'CONNECTING',
+        detail: 'The local xorein runtime is ready; connecting to the xorein peer network.',
+        // Local-only mutations (including creating a server) remain available;
+        // operations that need another peer surface their own delivery state.
+        canUseConnectivityActions: true,
+      };
+    }
+    if (runtimeSnapshot.transport_state === 'disconnected') {
+      return {
+        status: 'no-relay',
+        label: 'FINDING PEERS',
+        detail: 'No live peer path is available yet. Peer and relay discovery is still running; durable joins and friend requests retry automatically through any path that appears.',
+        canUseConnectivityActions: true,
+      };
+    }
     return {
       status: 'connected',
       label: 'CONNECTED',
-      detail: 'The local xorein runtime is available.',
+      detail: 'Connected to the xorein peer network.',
+      canUseConnectivityActions: true,
+    };
+  }
+
+  const remoteMemberIds = scopedServer.members.filter((peerId) => peerId && peerId !== localPeerId);
+  const isOwner = scopedServer.owner_peer_id === localPeerId;
+  const hasRemoteMembers = remoteMemberIds.length > 0;
+  if (runtimeSnapshot.transport_state !== 'connected' && runtimeSnapshot.transport_state !== 'disconnected') {
+    return {
+      status: 'reconnecting',
+      label: 'CONNECTING',
+      detail: `The local xorein runtime is ready; connecting to ${scopedServer.name}.`,
+      canUseConnectivityActions: isOwner && !hasRemoteMembers,
+    };
+  }
+  if (runtimeSnapshot.transport_state === 'disconnected') {
+    return {
+      status: 'no-relay',
+      label: 'FINDING PEERS',
+      detail: `No live peer path is available for ${scopedServer.name} yet. Discovery and encrypted delivery retries continue automatically.`,
+      // Text and relationship mutations remain durable locally and are replayed
+      // through the first authenticated path that discovery finds.
       canUseConnectivityActions: true,
     };
   }
 
   const knownPeers = new Map((runtimeSnapshot.known_peers ?? []).map((peer) => [peer.peer_id, peer]));
-  const remoteMemberIds = scopedServer.members.filter((peerId) => peerId && peerId !== localPeerId);
   const remotePeers = remoteMemberIds
     .map((peerId) => knownPeers.get(peerId))
     .filter((peer): peer is NonNullable<typeof peer> => Boolean(peer));
   const hasReachablePeer = remotePeers.some((peer) => (peer.addresses?.length ?? 0) > 0)
     || ((knownPeers.get(scopedServer.owner_peer_id)?.addresses?.length ?? 0) > 0);
-  // The always-on bootstrap relay (node.xorein.com) is a reachable path for the
-  // whole network: while we hold a live relay reservation, remote members can be
-  // reached/queued via it, so we must not declare the server no-peer just because
-  // a member hasn't been dialed yet. We key this strictly on relay_addrs, which
-  // exist only while the circuit reservation is live (cleared on disconnect and
-  // never restored stale on reload) — so a genuinely offline client is still
-  // correctly reported as no-peer rather than masked by a persisted bootstrap entry.
+  // A live relay reservation is one reachable path into the peer graph, regardless
+  // of which independently operated relay supplied it. We key this strictly on
+  // relay_addrs, which are cleared on disconnect and never restored stale on reload.
   const hasBootstrapPath = (runtimeSnapshot.relay_addrs?.length ?? 0) > 0;
   // Server owner with no other members yet can still manage the server (set up channels,
   // roles, invites). Only block connectivity actions when there are remote members
   // and none of them are reachable AND there is no bootstrap path to reach them.
-  const isOwner = scopedServer.owner_peer_id === localPeerId;
-  const hasRemoteMembers = remoteMemberIds.length > 0;
   if (!hasReachablePeer && !hasBootstrapPath && !(isOwner && !hasRemoteMembers)) {
     return {
-      status: 'no-peer',
-      label: 'NO PEER',
-      detail: `No reachable peer is currently advertised for ${scopedServer.name}.`,
-      canUseConnectivityActions: false,
+      // transport_state=connected is proof of a live authenticated edge, even
+      // when the destination member is not directly connected or advertised.
+      // Routed requests deliberately ask that peer graph for the next hop.
+      status: 'connected',
+      label: 'P2P ROUTED',
+      detail: `Connected to the peer graph. Requests for ${scopedServer.name} are routed through known peers until a direct path is found.`,
+      canUseConnectivityActions: true,
     };
   }
 
@@ -196,17 +233,20 @@ export function deriveConnectionState(
     || entry.includes('delivery failed on direct and relay paths'));
   if (relayFailureDetected && relayTargets.length === 0) {
     return {
-      status: 'no-relay',
-      label: 'NO RELAY',
-      detail: `No relay path is available for ${scopedServer.name}.`,
-      canUseConnectivityActions: false,
+      // A support-node failure is not a network failure. transport_state is
+      // connected here, so at least one authenticated peer edge remains and
+      // peer.route can continue asking the graph for the destination.
+      status: 'connected',
+      label: 'P2P ONLY',
+      detail: `No support node is currently available for ${scopedServer.name}. Connected peers remain active while relay discovery and storage repair continue in the background.`,
+      canUseConnectivityActions: true,
     };
   }
 
   return {
     status: 'connected',
     label: 'CONNECTED',
-    detail: `Connected to ${scopedServer.name}.`,
+    detail: `Connected to ${scopedServer.name} through the xorein peer network.`,
     canUseConnectivityActions: true,
   };
 }
@@ -371,6 +411,7 @@ function mapServer(
     ownerId: mapPeerIdToUserId(server.owner_peer_id, currentPeerId),
     members,
     description: server.manifest?.description?.trim() || server.description,
+    securityMode: server.channel_security_mode === 'tree' ? 'tree' : 'crowd',
     categories: [
       ...(textChannels.length > 0 ? [{ id: `${server.id}-text`, name: 'TEXT CHANNELS', channels: textChannels }] : []),
       ...(voiceChannels.length > 0 ? [{ id: `${server.id}-voice`, name: 'VOICE CHANNELS', channels: voiceChannels }] : []),
@@ -464,15 +505,19 @@ function normalizeAttachments(value: unknown): XoreinAttachment[] | undefined {
   if (!Array.isArray(value)) return undefined;
   const out: XoreinAttachment[] = [];
   for (const a of value) {
-    if (!a || typeof a !== 'object') continue;
-    const r = a as Record<string, unknown>;
-    if (typeof r.id === 'string' && typeof r.name === 'string' && typeof r.content_type === 'string'
-      && typeof r.size === 'number' && typeof r.key === 'string' && typeof r.nonce === 'string') {
-      out.push({
-        id: r.id, name: r.name, content_type: r.content_type, size: r.size, key: r.key, nonce: r.nonce,
-        ...(typeof r.content_hash === 'string' ? { content_hash: r.content_hash } : {}),
-      });
-    }
+    if (!isSafeAttachment(a)) continue;
+    out.push({
+      ...a,
+      ...(a.swarm ? {
+        swarm: {
+          ...a.swarm,
+          chunk_hashes: [...a.swarm.chunk_hashes],
+          ...(a.swarm.provider_peer_ids
+            ? { provider_peer_ids: [...a.swarm.provider_peer_ids] }
+            : {}),
+        },
+      } : {}),
+    });
   }
   return out.length > 0 ? out : undefined;
 }
@@ -656,10 +701,14 @@ function normalizeInjectedRuntimeSnapshot(value: XoreinRuntimeSnapshot | null): 
   const relayAddrs = normalizeRuntimeStringArray(value.relay_addrs);
   const telemetry = normalizeRuntimeStringArray(value.telemetry);
   const settings = normalizeRuntimeStringMap(value.settings);
+  const transportState = value.transport_state === 'connecting' || value.transport_state === 'connected' || value.transport_state === 'disconnected'
+    ? value.transport_state
+    : undefined;
   return {
     ...(role ? { role } : {}),
     ...(peerId ? { peer_id: peerId } : {}),
     ...(controlEndpoint ? { control_endpoint: controlEndpoint } : {}),
+    ...(transportState ? { transport_state: transportState } : {}),
     ...(identity ? { identity } : {}),
     known_peers: knownPeers ?? [],
     servers: servers ?? [],
@@ -907,7 +956,7 @@ function normalizeRuntimeMessage(value: unknown): XoreinRuntimeMessage {
   const raw = value as unknown as Record<string, unknown>;
   const pinned = typeof raw.pinned === 'boolean' ? raw.pinned : undefined;
   const deliveryStatus = typeof raw.delivery_status === 'string' ? raw.delivery_status : undefined;
-  const securityMode = raw.security_mode === 'seal' || raw.security_mode === 'crowd' || raw.security_mode === 'clear'
+  const securityMode = raw.security_mode === 'seal' || raw.security_mode === 'tree' || raw.security_mode === 'crowd' || raw.security_mode === 'clear'
     ? raw.security_mode
     : undefined;
   const encrypted = typeof raw.encrypted === 'boolean' ? raw.encrypted : undefined;
@@ -1108,13 +1157,9 @@ function normalizeRuntimeServer(server: unknown): XoreinRuntimeServer | undefine
     ...(typeof server.created_at === 'string' && server.created_at.trim() ? { created_at: server.created_at.trim() } : {}),
     ...(typeof server.updated_at === 'string' && server.updated_at.trim() ? { updated_at: server.updated_at.trim() } : {}),
     ...(manifest ? { manifest } : {}),
-    // Preserve the owner-only invite secret so Server Settings can mint a valid
-    // invite-capability token (HMAC(invite_secret, serverId)). Without it the
-    // shareable link carries no token and the owner rejects joins as
-    // `invalid_invite`. A joiner never receives another peer's invite_secret —
-    // the owner strips it before serving the server over sync.join — so this
-    // only surfaces the secret for the owner's own locally-created servers.
-    ...(typeof server.invite_secret === 'string' && server.invite_secret.trim() ? { invite_secret: server.invite_secret.trim() } : {}),
+    ...(server.channel_security_mode === 'tree' || server.channel_security_mode === 'crowd'
+      ? { channel_security_mode: server.channel_security_mode }
+      : {}),
   };
   return normalizedServer;
 }
@@ -1164,12 +1209,21 @@ function normalizeRuntimeManifest(value: unknown): XoreinRuntimeServer['manifest
   const bootstrapAddrs = normalizeRuntimeStringArray(value.bootstrap_addrs);
   const relayAddrs = normalizeRuntimeStringArray(value.relay_addrs);
   const capabilities = normalizeRuntimeStringArray(value.capabilities);
+  const securityMode = value.security_mode === 'tree' || value.security_mode === 'crowd'
+    ? value.security_mode
+    : undefined;
   const historyCoverage = typeof value.history_coverage === 'string' && value.history_coverage.trim() ? value.history_coverage.trim() : undefined;
   const historyRetentionMessages = typeof value.history_retention_messages === 'number' && Number.isFinite(value.history_retention_messages)
     ? value.history_retention_messages
     : undefined;
 
-  if (!name && !description && !ownerAddresses && !bootstrapAddrs && !relayAddrs && !capabilities && !historyCoverage && historyRetentionMessages === undefined) {
+  const joinHistoryMessages = typeof value.join_history_messages === 'number' && Number.isFinite(value.join_history_messages)
+    ? value.join_history_messages
+    : undefined;
+
+  if (!name && !description && !ownerAddresses && !bootstrapAddrs && !relayAddrs && !capabilities
+    && !securityMode && !historyCoverage && historyRetentionMessages === undefined
+    && joinHistoryMessages === undefined) {
     return undefined;
   }
 
@@ -1180,8 +1234,10 @@ function normalizeRuntimeManifest(value: unknown): XoreinRuntimeServer['manifest
     ...(bootstrapAddrs ? { bootstrap_addrs: bootstrapAddrs } : {}),
     ...(relayAddrs ? { relay_addrs: relayAddrs } : {}),
     ...(capabilities ? { capabilities } : {}),
+    ...(securityMode ? { security_mode: securityMode } : {}),
     ...(historyCoverage ? { history_coverage: historyCoverage } : {}),
     ...(historyRetentionMessages !== undefined ? { history_retention_messages: historyRetentionMessages } : {}),
+    ...(joinHistoryMessages !== undefined ? { join_history_messages: joinHistoryMessages } : {}),
   };
 }
 
@@ -1303,6 +1359,9 @@ function normalizeRuntimeFriendRecord(value: unknown): XoreinFriendRecord | unde
     status,
     ...(toPeerId ? { to_peer_id: toPeerId } : {}),
     ...(toPeerAddr ? { to_peer_addr: toPeerAddr } : {}),
+    ...(value.delivery_status === 'pending' || value.delivery_status === 'sent' || value.delivery_status === 'queued' || value.delivery_status === 'failed'
+      ? { delivery_status: value.delivery_status }
+      : {}),
     ...(createdAt ? { created_at: createdAt } : {}),
   };
 }

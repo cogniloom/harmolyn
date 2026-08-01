@@ -123,7 +123,7 @@ export const ServerRail: React.FC<ServerRailProps> = ({ servers, activeServerId,
   }, [servers]);
 
   return (
-    <div className="w-[70px] bg-bg-0 flex flex-col items-center py-5 gap-3 overflow-y-auto overflow-x-hidden no-scrollbar border-r border-white/5 z-20 h-full" role="navigation" aria-label="Servers">
+    <div className="w-[70px] bg-bg-0 flex flex-col items-center py-5 gap-3 overflow-y-auto overflow-x-hidden no-scrollbar border-r border-white/5 z-20 h-full" role="navigation" aria-label="Spaces">
       {/* Home Button */}
       <div className="group relative flex flex-col items-center cursor-pointer">
           <motion.button 
@@ -159,7 +159,7 @@ export const ServerRail: React.FC<ServerRailProps> = ({ servers, activeServerId,
              whileTap={{ scale: 0.95 }}
              data-testid={`server-rail-server-${server.id}`}
             onClick={() => onSelectServer(server.id)}
-            aria-label={`Server: ${server.name}`}
+            aria-label={`Space: ${server.name}`}
             title={server.name}
             className={`w-[44px] h-[44px] rounded-full group-hover:rounded-r1 transition-all duration-300 flex items-center justify-center overflow-hidden bg-white/5 ring-1 ring-white/10 group-hover:ring-primary ${activeServerId === server.id ? 'rounded-r1 ring-2 ring-primary ring-offset-[3px] ring-offset-bg-0' : ''}`}>
             <img referrerPolicy="no-referrer" src={resolveAvatarSrc(server.icon, server.name)} alt={server.name} className="w-full h-full object-cover grayscale-[0.5] group-hover:grayscale-0 transition-all duration-500" />
@@ -191,8 +191,8 @@ export const ServerRail: React.FC<ServerRailProps> = ({ servers, activeServerId,
         data-testid="server-rail-create"
         disabled={!connectivityEnabled}
         onClick={onCreateServer}
-        aria-label="Create Server"
-        title={!connectivityEnabled ? connectionState.detail : 'Create Server'}
+        aria-label="Create Space"
+        title={!connectivityEnabled ? connectionState.detail : 'Create Space'}
         className="w-[44px] h-[44px] rounded-full bg-white/5 flex items-center justify-center text-accent-success/60 hover:text-accent-success hover:bg-accent-success/10 transition-all cursor-pointer border border-white/5 hover:border-accent-success/40 disabled:opacity-40 disabled:cursor-not-allowed">
         <Plus size={20} />
       </motion.button>
@@ -204,8 +204,8 @@ export const ServerRail: React.FC<ServerRailProps> = ({ servers, activeServerId,
         data-testid="server-rail-explore"
         disabled={!connectivityEnabled}
         onClick={() => onSelectServer('explore')}
-        aria-label="Explore Servers"
-        title={!connectivityEnabled ? connectionState.detail : 'Explore Servers'}
+        aria-label="Explore Spaces"
+        title={!connectivityEnabled ? connectionState.detail : 'Explore Spaces'}
         className={`w-[44px] h-[44px] rounded-full flex items-center justify-center transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ${activeServerId === 'explore' ? 'bg-accent-purple text-bg-0' : 'bg-white/5 text-accent-purple/60 hover:text-accent-purple hover:bg-accent-purple/10'}`}>
         <Compass size={20} />
       </motion.button>

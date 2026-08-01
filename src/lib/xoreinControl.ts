@@ -5,6 +5,8 @@ import { parseAbsoluteUrl } from '@/protocol/url';
 import { safeStorageGet, safeStorageRemove, safeStorageSet } from '@/lib/browserStorage';
 import { normalizeRuntimeEndpoint, normalizeRuntimeSettings as normalizeAuthRuntimeSettings } from '@/lib/authPreview';
 import { reportNodeRequestFailure, reportNodeRequestSuccess } from '@/lib/nodeHealth';
+import { notifyXoreinNodeEndpointChanged } from '@/lib/nodeEndpointEvents';
+import { isLoopbackHostname, isPrivateNetworkHostname, isTrustedHttpOrigin } from '@/lib/trustedOrigin';
 import type {
   XoreinRuntimeChannel,
   XoreinRuntimeDM,
@@ -69,6 +71,32 @@ const SESSION_STORAGE_KEYS = [
   'xorein:session-snapshot',
 ] as const;
 
+// The in-memory globals carry the current runtime for the active page. Browser
+// storage is a different trust boundary: it is readable from a copied profile
+// before the identity password is entered. Persist only an empty compatibility
+// shape there; never serialize identity, rosters, message bodies, DMs, or
+// control-plane metadata into localStorage/sessionStorage.
+function emptyPersistedRuntimeMirror(): XoreinRuntimeSnapshot {
+  return {
+    role: undefined,
+    peer_id: undefined,
+    control_endpoint: undefined,
+    identity: undefined,
+    servers: [],
+    joined_server_ids: [],
+    messages: [],
+    dms: [],
+    friends: [],
+    friend_requests: [],
+    reports: [],
+    known_peers: [],
+    voice_sessions: [],
+    relay_addrs: [],
+    presence: {},
+    unread: {},
+  };
+}
+
 /**
  * Control endpoint the app connects to by default on launch. Overridable at
  * build time via VITE_XOREIN_CONTROL_ENDPOINT so the hosted node's subdomain
@@ -87,13 +115,18 @@ function coerceControlEndpointInput(value: string): string {
   if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(trimmed)) {
     return trimmed;
   }
-  return `http://${trimmed}`;
+  // Bare public hostnames use TLS. Bare loopback/private-LAN addresses use HTTP
+  // so "192.168.x.x:port" works for a local Docker/self-hosted node.
+  try {
+    const candidate = new URL(`http://${trimmed}`);
+    return isPrivateNetworkHostname(candidate.hostname) ? `http://${trimmed}` : `https://${trimmed}`;
+  } catch {
+    return `https://${trimmed}`;
+  }
 }
 
 const DEFAULT_CONNECT_TIMEOUT_MS = 6000;
 const DEFAULT_REQUEST_TIMEOUT_MS = 6000;
-const NATIVE_RUNTIME_READY_TIMEOUT_MS = 8000;
-const NATIVE_RUNTIME_READY_POLL_MS = 250;
 
 // How often to re-fetch /v1/state when the live event stream is unavailable
 // (the token-less hosted path), so remote peer changes still surface.
@@ -114,8 +147,7 @@ function parseControlEndpoint(endpoint: string): URL | null {
   if (!parsed) {
     return null;
   }
-  const protocol = parsed.protocol.toLowerCase();
-  if (protocol !== 'http:' && protocol !== 'https:') {
+  if (!isTrustedHttpOrigin(parsed)) {
     return null;
   }
   return parsed;
@@ -126,12 +158,7 @@ function parseTrustedControlEndpoint(endpoint: string): URL | null {
 }
 
 function isLocalControlOrigin(endpointUrl: URL): boolean {
-  const host = endpointUrl.hostname.toLowerCase().replace(/^\[/, '').replace(/\]$/, '');
-  return host === 'localhost'
-    || host === 'tauri.localhost'
-    || host === '::1'
-    || host === '0:0:0:0:0:0:0:1'
-    || /^127(?:\.\d{1,3}){3}$/.test(host);
+  return isLoopbackHostname(endpointUrl.hostname);
 }
 
 function isDefaultPublicEndpointUrl(endpointUrl: URL): boolean {
@@ -170,6 +197,7 @@ export function storePreferredControlEndpoint(value: string): string | null {
     return null;
   }
   safeStorageSet(() => window.localStorage, CONTROL_ENDPOINT_STORAGE_KEY, normalized);
+  notifyXoreinNodeEndpointChanged();
   return normalized;
 }
 
@@ -178,6 +206,7 @@ export function clearPreferredControlEndpoint(): void {
     return;
   }
   safeStorageRemove(() => window.localStorage, CONTROL_ENDPOINT_STORAGE_KEY);
+  notifyXoreinNodeEndpointChanged();
 }
 
 interface ControlApiErrorShape {
@@ -253,14 +282,6 @@ interface NativeRuntimeConfig {
   control_ready?: boolean;
   data_dir?: string;
   settings?: Record<string, string>;
-  sidecar?: {
-    managed?: boolean;
-    running?: boolean;
-    pid?: number | null;
-    data_dir?: string | null;
-    control_endpoint?: string;
-    last_error?: string | null;
-  };
 }
 
 export interface NativeRuntimeBootstrapStatus {
@@ -283,6 +304,40 @@ export class XoreinControlError extends Error {
     this.name = 'XoreinControlError';
     this.code = code;
     this.status = status;
+  }
+}
+
+export type ControlEndpointTestStatus =
+  | 'reachable'
+  | 'unauthorized'
+  | 'forbidden'
+  | 'http-error'
+  | 'unreachable'
+  | 'invalid'
+  | 'invalid-response';
+
+export interface ControlEndpointTestResult {
+  endpoint: string;
+  status: ControlEndpointTestStatus;
+  detail: string;
+}
+
+/**
+ * Identity backup and restore carry the user's passphrase and private key
+ * material. They are valid only through the authenticated local bridge; a
+ * support-node origin, even over HTTPS, must never receive either value.
+ */
+function assertLocalIdentityControlEndpoint(runtimeSnapshot: XoreinRuntimeSnapshot | null): void {
+  const endpoint = normalizeRuntimeEndpoint(runtimeSnapshot?.control_endpoint)
+    || normalizeAuthRuntimeSettings(runtimeSnapshot?.settings)?.control_endpoint
+    || '';
+  const parsed = parseTrustedControlEndpoint(endpoint);
+  if (!parsed || !isLocalControlOrigin(parsed) || !shouldUseNativeControlBridge(endpoint)) {
+    throw new XoreinControlError(
+      'identity_local_only',
+      'Identity backup and restore require the authenticated local xorein runtime.',
+      403,
+    );
   }
 }
 
@@ -342,6 +397,22 @@ export async function createServer(runtimeSnapshot: XoreinRuntimeSnapshot | null
 
 export async function joinServerByInvite(runtimeSnapshot: XoreinRuntimeSnapshot | null, raw: string): Promise<XoreinRuntimeSnapshot> {
   const deeplink = normalizeJoinInput(raw);
+  const endpoint = normalizeRuntimeEndpoint(runtimeSnapshot?.control_endpoint)
+    || normalizeAuthRuntimeSettings(runtimeSnapshot?.settings)?.control_endpoint
+    || '';
+  const endpointUrl = parseTrustedControlEndpoint(endpoint);
+  // Invite capabilities authorize the owner-side P2P join. They must never be
+  // sent to a hosted support node, which has no authority to join a server and
+  // should not become an invite-token collection point. Native clients join
+  // directly through the authenticated owner connection; the local bridge is
+  // retained only for an explicitly local legacy runtime.
+  if (!endpointUrl || !isLocalControlOrigin(endpointUrl) || !shouldUseNativeControlBridge(endpoint)) {
+    throw new XoreinControlError(
+      'p2p_required',
+      'Server joins require the native xorein peer path; no invite capability was sent.',
+      501,
+    );
+  }
   const server = await requestControlApi<ControlServerRecord>(runtimeSnapshot, 'POST', '/v1/servers/join', { deeplink });
   const normalizedServer = normalizeControlServerRecord(server);
   return refreshRuntimeSnapshot(runtimeSnapshot, {
@@ -386,7 +457,7 @@ export async function connectToControlEndpoint(endpoint: string): Promise<Xorein
 
   const normalizedEndpoint = endpointUrl.origin;
   try {
-    const rawState = isLocalControlOrigin(endpointUrl)
+    const rawState = shouldUseNativeControlBridge(normalizedEndpoint)
       ? await requestNativeControlApi<ControlStateSnapshot>(normalizedEndpoint, 'GET', '/v1/state')
       : await fetchControlState(endpointUrl);
     const fetched = normalizeRuntimeSnapshot(rawState);
@@ -399,6 +470,123 @@ export async function connectToControlEndpoint(endpoint: string): Promise<Xorein
   } catch {
     clearPublishedRuntimeStateForEndpoint(normalizedEndpoint);
     return null;
+  }
+}
+
+/**
+ * Probe the endpoint from the same execution context that will use it. A
+ * desktop client probes through its authenticated native bridge; a web/Docker
+ * client probes with browser fetch so CORS and host-network mistakes are
+ * visible instead of being reported as a misleading generic offline state.
+ */
+export async function testControlEndpoint(endpoint: string): Promise<ControlEndpointTestResult> {
+  const trimmed = endpoint.trim();
+  const endpointUrl = parseTrustedControlEndpoint(coerceControlEndpointInput(trimmed));
+  if (!endpointUrl) {
+    return {
+      endpoint: trimmed,
+      status: 'invalid',
+      detail: 'Enter a valid node address. HTTP is supported on loopback/private LANs; Internet nodes must use HTTPS.',
+    };
+  }
+
+  const normalizedEndpoint = endpointUrl.origin;
+  if (shouldUseNativeControlBridge(normalizedEndpoint)) {
+    try {
+      await requestNativeControlApi<ControlStateSnapshot>(normalizedEndpoint, 'GET', '/v1/state');
+      reportNodeRequestSuccess();
+      return {
+        endpoint: normalizedEndpoint,
+        status: 'reachable',
+        detail: 'Node is reachable and authenticated through the local desktop bridge.',
+      };
+    } catch (error) {
+      reportNodeRequestFailure(error);
+      const controlError = error instanceof XoreinControlError ? error : null;
+      if (controlError?.status === 401) {
+        return {
+          endpoint: normalizedEndpoint,
+          status: 'unauthorized',
+          detail: 'The node answered, but the desktop bridge rejected its control credentials.',
+        };
+      }
+      if (controlError?.status === 403) {
+        return {
+          endpoint: normalizedEndpoint,
+          status: 'forbidden',
+          detail: 'The node answered, but the desktop bridge refused this endpoint.',
+        };
+      }
+      return {
+        endpoint: normalizedEndpoint,
+        status: 'unreachable',
+        detail: controlError?.message || 'The desktop bridge could not reach the node.',
+      };
+    }
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), DEFAULT_CONNECT_TIMEOUT_MS);
+  try {
+    const response = await fetch(new URL('/v1/state', endpointUrl), {
+      signal: controller.signal,
+      headers: { Accept: 'application/json' },
+    });
+    reportNodeRequestSuccess();
+
+    if (response.status === 401) {
+      return {
+        endpoint: normalizedEndpoint,
+        status: 'unauthorized',
+        detail: 'The node answered with 401 Unauthorized. A raw xorein control port needs the desktop bridge; a web/Docker client needs a browser-facing support endpoint.',
+      };
+    }
+    if (response.status === 403) {
+      return {
+        endpoint: normalizedEndpoint,
+        status: 'forbidden',
+        detail: 'The node answered with 403 Forbidden. Its browser origin is not allowed.',
+      };
+    }
+    if (!response.ok) {
+      return {
+        endpoint: normalizedEndpoint,
+        status: 'http-error',
+        detail: `The node answered with HTTP ${response.status}${response.statusText ? ` ${response.statusText}` : ''}.`,
+      };
+    }
+
+    try {
+      ensureStructuredJsonResponse<ControlStateSnapshot>(
+        await response.json(),
+        'The node answered, but its response was not structured JSON.',
+      );
+    } catch (error) {
+      return {
+        endpoint: normalizedEndpoint,
+        status: 'invalid-response',
+        detail: error instanceof Error && error.message.trim()
+          ? error.message.trim()
+          : 'The node answered, but its response was not valid JSON.',
+      };
+    }
+
+    return {
+      endpoint: normalizedEndpoint,
+      status: 'reachable',
+      detail: 'Node is reachable from this browser and is ready to provide network addresses.',
+    };
+  } catch (error) {
+    reportNodeRequestFailure(error);
+    return {
+      endpoint: normalizedEndpoint,
+      status: 'unreachable',
+      detail: controller.signal.aborted
+        ? 'The browser timed out waiting for the node.'
+        : 'The browser could not read a response. Check the address and binding, and make sure the node or support bridge allows this web origin (CORS).',
+    };
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -416,7 +604,8 @@ export async function connectToDefaultRuntime(): Promise<XoreinRuntimeSnapshot |
     return null;
   }
   const preferredEndpoint = readPreferredControlEndpoint();
-  // Sidecar removed: no longer probe a native Tauri sidecar for a local endpoint.
+  // The desktop shell only exposes a read-only, authenticated local-runtime
+  // bridge. It never starts or manages a child process.
   const endpoint = preferredEndpoint || DEFAULT_CONTROL_ENDPOINT;
   clearNativeRuntimeGlobals();
   if (!endpoint) {
@@ -649,13 +838,13 @@ export async function getIdentityBackup(
   runtimeSnapshot: XoreinRuntimeSnapshot | null,
   passphrase: string,
 ): Promise<string> {
-  const trimmedPassphrase = passphrase.trim();
-  if (!trimmedPassphrase) {
+  if (!passphrase.trim()) {
     throw new XoreinControlError('invalid_request', 'A backup passphrase is required.');
   }
+  assertLocalIdentityControlEndpoint(runtimeSnapshot);
 
   const result = await requestControlApi<unknown>(
-    runtimeSnapshot, 'POST', '/v1/identities/backup', { passphrase: trimmedPassphrase },
+    runtimeSnapshot, 'POST', '/v1/identities/backup', { passphrase },
   );
   return JSON.stringify(normalizeIdentityBackupDocument(result), null, 2);
 }
@@ -665,14 +854,14 @@ export async function restoreIdentity(
   backup: string,
   passphrase: string,
 ): Promise<XoreinIdentityRecord> {
-  const trimmedPassphrase = passphrase.trim();
-  if (!trimmedPassphrase) {
+  if (!passphrase.trim()) {
     throw new XoreinControlError('invalid_request', 'A backup passphrase is required.');
   }
 
   const backupDocument = parseIdentityBackupDocument(backup);
+  assertLocalIdentityControlEndpoint(runtimeSnapshot);
   const record = await requestControlApi<unknown>(
-    runtimeSnapshot, 'POST', '/v1/identities/restore', { passphrase: trimmedPassphrase, backup: backupDocument },
+    runtimeSnapshot, 'POST', '/v1/identities/restore', { passphrase, backup: backupDocument },
   );
   await refreshRuntimeSnapshot(runtimeSnapshot, undefined);
   return normalizeIdentityRecord(record);
@@ -1288,9 +1477,17 @@ function publishSnapshot(
   for (const key of RUNTIME_GLOBAL_KEYS) {
     (window as unknown as Window & Record<string, unknown>)[key] = runtimeSnapshot;
   }
-  const serializedRuntime = JSON.stringify(runtimeSnapshot);
+  const serializedRuntime = JSON.stringify(emptyPersistedRuntimeMirror());
   for (const key of RUNTIME_STORAGE_KEYS) {
     safeStorageSet(() => window.localStorage, key, serializedRuntime);
+    safeStorageRemove(() => window.sessionStorage, key);
+  }
+
+  for (const key of SESSION_STORAGE_KEYS) {
+    // The active session remains available through the in-memory global only.
+    // Server names/descriptions and selected IDs are still account metadata.
+    safeStorageRemove(() => window.localStorage, key);
+    safeStorageRemove(() => window.sessionStorage, key);
   }
 
   if (session === undefined) {
@@ -1305,11 +1502,6 @@ function publishSnapshot(
   for (const key of SESSION_GLOBAL_KEYS) {
     (window as unknown as Window & Record<string, unknown>)[key] = sessionSnapshot;
   }
-  const serializedSession = JSON.stringify(sessionSnapshot);
-  for (const key of SESSION_STORAGE_KEYS) {
-    safeStorageSet(() => window.localStorage, key, serializedSession);
-  }
-
   window.dispatchEvent(new Event('focus'));
   document.dispatchEvent(new Event('visibilitychange'));
 }
@@ -2618,7 +2810,9 @@ async function requestControlApi<T>(
   }
   const normalizedPath = normalizeControlPath(path);
 
-  // The control API is intentionally open: no bearer token is attached.
+  // Remote support endpoints are origin-authorized and intentionally receive no
+  // local bearer token. Local control requests must go through the Tauri bridge,
+  // which reads the token from the private data directory out of process.
   if (shouldUseNativeControlBridge(endpoint)) {
     return requestNativeControlApi<T>(endpoint, method, normalizedPath, body);
   }
@@ -2693,14 +2887,6 @@ async function requestControlApi<T>(
   }
 }
 
-async function readNativeRuntimeConfig(): Promise<NativeRuntimeConfig> {
-  try {
-    return normalizeNativeRuntimeConfig(await invoke<unknown>('read_xorein_runtime_config'));
-  } catch {
-    return {};
-  }
-}
-
 async function readNativeRuntimeStatus(): Promise<NativeRuntimeConfig> {
   try {
     return normalizeNativeRuntimeConfig(await invoke<unknown>('read_xorein_runtime_status'));
@@ -2719,17 +2905,6 @@ function normalizeNativeRuntimeConfig(value: unknown): NativeRuntimeConfig {
     return {};
   }
 
-  const rawSidecar = isRecord(value.sidecar) ? value.sidecar : null;
-  const sidecar = rawSidecar
-    ? {
-        ...(typeof rawSidecar.managed === 'boolean' ? { managed: rawSidecar.managed } : {}),
-        ...(typeof rawSidecar.running === 'boolean' ? { running: rawSidecar.running } : {}),
-        ...(typeof rawSidecar.pid === 'number' || rawSidecar.pid === null ? { pid: rawSidecar.pid as number | null } : {}),
-        ...(typeof rawSidecar.data_dir === 'string' || rawSidecar.data_dir === null ? { data_dir: rawSidecar.data_dir as string | null } : {}),
-        ...(typeof rawSidecar.control_endpoint === 'string' ? { control_endpoint: rawSidecar.control_endpoint } : {}),
-        ...(typeof rawSidecar.last_error === 'string' || rawSidecar.last_error === null ? { last_error: rawSidecar.last_error as string | null } : {}),
-      }
-    : undefined;
   const settings = normalizeAuthRuntimeSettings(value.settings);
 
   return {
@@ -2737,7 +2912,6 @@ function normalizeNativeRuntimeConfig(value: unknown): NativeRuntimeConfig {
     ...(typeof value.control_ready === 'boolean' ? { control_ready: value.control_ready } : {}),
     ...(typeof value.data_dir === 'string' ? { data_dir: value.data_dir } : {}),
     ...(settings ? { settings } : {}),
-    ...(sidecar ? { sidecar } : {}),
   };
 }
 
@@ -2835,32 +3009,8 @@ function normalizeStringArray(value: unknown): string[] {
   );
 }
 
-async function waitForNativeRuntimeConfig(): Promise<NativeRuntimeConfig> {
-  const initial = await readNativeRuntimeConfig();
-  if (nativeRuntimeEndpointReady(initial) || !initial.sidecar?.running) {
-    return initial;
-  }
-
-  const started = Date.now();
-  let latest = initial;
-  while (Date.now() - started < NATIVE_RUNTIME_READY_TIMEOUT_MS) {
-    await sleep(NATIVE_RUNTIME_READY_POLL_MS);
-    latest = await readNativeRuntimeStatus();
-    if (nativeRuntimeEndpointReady(latest)) {
-      return latest;
-    }
-    if (latest.sidecar && !latest.sidecar.running) {
-      return latest;
-    }
-  }
-  return latest;
-}
-
 function describeNativeRuntimeBootstrapStatus(config: NativeRuntimeConfig): NativeRuntimeBootstrapStatus {
   const endpoint = resolveNativeRuntimeEndpoint(config);
-  const lastError = config.sidecar?.last_error?.trim() ?? '';
-  const running = config.sidecar?.running === true;
-  const managed = config.sidecar?.managed === true;
 
   if (nativeRuntimeEndpointReady(config)) {
     return {
@@ -2870,36 +3020,18 @@ function describeNativeRuntimeBootstrapStatus(config: NativeRuntimeConfig): Nati
     };
   }
 
-  if (lastError) {
-    return {
-      phase: 'failed',
-      message: 'xorein could not start.',
-      detail: lastError,
-    };
-  }
-
-  if (running) {
+  if (endpoint) {
     return {
       phase: 'waiting',
-      message: managed
-        ? 'xorein sidecar is running. Waiting for the control endpoint...'
-        : 'An existing xorein runtime is running. Waiting for it to report readiness...',
-      detail: endpoint || config.sidecar?.control_endpoint || config.data_dir || undefined,
-    };
-  }
-
-  if (managed) {
-    return {
-      phase: 'connecting',
-      message: 'Starting xorein sidecar...',
-      detail: config.data_dir || undefined,
+      message: 'Local xorein runtime is not authenticated yet.',
+      detail: endpoint,
     };
   }
 
   return {
     phase: 'idle',
-    message: 'Checking for a local xorein runtime...',
-    detail: endpoint || config.data_dir || undefined,
+    message: 'No local xorein runtime is configured.',
+    detail: config.data_dir || undefined,
   };
 }
 
@@ -2908,29 +3040,9 @@ function nativeRuntimeEndpointReady(config: NativeRuntimeConfig): boolean {
   return Boolean(endpoint && (config.control_ready === true || isDefaultPublicEndpoint(endpoint)));
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => window.setTimeout(resolve, ms));
-}
-
-function writeNativeRuntimeGlobals(config: NativeRuntimeConfig): void {
-  if (typeof window === 'undefined') {
-    return;
-  }
-  const windowRecord = window as unknown as Window & Record<string, unknown>;
-  clearNativeRuntimeGlobals();
-  const endpoint = resolveNativeRuntimeEndpoint(config);
-  const ready = nativeRuntimeEndpointReady(config);
-  if (endpoint && ready) {
-    windowRecord[CONTROL_ENDPOINT_GLOBAL_KEYS[0]] = endpoint;
-  }
-  for (const key of CONTROL_READY_GLOBAL_KEYS) {
-    windowRecord[key] = ready;
-  }
-}
-
 function shouldUseNativeControlBridge(endpoint: string): boolean {
   const parsed = parseControlEndpoint(endpoint);
-  if (!parsed || !isLocalControlOrigin(parsed)) {
+  if (!parsed || !isLocalControlOrigin(parsed) || !nativeControlBridgeAvailable()) {
     return false;
   }
   const preferredEndpoint = readPreferredControlEndpoint();
@@ -2939,7 +3051,15 @@ function shouldUseNativeControlBridge(endpoint: string): boolean {
     return true;
   }
   const nativeEndpoint = readNativeRuntimeEndpoint();
-  return readControlBridgeReady() && !!nativeEndpoint && parseControlEndpoint(nativeEndpoint)?.origin === parsed.origin;
+  return !!nativeEndpoint && parseControlEndpoint(nativeEndpoint)?.origin === parsed.origin;
+}
+
+function nativeControlBridgeAvailable(): boolean {
+  if (typeof window === 'undefined') {
+    return false;
+  }
+  const windowRecord = window as unknown as Record<string, unknown>;
+  return readControlBridgeReady() || typeof windowRecord.__TAURI_INTERNALS__ === 'object';
 }
 
 function readNativeRuntimeEndpoint(): string {
@@ -2958,7 +3078,6 @@ function readNativeRuntimeEndpoint(): string {
 
 function resolveNativeRuntimeEndpoint(config: NativeRuntimeConfig): string {
   return normalizeRuntimeEndpoint(config.control_endpoint)
-    || normalizeRuntimeEndpoint(config.sidecar?.control_endpoint)
     || normalizeAuthRuntimeSettings(config.settings)?.control_endpoint
     || '';
 }

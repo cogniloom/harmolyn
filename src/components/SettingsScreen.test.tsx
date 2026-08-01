@@ -51,7 +51,7 @@ describe("SettingsScreen About & Legal", () => {
     await u.click(screen.getByRole("button", { name: /about & legal/i }));
 
     const sourceLink = screen.getByRole("link", { name: /source code/i });
-    expect(sourceLink.getAttribute("href")).toBe("https://github.com/xorein/hybrid");
+    expect(sourceLink.getAttribute("href")).toBe("https://github.com/cogniloom/harmolyn");
     expect(screen.getByText(/AGPL-3\.0-or-later/i)).toBeTruthy();
   });
 
@@ -126,37 +126,14 @@ describe("SettingsScreen About & Legal", () => {
     expect(screen.getByRole("button", { name: /flash taskbar/i })).toHaveAttribute("aria-pressed", "true");
   });
 
-  it("rejects unsafe avatar URLs", async () => {
-    const promptSpy = vi.spyOn(window, "prompt");
+  it("keeps avatar editing local-only so profile data cannot trigger remote fetches", async () => {
     const u = userEvent.setup();
     render(<SettingsScreen user={user} onClose={() => {}} />);
 
     await u.click(screen.getByRole("button", { name: /change avatar image/i }));
 
-    const urlField = await screen.findByPlaceholderText(/paste an https/i);
-    await u.clear(urlField);
-    await u.type(urlField, "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg'></svg>");
-    await u.click(screen.getByRole("button", { name: /use url/i }));
-
-    expect(promptSpy).not.toHaveBeenCalled();
-    expect(await screen.findByRole("alert")).toHaveTextContent(/svg is not accepted/i);
-  });
-
-  it("rejects relative avatar URLs instead of resolving them against the page base", async () => {
-    const promptSpy = vi.spyOn(window, "prompt");
-    const u = userEvent.setup();
-    render(<SettingsScreen user={user} onClose={() => {}} />);
-
-    await u.click(screen.getByRole("button", { name: /change avatar image/i }));
-
-    const urlField = await screen.findByPlaceholderText(/paste an https/i);
-    await u.clear(urlField);
-    await u.type(urlField, "/avatars/neo.png");
-    await u.click(screen.getByRole("button", { name: /use url/i }));
-
-    expect(promptSpy).not.toHaveBeenCalled();
-    expect(await screen.findByRole("alert")).toHaveTextContent(/valid https:\/\/ image url/i);
-    expect(screen.getByRole("button", { name: /change avatar image/i }).querySelector('img')).toHaveAttribute('src', user.avatar);
+    expect(screen.queryByPlaceholderText(/paste an https/i)).toBeNull();
+    expect(screen.getByText(/kept as local encrypted profile data/i)).toBeTruthy();
   });
 
   it("opens the avatar editor without touching window.prompt", async () => {
@@ -170,7 +147,8 @@ describe("SettingsScreen About & Legal", () => {
 
     await u.click(screen.getByRole("button", { name: /change avatar image/i }));
 
-    expect(await screen.findByPlaceholderText(/paste an https/i)).toBeTruthy();
+    expect(screen.getByRole("button", { name: /choose image from your device/i })).toBeTruthy();
+    expect(screen.queryByPlaceholderText(/paste an https/i)).toBeNull();
     expect(promptSpy).not.toHaveBeenCalled();
     expect(screen.queryByRole("alert")).toBeNull();
   });
@@ -181,10 +159,7 @@ describe("SettingsScreen About & Legal", () => {
     // so the unavailable state is honest instead of a silent no-op.
     vi.spyOn(clipboardUtils, 'canCopyTextToClipboardSafely').mockReturnValue(false);
 
-    const u = userEvent.setup();
-    render(<SettingsScreen user={user} onClose={() => {}} />);
-
-    await u.click(screen.getByRole("button", { name: /security \(mfa\)/i }));
+    render(<SettingsScreen user={user} initialSection="recovery" onClose={() => {}} />);
 
     const copyButton = screen.getByRole("button", { name: /^copy$/i });
     expect(copyButton).toBeDisabled();

@@ -48,7 +48,7 @@ export interface Message {
    * Used to drive the security badge and per-message lock indicators from what
    * actually happened on the wire, never from the scope type.
    */
-  securityMode?: 'seal' | 'crowd' | 'clear';
+  securityMode?: 'seal' | 'tree' | 'crowd' | 'clear';
   /** True when this message was end-to-end encrypted on the wire. */
   encrypted?: boolean;
 }
@@ -84,6 +84,8 @@ export interface Server {
   banner?: string;
   region?: string;
   description?: string;
+  /** Owner-authored E2EE topology for this server's text channels. */
+  securityMode?: 'tree' | 'crowd';
 }
 
 export interface DirectMessageChannel {
@@ -178,6 +180,8 @@ export interface XoreinOutboxEntry {
   payload: Record<string, unknown>;
   /** The local message this entry delivers, so its status can be updated on drain. */
   message_id?: string;
+  /** The local friend request this entry delivers, so its transport status can be updated on drain. */
+  friend_request_id?: string;
   created_at: string;
   attempts: number;
   /**
@@ -253,14 +257,15 @@ export interface XoreinRuntimeManifest {
   bootstrap_addrs?: string[];
   relay_addrs?: string[];
   capabilities?: string[];
+  /** Advertised channel data-plane mode; authenticated by the owner record. */
+  security_mode?: 'tree' | 'crowd';
   history_coverage?: string;
   history_retention_messages?: number;
   /**
-   * How many recent messages the owner serves to a BRAND-NEW joiner. Default 0
-   * (zero pre-join history — forward secrecy on join): a new member sees only what
-   * is sent after they join. A server may opt into a bounded recent window by
-   * setting this > 0. Existing members re-pulling always receive the full
-   * `history_retention_messages` window.
+   * How many recent messages the owner serves to a brand-new joiner. Newly
+   * created servers default this to the retention window so peers can restore
+   * conversation context without a storage node. A privacy-sensitive server may
+   * lower it to 0. Existing members re-pulling receive the retained window.
    */
   join_history_messages?: number;
 }
@@ -289,14 +294,27 @@ export interface XoreinRuntimeServer {
   /** Maps peer_id → list of role IDs assigned to that member. */
   member_roles?: Record<string, string[]>;
   /**
-   * Base64 of the 32-byte shared Crowd epoch root for this server's channel
+   * Owner-authenticated channel E2EE topology. Tree is used through 50 members;
+   * Crowd is used above that limit. Missing pre-v1 records mean Crowd.
+   */
+  channel_security_mode?: 'tree' | 'crowd';
+  /** Owner-signed channel wire profile. Unknown values require a client update. */
+  channel_crypto_profile?: 'scope-aad-v2';
+  /**
+   * Base64 of the 32-byte shared channel epoch root for this server's channel
    * E2EE. Owner-generated, distributed to members over the authenticated P2P
    * join stream only — never published to the support node. Held in local state
    * to key channel message encryption/decryption.
    */
   crowd_root?: string;
   /**
-   * Monotonic epoch number for `crowd_root`. Bumped every time the owner rotates
+   * Base64url 32-byte member-only secret used to derive opaque, per-channel
+   * replica namespaces. Storage nodes see only the derived namespace and
+   * channel ciphertext; they never receive this secret or plaintext history.
+   */
+  replica_secret?: string;
+  /**
+   * Monotonic epoch number for `crowd_root` (the legacy field name). Bumped every time the owner rotates
    * the root (on member join and on kick/leave), and carried alongside the root so
    * every member installs the same epoch. Messages carry their epoch id, so a
    * remaining member can still decrypt in-flight old-epoch traffic (kept in a small
@@ -314,6 +332,20 @@ export interface XoreinRuntimeServer {
    */
   server_rev?: number;
   /**
+   * Owner-signed revision of the portable server structure. It authenticates
+   * channels, policy, roles, channel mode/epoch/root, and invite generation so an
+   * ordinary member can serve a snapshot without becoming its authority.
+   */
+  owner_proof?: XoreinServerOwnerProof;
+  /** Monotonic generation embedded in owner-signed invite capabilities. */
+  invite_generation?: number;
+  /**
+   * Local-only bearer capability retained after a member-served join until the
+   * owner has reconciled the admission. It is stripped from every served/server
+   * broadcast snapshot and persisted only inside encrypted account state.
+   */
+  admission_capability?: string;
+  /**
    * Owner-held map of member peer id → the ISO timestamp at which that member joined.
    * The owner enforces this boundary on EVERY history pull (not just the initial join
    * response): messages older than a member's join time are withheld beyond the
@@ -329,6 +361,13 @@ export interface XoreinRuntimeServer {
   invite_secret?: string;
 }
 
+export interface XoreinServerOwnerProof {
+  version: 1 | 2;
+  identity_key: string;
+  signature: string;
+  content_hash: string;
+}
+
 export interface XoreinRuntimeDM {
   id: string;
   participants: string[];
@@ -337,9 +376,9 @@ export interface XoreinRuntimeDM {
 
 /**
  * Reference to an end-to-end encrypted attachment. The file is AES-256-GCM
- * encrypted client-side and stored on the support node as OPAQUE ciphertext; the
- * `key`/`nonce` travel only inside the E2EE message body, so the node can never
- * decrypt the file. Recipients download the ciphertext by `id` and decrypt locally.
+ * encrypted client-side and stored as OPAQUE ciphertext on preferred support
+ * nodes plus authenticated peer fragment holders. The `key`/`nonce` travel only
+ * inside the E2EE message body, so providers can never decrypt the file.
  */
 export interface XoreinAttachment {
   id: string;            // node upload handle (opaque to the node)
@@ -350,6 +389,52 @@ export interface XoreinAttachment {
   nonce: string;         // base64url 12-byte nonce
   content_hash?: string; // sha256 hex of the plaintext (integrity)
   origin?: string;       // node origin (scheme+host) the ciphertext lives on, for cross-node fetch
+  /**
+   * Content-addressed encrypted fragment manifest. This is carried inside the
+   * author-signed E2EE message, so storage providers may serve bytes but cannot
+   * alter the accepted fragment map.
+   */
+  swarm?: BlobSwarmManifest;
+}
+
+export interface BlobSwarmManifest {
+  version: 1;
+  /** SHA-256 hex of the complete encrypted blob. */
+  blob_id: string;
+  /**
+   * Random per-blob namespace shown to support nodes instead of scope_id.
+   * It carries no server/DM identity and is only a lookup key for opaque shards.
+   */
+  node_namespace?: string;
+  /** E2EE scope whose authenticated members may store/serve these fragments. */
+  scope_id: string;
+  /** Peer that originally encrypted and retained the complete source. */
+  owner_peer_id: string;
+  ciphertext_size: number;
+  chunk_size: number;
+  /** SHA-256 hex for each ordered ciphertext fragment. */
+  chunk_hashes: string[];
+  /** Providers that acknowledged at least one fragment before publication. */
+  provider_peer_ids?: string[];
+}
+
+/**
+ * Author proof for an immutable version of a channel message.
+ *
+ * The proof is created by the message author and binds the complete plaintext
+ * record (scope, sender, body, attachments, timestamps, and revision) to the
+ * author's libp2p PeerID with an Ed25519 + ML-DSA-65 hybrid signature. Providers
+ * that later serve history are therefore transport only: they cannot alter a
+ * record or invent a newer edit/tombstone.
+ */
+export interface XoreinMessageAuthorProof {
+  version: 1;
+  /** base64(Ed25519 public key || ML-DSA-65 public key). */
+  identity_key: string;
+  /** base64url-no-pad hybrid signature over the canonical message version. */
+  signature: string;
+  /** base64url-no-pad SHA-256 of the same canonical bytes. */
+  content_hash: string;
 }
 
 export interface XoreinRuntimeMessage {
@@ -390,9 +475,17 @@ export interface XoreinRuntimeMessage {
    * (e.g. no crowd_root seeded) and the message was kept local. Drives the security
    * badge so the UI never claims encryption the wire did not provide.
    */
-  security_mode?: 'seal' | 'crowd' | 'clear';
+  security_mode?: 'seal' | 'tree' | 'crowd' | 'clear';
   /** True when this message was end-to-end encrypted on the wire (see security_mode). */
   encrypted?: boolean;
+  /**
+   * Monotonic author-signed version. 0 is the original send; edits and deletion
+   * tombstones increment it. A provider cannot roll a local copy backwards once
+   * a higher valid revision has been observed.
+   */
+  author_revision?: number;
+  /** Cryptographic author proof used for untrusted multi-source history sync. */
+  author_proof?: XoreinMessageAuthorProof;
 }
 
 export interface XoreinRuntimeVoiceParticipant {
@@ -471,6 +564,8 @@ export interface XoreinFriendRecord {
   to_peer_id?: string;
   to_peer_addr?: string;
   status: XoreinFriendStatus;
+  /** P2P delivery state for an outbound request; relationship status remains `pending` until accepted. */
+  delivery_status?: 'pending' | 'sent' | 'queued' | 'failed';
   created_at?: string;
 }
 
@@ -485,6 +580,8 @@ export interface XoreinRuntimeSnapshot {
   role?: string;
   peer_id?: string;
   control_endpoint?: string;
+  /** Live in-browser libp2p transport state; unlike control_endpoint, this proves a P2P path. */
+  transport_state?: 'connecting' | 'connected' | 'disconnected';
   identity?: Partial<XoreinRuntimeIdentity>;
   known_peers?: XoreinRuntimePeer[];
   servers?: XoreinRuntimeServer[];

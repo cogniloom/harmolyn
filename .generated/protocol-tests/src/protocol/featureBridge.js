@@ -24,7 +24,6 @@ export const FEATURE_CAPABILITY_MAP = {
     loginScreen: ["cap.identity"],
     registerScreen: ["cap.identity"],
     qrLogin: ["cap.identity"],
-    mfa: ["cap.identity"],
     accountSwitching: ["cap.identity"],
     profileCustomization: ["cap.identity"],
     serverProfile: ["cap.identity"],

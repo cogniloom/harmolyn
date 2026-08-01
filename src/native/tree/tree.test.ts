@@ -79,6 +79,14 @@ describe('Tree mode encrypt / decrypt', () => {
     expect(dec(treeDecrypt(g, ct))).toBe('hello bob');
   });
 
+  it('binds ciphertext to its group id', () => {
+    const one = newGroup('space-one', makeMember('alice'));
+    const two = cloneGroup(one);
+    two.groupId = 'space-two';
+    const { ct } = treeEncrypt(one, 'alice', enc('space-bound'));
+    expect(() => treeDecrypt(two, ct)).toThrow();
+  });
+
   it('decrypts from a prev epoch (legacy window)', () => {
     const g = newGroup('g1', makeMember('alice'));
     addMember(g, makeMember('bob'));

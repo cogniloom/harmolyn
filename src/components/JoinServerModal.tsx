@@ -83,7 +83,7 @@ export const JoinServerModal: React.FC<JoinServerModalProps> = ({ onClose, onJoi
     if (remote) return remote;
     if (!localMeta) return null;
     const name = localMeta.serverName || localMeta.serverId;
-    return { name, members: 0, icon: name.slice(0, 1).toUpperCase(), description: 'P2P invite — joins by dialing the server owner.' };
+    return { name, members: 0, icon: name.slice(0, 1).toUpperCase(), description: 'P2P invite — joins by reaching the Space Owner or another authenticated member.' };
   }, [discovery, localMeta]);
 
   useEffect(() => {
@@ -144,7 +144,7 @@ export const JoinServerModal: React.FC<JoinServerModalProps> = ({ onClose, onJoi
       await onJoin(inviteLink.trim());
       onClose();
     } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : 'Failed to join server.');
+      setError(nextError instanceof Error ? nextError.message : 'Failed to join Space.');
     } finally {
       window.clearTimeout(slowTimer);
       setJoining(false);
@@ -159,8 +159,8 @@ export const JoinServerModal: React.FC<JoinServerModalProps> = ({ onClose, onJoi
           {/* Header */}
           <div className="flex items-center justify-between mb-6">
             <div>
-              <h2 id="join-server-title" className="text-title font-semibold text-text-primary">Join a server</h2>
-              <p className="text-caption text-text-tertiary mt-1">Paste an invite link to connect to a server</p>
+              <h2 id="join-server-title" className="text-title font-semibold text-text-primary">Join a Space</h2>
+              <p className="text-caption text-text-tertiary mt-1">Paste a signed invite link to request membership</p>
             </div>
             <button onClick={onClose} aria-label="Close" className="w-8 h-8 rounded-full glass-panel border border-stroke-subtle flex items-center justify-center text-text-secondary hover:text-primary hover:border-primary transition-all focus-ring">
               <X size={16} />
@@ -178,7 +178,7 @@ export const JoinServerModal: React.FC<JoinServerModalProps> = ({ onClose, onJoi
                 type="text"
                 value={inviteLink}
                 onChange={e => setInviteLink(e.target.value)}
-                placeholder="xorein://join/server-id?invite=..."
+                placeholder="xorein://join/space-id?invite=..."
                 className="w-full h-14 pl-11 pr-5 rounded-full bg-surface-dark border border-stroke-subtle text-text-primary text-body placeholder:text-text-disabled focus:border-stroke-primary focus:outline-none transition-colors focus-ring"
               />
             </div>
@@ -218,7 +218,7 @@ export const JoinServerModal: React.FC<JoinServerModalProps> = ({ onClose, onJoi
           {joining && slowJoin && (
             <div className="mb-4 rounded-r2 border border-primary/20 bg-primary/10 px-3 py-2 text-caption text-primary flex items-start gap-2" role="status">
               <Loader2 size={14} className="mt-0.5 shrink-0 animate-spin" />
-              <span>Still connecting — this can take a moment if the server owner is offline.</span>
+              <span>Still searching — this can take a moment while Harmolyn finds an authenticated Space member.</span>
             </div>
           )}
 
@@ -239,12 +239,12 @@ export const JoinServerModal: React.FC<JoinServerModalProps> = ({ onClose, onJoi
             <PendingButton
               onClick={() => void handleJoin()}
               pending={joining}
-              pendingLabel="Dialing server owner…"
+              pendingLabel="Finding Space…"
               disabled={!inviteLink.trim() || !localMeta}
               className="h-12 px-6 rounded-full bg-primary text-bg-0 font-bold text-body-strong flex items-center gap-2 hover:shadow-glow transition-all disabled:opacity-40"
             >
               <ArrowRight size={16} />
-              Join Server
+              Join Space
             </PendingButton>
           </div>
         </div>

@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { X, Upload, Globe, Lock, Loader2, Link as LinkIcon } from 'lucide-react';
+import { X, Upload, Globe, Loader2, Link as LinkIcon } from 'lucide-react';
 import { useEscapeKey } from '@/hooks/useEscapeKey';
 
 interface CreateServerModalProps {
@@ -12,7 +12,6 @@ const NAME_MAX_LENGTH = 64;
 
 export const CreateServerModal: React.FC<CreateServerModalProps> = ({ onClose, onCreate, onOpenJoin }) => {
     const [name, setName] = useState('');
-    const [visibility, setVisibility] = useState<'private' | 'public'>('public');
     const [submitting, setSubmitting] = useState(false);
     const [error, setError] = useState('');
     const nameInputRef = useRef<HTMLInputElement>(null);
@@ -31,7 +30,7 @@ export const CreateServerModal: React.FC<CreateServerModalProps> = ({ onClose, o
     const handleCreate = async () => {
         const trimmed = name.trim();
         if (!trimmed) {
-            setError('Node name is required.');
+            setError('Space name is required.');
             return;
         }
 
@@ -43,7 +42,7 @@ export const CreateServerModal: React.FC<CreateServerModalProps> = ({ onClose, o
                 description: '',
             });
         } catch (nextError) {
-            setError(nextError instanceof Error ? nextError.message : 'Failed to create the server.');
+            setError(nextError instanceof Error ? nextError.message : 'Failed to create the Space.');
         } finally {
             setSubmitting(false);
         }
@@ -61,8 +60,8 @@ export const CreateServerModal: React.FC<CreateServerModalProps> = ({ onClose, o
                         <div className="inline-block p-3 rounded-2xl bg-primary/10 border border-primary/20 text-primary mb-5 shadow-glow">
                             <Globe size={32} />
                         </div>
-                        <h2 id="create-server-title" className="text-2xl font-bold text-white mb-2.5 font-display tracking-tight uppercase">Construct Node</h2>
-                        <p className="text-white/40 text-xs font-light leading-relaxed max-w-sm mx-auto">Establish a new encrypted community. You can define access protocols and security levels after initiation.</p>
+                        <h2 id="create-server-title" className="text-2xl font-bold text-white mb-2.5 font-display tracking-tight uppercase">Create Space</h2>
+                        <p className="text-white/40 text-xs font-light leading-relaxed max-w-sm mx-auto">Start an encrypted community for friends, a team, or anyone you invite.</p>
                     </header>
                     
                     <div className="flex flex-col items-center mb-8">
@@ -76,7 +75,7 @@ export const CreateServerModal: React.FC<CreateServerModalProps> = ({ onClose, o
                     <div className="space-y-5 mb-8">
                         <div className="text-left">
                             <div className="flex items-center justify-between mb-1.5">
-                                <label htmlFor="create-server-name" className="micro-label text-white/20">Node Name</label>
+                                <label htmlFor="create-server-name" className="micro-label text-white/20">Space Name</label>
                                 <span className="text-[9px] tabular-nums text-white/20" aria-hidden="true">{name.length}/{NAME_MAX_LENGTH}</span>
                             </div>
                             <input
@@ -103,34 +102,10 @@ export const CreateServerModal: React.FC<CreateServerModalProps> = ({ onClose, o
                             />
                         </div>
 
-                        <div className="grid grid-cols-2 gap-3">
-                            <button
-                                type="button"
-                                onClick={() => setVisibility('private')}
-                                disabled={submitting}
-                                className={`p-3 rounded-r2 border transition-all flex flex-col gap-1.5 btn-press text-left ${visibility === 'private' ? 'border-primary/20 bg-primary/5 shadow-glow' : 'border-white/5 glass-panel hover:border-primary/40'} disabled:opacity-60`}
-                            >
-                                <Lock size={16} className="text-primary" />
-                                <div className="font-bold text-xs text-white">Private</div>
-                                <div className="text-[9px] text-white/30">Restricted access</div>
-                            </button>
-                            <button
-                                type="button"
-                                onClick={() => setVisibility('public')}
-                                disabled={submitting}
-                                className={`p-3 rounded-r2 border cursor-pointer flex flex-col gap-1.5 relative btn-press text-left ${visibility === 'public' ? 'border-primary/20 bg-primary/5 shadow-glow' : 'border-white/5 glass-panel hover:border-primary/40'} disabled:opacity-60`}
-                            >
-                                <Globe size={16} className="text-primary" />
-                                <div className="font-bold text-xs text-white">Public</div>
-                                <div className="text-[9px] text-white/30">Discoverable node</div>
-                                {visibility === 'public' && <div className="absolute top-2 right-2 w-1.5 h-1.5 rounded-full bg-primary shadow-glow"></div>}
-                            </button>
+                        <div className="glass-card rounded-r2 border border-white/10 p-3 text-[10px] text-white/40 leading-relaxed">
+                            Spaces are invite-gated. Only people with a valid signed invite can request membership;
+                            each conversation displays its active encryption mode.
                         </div>
-
-                        <p className="text-[9px] text-white/25 leading-relaxed px-0.5">
-                            Visibility controls who can find and join — not encryption. Each conversation's
-                            security mode is negotiated separately.
-                        </p>
 
                         {error && (
                             <div className="rounded-r2 border border-accent-danger/20 bg-accent-danger/10 px-4 py-3 text-[11px] text-accent-danger" role="alert">
@@ -140,7 +115,7 @@ export const CreateServerModal: React.FC<CreateServerModalProps> = ({ onClose, o
                     </div>
                     
                     <div className="text-[9px] text-white/20 text-center font-light px-3">
-                        By establishing this node, you confirm adherence to the <span className="text-primary cursor-pointer hover:underline">Nexus Security Protocol</span>.
+                        By creating this Space, you become its Space Owner and accept responsibility for its rules, members, and content.
                     </div>
                     <button
                         type="button"
@@ -156,7 +131,7 @@ export const CreateServerModal: React.FC<CreateServerModalProps> = ({ onClose, o
                     <button onClick={onClose} disabled={submitting} className="text-white/40 hover:text-white micro-label transition-all disabled:opacity-60">Cancel</button>
                     <button onClick={() => void handleCreate()} disabled={submitting || !canCreate} className="bg-primary hover:bg-primary/90 text-bg-0 font-bold py-2.5 px-8 rounded-full micro-label tracking-tight shadow-glow hover:scale-105 transition-all btn-press disabled:opacity-60 disabled:hover:scale-100 disabled:cursor-not-allowed flex items-center gap-2">
                         {submitting ? <Loader2 size={14} className="animate-spin" /> : null}
-                        Initiate Matrix
+                        Create Space
                     </button>
                 </div>
             </div>

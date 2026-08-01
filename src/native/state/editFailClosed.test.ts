@@ -3,17 +3,19 @@
 // scope's required encrypted envelope, so a plaintext broadcast would be silently
 // discarded by every recipient (diverging the conversation) AND leak cleartext on the
 // wire — pure downside. These assert the edit is only broadcast when it encrypted.
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest';
 import { initStore, setNativeIdentity, addServer, updateServer } from './store';
 import { ChannelCrypto } from '../crowd/channel';
 import { SealSessions } from '../seal/session';
-import { generateSigningIdentity } from '../crypto/hybrid';
+import { generateIdentity, identitySigningKey, type XoreinIdentity } from '../identity/identity';
 import { registerScopeCrypto, resetScopeCrypto } from '../sync/secureEnvelope';
+import { registerHistoryIdentity, resetHistoryIdentity } from '../sync/signedHistory';
 import { registerPeerSync } from '../sync/registry';
 import { nativeSendChannelMessage, nativeEditMessage } from './mutations';
 import type { PeerSync } from '../sync/peersync';
 
-const ME = 'me';
+let identity: XoreinIdentity;
+let ME = '';
 const ALICE = 'alice';
 const SRV = 'srv1';
 const CHAN = 'chan1';
@@ -28,16 +30,25 @@ function freshRootB64(): string {
 describe('nativeEditMessage fail-closed (round-6 #9)', () => {
   let broadcastToScope: ReturnType<typeof vi.fn>;
 
+  beforeAll(async () => {
+    identity = await generateIdentity();
+    ME = identity.peerId;
+  });
+
   beforeEach(() => {
     localStorage.clear();
     initStore();
     setNativeIdentity({ id: ME, peer_id: ME });
-    registerScopeCrypto({ seal: new SealSessions(ME, generateSigningIdentity()), channels: new ChannelCrypto(), fetchBundle: async () => null });
-    addServer({ id: SRV, name: 'S', owner_peer_id: ME, members: [ME, ALICE], channels: { [CHAN]: { id: CHAN, server_id: SRV, name: 'general', voice: false } } });
+    registerHistoryIdentity(identity);
+    registerScopeCrypto({ seal: new SealSessions(ME, identitySigningKey(identity)), channels: new ChannelCrypto(), fetchBundle: async () => null });
+    addServer({ id: SRV, name: 'S', owner_peer_id: ME, members: [ME, ALICE], channel_security_mode: 'crowd', channel_crypto_profile: 'scope-aad-v2', channels: { [CHAN]: { id: CHAN, server_id: SRV, name: 'general', voice: false } } });
     broadcastToScope = vi.fn().mockResolvedValue([]); // resolves to undelivered-peer list
     registerPeerSync({ broadcastToScope, sendToPeer: vi.fn().mockResolvedValue(true) } as unknown as PeerSync);
   });
-  afterEach(() => resetScopeCrypto());
+  afterEach(() => {
+    resetScopeCrypto();
+    resetHistoryIdentity();
+  });
 
   it('broadcasts an ENCRYPTED edit envelope (never plaintext) when a crowd root exists', () => {
     updateServer(SRV, { crowd_root: freshRootB64(), crowd_epoch: 0 });

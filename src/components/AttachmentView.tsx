@@ -7,10 +7,10 @@ import { Spinner } from '@/components/ui/Spinner';
 const isImage = (ct: string) => /^image\//i.test(ct);
 
 /**
- * Renders an end-to-end encrypted attachment. The ciphertext lives on the support
- * node; nothing is fetched until the user clicks "decrypt" (privacy-first, like
- * remote media). On click we download the opaque blob, decrypt it locally with
- * the key carried inside the E2EE message, verify its hash, and show it.
+ * Renders an end-to-end encrypted attachment. Opaque ciphertext is fetched from
+ * authenticated Xorein nodes when available, otherwise from scope peers. Nothing
+ * is fetched until the user clicks "decrypt". The client verifies, decrypts, and
+ * exposes the file locally; providers never receive its key or plaintext.
  */
 export const AttachmentView: React.FC<{ attachment: XoreinAttachment }> = ({ attachment }) => {
   const [state, setState] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');

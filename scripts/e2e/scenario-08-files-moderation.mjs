@@ -1,8 +1,8 @@
 // Scenario 08: encrypted attachments + roles/moderation between two clients.
 //
 // Covers surfaces no other scenario touches: file upload (client-side AES-GCM,
-// opaque blob on the support node), cross-client download + integrity, role
-// creation/assignment, and kick with Crowd epoch rotation (the kicked member
+// opaque node-preferred replicas), cross-client download + integrity, role
+// creation/assignment, and kick with fresh epoch rotation (the kicked member
 // must be cryptographically locked out of subsequent traffic).
 import fs from 'node:fs';
 import path from 'node:path';
@@ -12,6 +12,43 @@ import { register, createServer, copyInvite, joinByInvite, sendMessage, waitForM
 
 const FILE_TEXT = `attachment-canary-${Date.now()} the eagle lands at dawn`;
 const tmpFile = path.join(os.tmpdir(), `harmolyn-e2e-${Date.now()}.txt`);
+const SUPPORT_NODE_DATA = process.env.SUPPORT_NODE_DATA
+  ?? '/tmp/claude-1000/-home-wenga-src-harmolyn/c5d0e408-1a62-4312-81de-c5a267f348cf/scratchpad/support-node-data';
+const REPLICA_DIR = path.join(SUPPORT_NODE_DATA, 'history-replicas');
+
+function walkFiles(root) {
+  if (!fs.existsSync(root)) return [];
+  const files = [];
+  for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+    const target = path.join(root, entry.name);
+    if (entry.isDirectory()) files.push(...walkFiles(target));
+    else if (entry.isFile()) files.push(target);
+  }
+  return files;
+}
+
+function newBlobReplicas(previousFiles) {
+  const records = [];
+  for (const file of walkFiles(REPLICA_DIR)) {
+    if (previousFiles.has(file)) continue;
+    let raw;
+    let parsed;
+    try {
+      raw = fs.readFileSync(file, 'utf8');
+      parsed = JSON.parse(raw);
+    } catch {
+      continue;
+    }
+    const envelope = parsed?.envelope;
+    if (!envelope || typeof envelope.blob_id !== 'string' || typeof envelope.data !== 'string') continue;
+    records.push({ file, raw, envelope });
+  }
+  return records;
+}
+
+function regexpEscape(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
 
 const s = new Scenario('08-files-moderation');
 await s.start();
@@ -27,6 +64,11 @@ try {
     await joinByInvite(bob, invite, 'Ops');
     await bob.page.getByRole('button', { name: 'general' }).click();
   });
+
+  // Ignore setup/history records already present at the node. The attachment
+  // ciphertext is randomized, so its content-addressed replica is always new.
+  await alice.page.waitForTimeout(400);
+  const replicaFilesBeforeUpload = new Set(walkFiles(REPLICA_DIR));
 
   // ---------- attachments ----------
   fs.writeFileSync(tmpFile, FILE_TEXT);
@@ -50,25 +92,49 @@ try {
     await s.shot(bob, 'bob-sees-attachment');
   });
 
-  await s.step('ZERO-TRUST: the support node stored only opaque ciphertext', async () => {
-    const dir = process.env.SUPPORT_NODE_DATA
-      ?? '/tmp/claude-1000/-home-wenga-src-harmolyn/c5d0e408-1a62-4312-81de-c5a267f348cf/scratchpad/support-node-data';
-    const blobDir = path.join(dir, 'blobs');
-    const blobs = fs.existsSync(blobDir) ? fs.readdirSync(blobDir) : [];
-    if (!blobs.length) throw new Error('no blob was uploaded — the attachment never reached the node');
-    let leaked = 0;
-    for (const b of blobs) {
-      const rec = fs.readFileSync(path.join(blobDir, b), 'utf8');
-      if (rec.includes(FILE_TEXT)) leaked++;
-      // The stored ciphertext is base64 in a data: URI — decode and check too.
-      try {
-        const parsed = JSON.parse(rec);
-        const b64 = String(parsed.data ?? '').split(',').pop() ?? '';
-        if (Buffer.from(b64, 'base64').toString('utf8').includes(FILE_TEXT)) leaked++;
-      } catch { /* not JSON — already covered by the raw check */ }
+  await s.step('bob downloads, decrypts, and verifies the attachment', async () => {
+    const filename = path.basename(tmpFile);
+    const named = new RegExp(regexpEscape(filename), 'i');
+    const decrypt = bob.page.getByRole('button', { name: named }).first();
+    await decrypt.waitFor({ timeout: 20000 });
+    await decrypt.click();
+    const link = bob.page.getByRole('link', { name: named }).first();
+    await link.waitFor({ timeout: 30000 });
+    const href = await link.getAttribute('href');
+    if (!href?.startsWith('blob:')) throw new Error('decrypted attachment did not produce a local blob URL');
+    const downloadPromise = bob.page.waitForEvent('download');
+    await link.click();
+    const download = await downloadPromise;
+    const stream = await download.createReadStream();
+    if (!stream) throw new Error('browser did not expose the downloaded attachment stream');
+    const chunks = [];
+    for await (const chunk of stream) chunks.push(Buffer.from(chunk));
+    if (Buffer.concat(chunks).toString('utf8') !== FILE_TEXT) {
+      throw new Error('downloaded attachment plaintext did not match the uploaded file');
     }
-    if (leaked) throw new Error(`attachment plaintext readable in ${leaked} stored blob(s)`);
-    console.log(`  ${blobs.length} blob(s) stored, none contain the plaintext`);
+    await s.shot(bob, 'bob-decrypted-attachment');
+  });
+
+  await s.step('ZERO-TRUST: Xorein stored only an opaque replica', async () => {
+    if (!fs.existsSync(REPLICA_DIR)) {
+      throw new Error(`Xorein replica directory is missing: ${REPLICA_DIR}`);
+    }
+    const records = await until(() => {
+      const found = newBlobReplicas(replicaFilesBeforeUpload);
+      return found.length ? found : false;
+    }, { what: 'new blob replica at the Xorein node', timeout: 20000 });
+    const filename = path.basename(tmpFile);
+    for (const record of records) {
+      if (record.raw.includes(FILE_TEXT) || record.raw.includes(filename)) {
+        throw new Error(`attachment plaintext or filename leaked into node replica ${record.file}`);
+      }
+      const decoded = Buffer.from(record.envelope.data, 'base64');
+      if (decoded.includes(Buffer.from(FILE_TEXT)) || decoded.includes(Buffer.from(filename))) {
+        throw new Error(`attachment plaintext or filename was merely encoded in node replica ${record.file}`);
+      }
+    }
+    const totalBytes = records.reduce((sum, record) => sum + Buffer.from(record.envelope.data, 'base64').length, 0);
+    console.log(`  ${records.length} opaque replica record(s), ${totalBytes} ciphertext byte(s), no plaintext or filename`);
   });
 
   // ---------- roles ----------

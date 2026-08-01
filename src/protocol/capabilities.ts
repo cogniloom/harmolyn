@@ -18,9 +18,13 @@ export const DEFAULT_FEATURE_FLAGS = [
   "cap.moderation",
   "cap.rbac",
   "cap.slow-mode",
+  "cap.tree",
+  "cap.crowd",
+  "cap.channel-aad-v2",
+  "cap.mediashield",
 ] as const satisfies readonly FeatureFlag[];
 
-export type SecurityMode = "unspecified" | "seal" | "tree" | "clear";
+export type SecurityMode = "unspecified" | "seal" | "tree" | "crowd" | "channel" | "mediashield" | "clear";
 export type ModeNegotiationReason = "matched" | "unsupported-mode" | "no-offer";
 export type CapabilityFeedback = "none" | "remote-features-ignored" | "upgrade-required";
 

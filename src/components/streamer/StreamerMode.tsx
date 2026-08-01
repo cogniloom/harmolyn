@@ -128,9 +128,9 @@ export function StreamerServerReveal({ serverId }: { serverId?: string | null })
         onClick={() => serverId && revealForServer(serverId)}
         className="flex items-center gap-2 px-5 py-2.5 rounded-full bg-primary text-bg-0 font-bold text-sm hover:shadow-glow transition-all"
       >
-        <Eye size={15} /> Show this server
+        <Eye size={15} /> Show this Space
       </button>
-      <div className="text-white/25 text-[11px]">Resets when you switch servers · re-blur from the top bar</div>
+      <div className="text-white/25 text-[11px]">Resets when you switch Spaces · re-blur from the top bar</div>
     </div>
   );
 }

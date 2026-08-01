@@ -2,23 +2,19 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ServerExplorer } from "./ServerExplorer";
-import { discoverServerByInvite } from "@/lib/xoreinControl";
+const previewServerInvite = vi.hoisted(() => vi.fn());
 
-vi.mock("@/lib/xoreinControl", async () => {
-  const actual = await vi.importActual<typeof import("@/lib/xoreinControl")>("@/lib/xoreinControl");
-  return {
-    ...actual,
-    discoverServerByInvite: vi.fn(),
-  };
-});
+vi.mock("@/hooks/runtime/useRuntimeMutations", () => ({
+  useRuntimeMutations: () => ({ previewServerInvite }),
+}));
 
 describe("ServerExplorer", () => {
   beforeEach(() => {
-    vi.mocked(discoverServerByInvite).mockReset();
+    previewServerInvite.mockReset();
   });
 
   it("normalizes malformed invite previews before rendering discovery cards", async () => {
-    vi.mocked(discoverServerByInvite).mockResolvedValue({
+    previewServerInvite.mockResolvedValue({
       invite: {
         server_id: "srv-1",
         expires_at: { bad: true } as never,
@@ -69,7 +65,7 @@ describe("ServerExplorer", () => {
     );
 
     await user.type(screen.getByPlaceholderText(/invite/i), "xorein://invite/alpha");
-    await waitFor(() => expect(discoverServerByInvite).toHaveBeenCalled());
+    await waitFor(() => expect(previewServerInvite).toHaveBeenCalled());
 
     expect(await screen.findByText("Alpha Node")).toBeTruthy();
     expect(screen.getByText("This invite resolved to a live xorein manifest.")).toBeTruthy();
@@ -79,7 +75,7 @@ describe("ServerExplorer", () => {
   });
 
   it("dedupes malformed invite safety labels before rendering discovery cards", async () => {
-    vi.mocked(discoverServerByInvite).mockResolvedValue({
+    previewServerInvite.mockResolvedValue({
       invite: {
         server_id: "srv-1",
         has_signature: true,
@@ -102,7 +98,7 @@ describe("ServerExplorer", () => {
     );
 
     await user.type(screen.getByPlaceholderText(/invite/i), "xorein://invite/alpha");
-    await waitFor(() => expect(discoverServerByInvite).toHaveBeenCalled());
+    await waitFor(() => expect(previewServerInvite).toHaveBeenCalled());
 
     expect(await screen.findByText("Alpha Node")).toBeTruthy();
     expect(screen.getAllByText("signed-invite").length).toBe(1);

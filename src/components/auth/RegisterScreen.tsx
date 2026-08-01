@@ -1,7 +1,6 @@
 import React, { useState } from 'react';
 import { ArrowRight, Shield, UserPlus, KeyRound, X } from 'lucide-react';
 import { useCreateIdentity } from '@/hooks/runtime/mutations';
-import { setRememberMeEnabled } from '@/native/identity/storage';
 import { SecurityNote } from '@/components/SecurityNote';
 import { LegalDocViewer } from '@/components/legal/LegalDocViewer';
 import { AGE_REQUIREMENT_TEXT } from '@/components/legal/legalDocs';
@@ -24,10 +23,6 @@ export const RegisterScreen: React.FC<RegisterScreenProps> = ({ onCreated, onSwi
   const [confirmPassword, setConfirmPassword] = useState('');
   const [feedback, setFeedback] = useState<{ tone: 'error' | 'info'; message: string } | null>(null);
   const [consented, setConsented] = useState(false);
-  // Remember-me is OPT-IN and default OFF: it weakens the at-rest guarantee
-  // (keys become recoverable from this device without the password while the
-  // session lasts), so the user must actively choose it.
-  const [rememberMe, setRememberMe] = useState(false);
   const [openDoc, setOpenDoc] = useState<'terms' | 'privacy' | 'guidelines' | null>(null);
   const createMutation = useCreateIdentity();
 
@@ -52,9 +47,6 @@ export const RegisterScreen: React.FC<RegisterScreenProps> = ({ onCreated, onSwi
       return;
     }
     try {
-      // Record the remember-me choice BEFORE the engine creates the identity —
-      // the engine only persists an unlock session when this opt-in is set.
-      setRememberMeEnabled(rememberMe);
       const result = await createMutation.mutateAsync({ displayName: name, bio: bio.trim() || undefined, passphrase: password });
       const peerId = (result as { peer_id?: string })?.peer_id ?? '';
       onCreated({ peerId, displayName: name });
@@ -158,22 +150,6 @@ export const RegisterScreen: React.FC<RegisterScreenProps> = ({ onCreated, onSwi
             can't be reset or recovered — there's no server that holds it. We'll help you save a backup on
             the next step.
           </SecurityNote>
-
-          <label className="flex items-start gap-3 cursor-pointer select-none">
-            <input
-              type="checkbox"
-              checked={rememberMe}
-              onChange={(e) => setRememberMe(e.target.checked)}
-              className="mt-0.5 h-4 w-4 shrink-0 accent-primary"
-              aria-label="Keep me signed in on this device"
-            />
-            <span className="text-caption text-text-secondary leading-relaxed">
-              <span className="font-semibold text-text-primary">Keep me signed in on this device.</span>{' '}
-              Skips the password for up to 30 days — but while it's active, your keys are stored on this
-              device in a form that someone with access to its files could read <em>without</em> your
-              password. Leave this off on shared or unencrypted devices.
-            </span>
-          </label>
 
           <label className="flex items-start gap-3 cursor-pointer select-none">
             <input

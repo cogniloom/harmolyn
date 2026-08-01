@@ -1,6 +1,6 @@
 // Scenario 03: messaging depth — edit, delete, reply, reactions, pins, polls,
 // mentions, search, markdown — with two clients in one server (#general).
-// Assumes the local stack (relay + support node + vite dev on :8080) is running.
+// Assumes a current Xorein node/browser gateway and Vite on :8080 are running.
 import { Scenario, until } from './harness.mjs';
 import { register, createServer, copyInvite, joinByInvite, sendMessage, waitForMessage } from './flows.mjs';
 

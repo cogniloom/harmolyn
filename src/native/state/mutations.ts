@@ -24,7 +24,8 @@ import {
   updatePresenceEntry,
   addServerRole, updateServerRole, removeServerRole, setMemberRoles, addPollVote,
   memberHasPermission, setPeerVerified, addReport, setReportDelivery, setReportResolved,
-  enqueueOutbox, removeOutbox, getOutbox,
+  enqueueOutbox, removeOutbox, getOutbox, setFriendRequestDeliveryStatus,
+  updateMessageVersion,
 } from './store.js';
 import type { XoreinReport } from '../../types.js';
 import { publishNativeSnapshot, schedulePublishNativeSnapshot } from './snapshot.js';
@@ -33,14 +34,20 @@ import type { NativeState } from './store.js';
 import { getState } from './store.js';
 import { getPeerSync } from '../sync/registry.js';
 import { rekeyVoiceForServer } from '../voice/registry.js';
-import { encryptChannelEnvelope, encryptDmEnvelope, channelSecurityMode, applyCrowdRoot } from '../sync/secureEnvelope.js';
+import { encryptChannelEnvelope, encryptDmEnvelope, channelSecurityMode, applyChannelRoot } from '../sync/secureEnvelope.js';
+import { recordedChannelSecurityMode, selectChannelSecurityMode } from '../security/channelMode.js';
+import { CHANNEL_CRYPTO_PROFILE } from '../security/channelMode.js';
 import { depositOfflineChat } from '../delivery/offline.js';
+import { depositRecipientInboxOperation } from '../delivery/recipientInbox.js';
 import { addRelayOverride, removeRelayOverride } from '../transport/relays.js';
+import { isTrustedRelayMultiaddr } from '../transport/node.js';
 import { PROTOCOLS } from '../families/families.js';
 import { parseJoinDeepLink, buildJoinDeepLink } from '../../protocol/deeplink.js';
-import { computeInviteToken } from '../sync/invite.js';
+import { computeInviteToken, createSignedInviteCapability } from '../sync/invite.js';
+import { signChannelMessageVersion } from '../sync/signedHistory.js';
+import { signServerRecord } from '../sync/signedServer.js';
 
-/** Generate a fresh base64 32-byte Crowd epoch root for a new server. */
+/** Generate a fresh base64 32-byte channel epoch root for a new server. */
 function freshCrowdRoot(): string {
   const r = crypto.getRandomValues(new Uint8Array(32));
   let s = '';
@@ -49,25 +56,33 @@ function freshCrowdRoot(): string {
 }
 
 /**
- * Owner-only: rotate a server's Crowd epoch — mint a fresh random root, bump the
- * epoch number, and install both into the live crypto so we immediately encrypt at
- * the new epoch. The caller is responsible for broadcasting the updated server
- * record to remaining members (broadcastServerUpdate) so they install the same
- * (root, epoch); anyone NOT in that broadcast (a kicked member) is thereby locked
- * out of all future channel traffic. Returns true when a rotation happened.
+ * Owner-only: rotate a server's channel epoch and automatically select the mode
+ * appropriate for the current roster. Every transition mints a fresh random root,
+ * so switching Tree/Crowd never reuses key material. The caller broadcasts the
+ * owner-signed (mode, root, epoch) tuple only to remaining members.
  */
-export function rotateCrowdEpoch(serverId: string): boolean {
+export function rotateChannelEpoch(serverId: string): boolean {
   const server = getState().servers[serverId];
   if (!server || server.owner_peer_id !== localPeerId()) return false;
   if (!server.crowd_root) return false; // no channel key to rotate
   const nextEpoch = (server.crowd_epoch ?? 0) + 1;
-  updateServer(serverId, { crowd_root: freshCrowdRoot(), crowd_epoch: nextEpoch });
-  applyCrowdRoot(serverId); // encrypt under the new epoch from now on
+  const currentMode = recordedChannelSecurityMode(server.channel_security_mode);
+  const nextMode = selectChannelSecurityMode(server.members.length, currentMode);
+  updateServer(serverId, {
+    crowd_root: freshCrowdRoot(),
+    crowd_epoch: nextEpoch,
+    channel_security_mode: nextMode,
+    ...(server.manifest ? { manifest: { ...server.manifest, security_mode: nextMode } } : {}),
+  });
+  applyChannelRoot(serverId); // encrypt under the new mode/epoch from now on
   // Rekey the owner's own active voice call on this server so its SFrame keys track the
   // new root and any just-removed member's live connection is torn down.
   rekeyVoiceForServer(serverId);
   return true;
 }
+
+/** Compatibility alias for older call sites. */
+export const rotateCrowdEpoch = rotateChannelEpoch;
 
 function localPeerId(): string {
   return getState().identity?.peer_id ?? '';
@@ -79,6 +94,71 @@ function nowISO(): string {
 
 function uid(): string {
   return crypto.randomUUID();
+}
+
+/** Resolve on the first acknowledged network placement, or false once every
+ * bounded path has failed. Remaining successful paths keep running so a direct
+ * delivery can still be backed by the recipient's three-copy peer inbox. */
+function firstSuccessfulDelivery(attempts: Array<Promise<boolean>>): Promise<boolean> {
+  if (!attempts.length) return Promise.resolve(false);
+  return new Promise(resolve => {
+    let remaining = attempts.length;
+    let settled = false;
+    for (const attempt of attempts) {
+      void attempt.then(ok => {
+        if (settled) return;
+        if (ok) {
+          settled = true;
+          resolve(true);
+          return;
+        }
+        remaining--;
+        if (remaining === 0) {
+          settled = true;
+          resolve(false);
+        }
+      }, () => {
+        if (settled) return;
+        remaining--;
+        if (remaining === 0) {
+          settled = true;
+          resolve(false);
+        }
+      });
+    }
+  });
+}
+
+/**
+ * Deliver a durable one-recipient operation over both the lowest-latency live
+ * path and the replicated recipient inbox. These paths deliberately race:
+ * a silent destination cannot prevent another authenticated peer from
+ * accepting custody, and a fast direct delivery is still repaired toward
+ * three independent holders in the background.
+ */
+async function deliverRecipientOperation(
+  targetPeerId: string,
+  protocol: string,
+  operation: string,
+  payload: Record<string, unknown>,
+  deliveryId: string,
+  legacyChatFallback = false,
+): Promise<boolean> {
+  const sync = getPeerSync();
+  const placed = await firstSuccessfulDelivery([
+    sync
+      ? sync.sendToPeer(targetPeerId, protocol, operation, payload).catch(() => false)
+      : Promise.resolve(false),
+    depositRecipientInboxOperation(
+      targetPeerId,
+      protocol,
+      operation,
+      payload,
+      deliveryId,
+    ).catch(() => false),
+  ]);
+  if (placed || !legacyChatFallback) return placed;
+  return await depositOfflineChat(targetPeerId, payload).catch(() => false);
 }
 
 // ── Deferred snapshot publish (send-path latency) ──────────────────────────
@@ -127,9 +207,14 @@ export function nativeSendChannelMessage(
     delivery_status: 'pending',
     security_mode: chanMode,
     encrypted: chanMode !== 'clear',
+    author_revision: 0,
     ...opts,
   };
+  msg.author_proof = signChannelMessageVersion(msg);
   addMessage(msg);
+  // Replicate even in a one-member server: support nodes are optional helpers,
+  // and the periodic repair loop will retry if none are reachable yet.
+  void getPeerSync()?.repairHistoryReplica?.(msg);
 
   // P2P: broadcast a CROWD-ENCRYPTED envelope to all server members. The shared
   // epoch root is held locally and never sent to the support node, so the relay
@@ -145,15 +230,29 @@ export function nativeSendChannelMessage(
   // finds the message already in the store.
   const members = server?.members ?? [];
   if (members.length > 1 && server) {
+    // Crowd/Tree epoch material is shared by every Space member. It protects
+    // confidentiality, but sender identity comes from this hybrid author proof.
+    // Never put an unsigned channel envelope on the wire: a shared-key holder
+    // could otherwise forge another member's `sender_id` once the message leaves
+    // its original Noise-authenticated stream.
+    if (!msg.author_proof) {
+      setMessageDeliveryStatus(msg.id, 'offline_queued');
+      publishNativeSnapshot();
+      return msg;
+    }
     const base = {
       message_id: msg.id,
       scope_id: channelId,
       scope_type: 'channel',
       server_id: server.id,
       sender_id: msg.sender_peer_id,
+      created_at: msg.created_at,
+      author_revision: msg.author_revision,
+      author_proof: msg.author_proof,
       // The reply reference must cross the wire, or the recipient renders the
       // reply as an unattached message with no quoted context.
       ...(opts.reply_to ? { reply_to: opts.reply_to } : {}),
+      ...(opts.forwarded_from ? { forwarded_from: opts.forwarded_from } : {}),
     };
     const envelope = encryptChannelEnvelope(server.id, msg.sender_peer_id, base, body, opts.media);
     if (envelope) {
@@ -178,25 +277,25 @@ export function nativeSendChannelMessage(
           return;
         }
         const undelivered = await sync.broadcastToScope(members, PROTOCOLS.chat, 'chat.send', envelope);
-        // Offline members get the same encrypted envelope via their zero-knowledge
-        // mailbox (resil-2); each deposit is sealed under a pairwise secret. If BOTH
-        // direct delivery and the mailbox deposit fail for a peer, durably queue the
-        // envelope for that peer so reconnect replays it — a real outage never nulls
-        // `sync`, so relying on the `!sync` branch alone would silently drop it.
-        const stillFailed: string[] = [];
-        for (const peerId of undelivered) {
-          const deposited = await depositOfflineChat(peerId, envelope).catch(() => false);
-          if (!deposited) stillFailed.push(peerId);
-        }
-        if (stillFailed.length) {
-          enqueueOutbox({ id: uid(), targets: stillFailed, protocol: PROTOCOLS.chat, operation: 'chat.send', payload: envelope, message_id: msgId, created_at: nowISO(), attempts: 0 });
-        }
-        // Delivery status: sent if at least one peer got it directly OR was mailboxed;
-        // offline_queued only when nothing reached anyone (everything durably queued).
+        // Channel history is a signed, multi-source swarm. Depositing one private
+        // mailbox copy per offline member makes a 1,000-member space perform 1,000
+        // stores and 1,000 token polls. Once any member has the record, every
+        // entitled member can restore it from peers/nodes. Keep a durable local
+        // retry only when nobody else received the record at all.
         const allTargets = members.filter(m => m !== msg.sender_peer_id);
-        const reachedSomeone = allTargets.length === 0
-          || allTargets.length > undelivered.length
-          || undelivered.length > stillFailed.length;
+        const reachedSomeone = allTargets.length === 0 || allTargets.length > undelivered.length;
+        if (!reachedSomeone && undelivered.length) {
+          enqueueOutbox({
+            id: uid(),
+            targets: undelivered,
+            protocol: PROTOCOLS.chat,
+            operation: 'chat.send',
+            payload: envelope,
+            message_id: msgId,
+            created_at: nowISO(),
+            attempts: 0,
+          });
+        }
         setMessageDeliveryStatus(msgId, reachedSomeone ? 'sent' : 'offline_queued');
         publishNativeSnapshot();
       })();
@@ -287,18 +386,20 @@ export function nativeSendDmMessage(
           anyQueued = true;
           continue;
         }
-        const delivered = await sync.sendToPeer(peerId, PROTOCOLS.chat, 'chat.send', envelope);
+        const delivered = await deliverRecipientOperation(
+          peerId,
+          PROTOCOLS.chat,
+          'chat.send',
+          envelope,
+          `${msgId}:${peerId}`,
+          true,
+        );
         if (delivered) {
           anyDelivered = true;
         } else {
-          // Offline fallback: deposit the encrypted envelope in the zero-knowledge
-          // mailbox so the recipient pulls it on reconnect (resil-2). If BOTH the direct
-          // send AND the mailbox deposit fail, durably queue it — don't claim "queued"
-          // with nothing actually persisted to retry.
-          const deposited = await depositOfflineChat(peerId, envelope).catch(() => false);
-          if (!deposited) {
-            enqueueOutbox({ id: uid(), targets: [peerId], protocol: PROTOCOLS.chat, operation: 'chat.send', payload: envelope, message_id: msgId, created_at: nowISO(), attempts: 0 });
-          }
+          // No live peer and no storage holder acknowledged. Keep the sealed
+          // envelope in the encrypted local outbox for the next topology change.
+          enqueueOutbox({ id: uid(), targets: [peerId], protocol: PROTOCOLS.chat, operation: 'chat.send', payload: envelope, message_id: msgId, created_at: nowISO(), attempts: 0 });
           anyQueued = true;
         }
       }
@@ -317,13 +418,31 @@ export function nativeSendDmMessage(
 }
 
 export function nativeEditMessage(messageId: string, body: string): void {
-  storeEditMessage(messageId, body);
+  const existing = getState().messages.find(m => m.id === messageId);
+  if (!existing || existing.sender_peer_id !== localPeerId()) return;
+  const editedAt = nowISO();
+  const next: XoreinRuntimeMessage = {
+    ...existing,
+    body,
+    updated_at: editedAt,
+    author_revision: (existing.author_revision ?? 0) + 1,
+    author_proof: undefined,
+  };
+  if (next.scope_type === 'channel') next.author_proof = signChannelMessageVersion(next);
+  updateMessageVersion(messageId, {
+    body,
+    updated_at: editedAt,
+    author_revision: next.author_revision,
+    ...(next.author_proof ? { author_proof: next.author_proof } : {}),
+  });
   publishNativeSnapshot();
 
-  // P2P: broadcast the edit (crowd-encrypted for channels, plaintext-base for DMs
-  // until seal-encrypted edit envelopes are implemented).
+  // P2P: broadcast the edit (Crowd for channels, Seal for DMs). The signed
+  // channel version makes an edit independently verifiable when served later by
+  // an untrusted history provider.
   const msg = getState().messages.find(m => m.id === messageId);
   if (!msg) return;
+  if (msg.scope_type === 'channel') void getPeerSync()?.repairHistoryReplica?.(msg);
   const scopeMembers = getScopeMembers(msg.scope_id, msg.scope_type, msg.server_id);
   if (scopeMembers.length <= 1) return;
 
@@ -333,7 +452,10 @@ export function nativeEditMessage(messageId: string, body: string): void {
     scope_type: msg.scope_type,
     server_id: msg.server_id,
     sender_id: localPeerId(),
-    edited_at: nowISO(),
+    created_at: msg.created_at,
+    edited_at: editedAt,
+    author_revision: msg.author_revision,
+    ...(msg.author_proof ? { author_proof: msg.author_proof } : {}),
   };
 
   if (msg.scope_type === 'channel' && msg.server_id) {
@@ -343,6 +465,7 @@ export function nativeEditMessage(messageId: string, body: string): void {
     // encrypted envelope, so a plaintext broadcast would be silently discarded by
     // every recipient (diverging the conversation) AND put cleartext on the wire —
     // pure downside. The edit stays local until it can be encrypted.
+    if (!msg.author_proof) return;
     const envelope = encryptChannelEnvelope(msg.server_id, localPeerId(), base, body);
     if (envelope) {
       void getPeerSync()?.broadcastToScope(scopeMembers, PROTOCOLS.chat, 'chat.edit', envelope);
@@ -362,12 +485,31 @@ export function nativeEditMessage(messageId: string, body: string): void {
 }
 
 export function nativeDeleteMessage(messageId: string): void {
-  storeDeleteMessage(messageId);
+  const existing = getState().messages.find(m => m.id === messageId);
+  if (!existing || existing.sender_peer_id !== localPeerId()) return;
+  const deletedAt = nowISO();
+  const next: XoreinRuntimeMessage = {
+    ...existing,
+    deleted: true,
+    updated_at: deletedAt,
+    author_revision: (existing.author_revision ?? 0) + 1,
+    author_proof: undefined,
+  };
+  if (next.scope_type === 'channel') next.author_proof = signChannelMessageVersion(next);
+  updateMessageVersion(messageId, {
+    deleted: true,
+    updated_at: deletedAt,
+    author_revision: next.author_revision,
+    ...(next.author_proof ? { author_proof: next.author_proof } : {}),
+  });
   publishNativeSnapshot();
 
-  // P2P: broadcast the deletion (tombstone) so the message disappears for all.
+  // P2P: broadcast the signed deletion tombstone so a history provider cannot
+  // resurrect an older local copy once a recipient has observed this revision.
   const msg = getState().messages.find(m => m.id === messageId);
   if (msg) {
+    if (msg.scope_type === 'channel' && !msg.author_proof) return;
+    if (msg.scope_type === 'channel') void getPeerSync()?.repairHistoryReplica?.(msg);
     const scopeMembers = getScopeMembers(msg.scope_id, msg.scope_type, msg.server_id);
     if (scopeMembers.length > 1) {
       void getPeerSync()?.broadcastToScope(scopeMembers, PROTOCOLS.chat, 'chat.delete', {
@@ -376,7 +518,10 @@ export function nativeDeleteMessage(messageId: string): void {
         scope_type: msg.scope_type,
         server_id: msg.server_id,
         sender_id: localPeerId(),
-        deleted_at: nowISO(),
+        created_at: msg.created_at,
+        deleted_at: deletedAt,
+        author_revision: msg.author_revision,
+        ...(msg.author_proof ? { author_proof: msg.author_proof } : {}),
       });
     }
   }
@@ -505,11 +650,19 @@ export function nativeCreateServer(
     created_at: nowISO(),
     updated_at: nowISO(),
     members: [localPeerId()],
-    // Shared Crowd epoch root for channel E2EE — distributed to members over the
+    // Shared channel epoch root for channel E2EE — distributed to members over the
     // authenticated P2P join stream, never to the support node. Starts at epoch 0;
     // the owner bumps it on every membership change (join/kick/leave).
     crowd_root: freshCrowdRoot(),
     crowd_epoch: 0,
+    channel_security_mode: 'tree',
+    channel_crypto_profile: CHANNEL_CRYPTO_PROFILE,
+    // Stable member-only capability for opaque, per-channel replica namespaces.
+    // Kicks rotate Crowd keys (content access); this value merely locates
+    // ciphertext and is owner-signed so a member cannot redirect the archive.
+    replica_secret: freshCrowdRoot(),
+    server_rev: 0,
+    invite_generation: 1,
     // Secret for minting/verifying invite tokens (owner-only; never leaves device).
     invite_secret: freshCrowdRoot(),
     channels: {
@@ -524,11 +677,18 @@ export function nativeCreateServer(
     manifest: {
       name,
       description,
-      capabilities: ['cap.chat', 'cap.manifest', 'cap.friends', 'cap.identity', 'cap.dm', 'cap.presence'],
+      capabilities: ['cap.chat', 'cap.manifest', 'cap.friends', 'cap.identity', 'cap.dm', 'cap.presence', 'cap.tree', 'cap.crowd', 'cap.channel-aad-v2', 'cap.mediashield'],
+      security_mode: 'tree',
       history_coverage: 'local-window',
       history_retention_messages: 100,
+      // A server is shared conversation space, so new members receive the same
+      // bounded recent window that peers/nodes retain. The owner still controls
+      // the policy and can lower this value; the channel epoch rotates on join, and only this
+      // explicitly allowed window is re-encrypted for the new epoch.
+      join_history_messages: 100,
     },
   };
+  server.owner_proof = signServerRecord(server);
   addServer(server);
   publishNativeSnapshot();
   markStateDirty(); // re-sync account state to recovery guardians
@@ -554,19 +714,34 @@ export function nativeJoinServer(
  * members over the sync family so owner-side edits — new channels, renames,
  * deletions — actually appear for everyone, not just the owner. Owner-only: a
  * non-owner has no authority to rewrite a server others hold. The invite secret is
- * stripped; crowd_root is intentionally re-shared (members already hold it).
+ * stripped; the channel epoch root is intentionally re-shared (members already hold it).
  */
 export function broadcastServerUpdate(serverId: string): void {
   const current = getState().servers[serverId];
   if (!current || current.owner_peer_id !== localPeerId()) return;
-  const members = (current.members ?? []).filter(m => m !== localPeerId());
-  if (!members.length) return;
   // Stamp a monotonically-increasing revision so receivers can reject out-of-order
   // (fire-and-forget) snapshots that would otherwise regress roles/membership.
   const nextRev = (typeof current.server_rev === 'number' ? current.server_rev : 0) + 1;
-  updateServer(serverId, { server_rev: nextRev });
+  const next: XoreinRuntimeServer = {
+    ...current,
+    server_rev: nextRev,
+    channel_crypto_profile: CHANNEL_CRYPTO_PROFILE,
+  };
+  next.owner_proof = signServerRecord(next);
+  updateServer(serverId, {
+    server_rev: nextRev,
+    channel_crypto_profile: CHANNEL_CRYPTO_PROFILE,
+    ...(next.owner_proof ? { owner_proof: next.owner_proof } : {}),
+  });
   const server = getState().servers[serverId];
-  const { invite_secret: _omit, member_since: _omitSince, ...serverForMembers } = server;
+  const members = (server.members ?? []).filter(m => m !== localPeerId());
+  if (!members.length) return;
+  const {
+    invite_secret: _omit,
+    admission_capability: _omitAdmission,
+    member_since: _omitSince,
+    ...serverForMembers
+  } = server;
   void getPeerSync()?.broadcastToScope(members, PROTOCOLS.sync, 'sync.update', {
     server_id: serverId,
     server: serverForMembers,
@@ -639,7 +814,7 @@ export function nativeUpdateServerMeta(serverId: string, patch: ServerMetaPatch)
 }
 
 /**
- * Owner kicks a member: drop them from the member list, ROTATE the Crowd epoch so
+ * Owner kicks a member: drop them from the member list, rotate the channel epoch so
  * the kicked member's copy of the root is dead, tell that peer to forget the
  * server, and push the new server record (new root + epoch + member list) to
  * everyone else. The kicked peer is not in that broadcast, so it can decrypt no
@@ -653,7 +828,7 @@ export function nativeRemoveMember(serverId: string, peerId: string): void {
   removeServerMember(serverId, peerId);
   // Rotate the channel epoch so the removed member's root no longer decrypts new
   // traffic. Remaining members receive the fresh root via broadcastServerUpdate.
-  rotateCrowdEpoch(serverId);
+  rotateChannelEpoch(serverId);
   publishNativeSnapshot();
   // Tell the kicked peer to drop the server from their rail.
   void getPeerSync()?.sendToPeer(peerId, PROTOCOLS.sync, 'sync.remove', { server_id: serverId });
@@ -709,20 +884,39 @@ export function nativeDeleteServer(serverId: string): void {
  * rejected by the owner anyway, so we fail closed instead of sharing a dud.
  */
 export function nativeInviteLink(serverId: string): string | null {
-  const server = getState().servers[serverId];
+  let server = getState().servers[serverId];
   const me = localPeerId();
   if (!server || !me) return null;
   const owner = server.owner_peer_id || me;
   if (!server.invite_secret) return null;
-  const token = computeInviteToken(server.invite_secret, serverId);
-  return buildJoinDeepLink(serverId, owner, server.name, token);
+  // Ensure the snapshot carried by current members is portable even when this
+  // server has not yet had a broadcast-worthy mutation.
+  const proof = signServerRecord(server);
+  if (proof) {
+    updateServer(serverId, { owner_proof: proof });
+    server = getState().servers[serverId];
+  }
+  const portable = createSignedInviteCapability(serverId, server.invite_generation ?? 0);
+  const token = portable || computeInviteToken(server.invite_secret, serverId);
+  return buildJoinDeepLink(
+    serverId,
+    owner,
+    server.name,
+    token,
+    server.members.filter(member => member !== owner),
+  );
 }
 
 export function nativeRotateInvite(serverId: string): string | null {
   const server = getState().servers[serverId];
   if (!server || server.owner_peer_id !== localPeerId()) return null;
   const secret = freshCrowdRoot();
-  updateServer(serverId, { invite_secret: secret, updated_at: nowISO() });
+  updateServer(serverId, {
+    invite_secret: secret,
+    invite_generation: (server.invite_generation ?? 0) + 1,
+    updated_at: nowISO(),
+  });
+  broadcastServerUpdate(serverId);
   publishNativeSnapshot();
   return secret;
 }
@@ -734,7 +928,12 @@ export function nativeRotateInvite(serverId: string): string | null {
 export function nativeRevokeInvite(serverId: string): void {
   const server = getState().servers[serverId];
   if (!server || server.owner_peer_id !== localPeerId()) return;
-  updateServer(serverId, { invite_secret: undefined, updated_at: nowISO() });
+  updateServer(serverId, {
+    invite_secret: undefined,
+    invite_generation: (server.invite_generation ?? 0) + 1,
+    updated_at: nowISO(),
+  });
+  broadcastServerUpdate(serverId);
   publishNativeSnapshot();
 }
 
@@ -812,6 +1011,10 @@ async function drainOutboxOnce(): Promise<void> {
   for (const entry of entries) {
     try {
       let allHandled = true;
+      let channelReached = false;
+      const channelEnvelope = entry.protocol === PROTOCOLS.chat
+        && entry.operation === 'chat.send'
+        && entry.payload.scope_type === 'channel';
       // First-contact pending-seal entry: no session existed at compose time. Now that
       // we're online, (re)attempt X3DH + encryption; if it still can't encrypt (bundle
       // not yet reachable), leave the entry for a later drain.
@@ -836,24 +1039,29 @@ async function drainOutboxOnce(): Promise<void> {
         payload = sealed;
       }
       for (const target of entry.targets) {
-        const delivered = await sync.sendToPeer(target, entry.protocol, entry.operation, payload);
-        if (!delivered) {
-          // Still unreachable → hand off to the recipient's offline mailbox so they
-          // pull it when they reconnect. Only the chat family is mailbox-eligible.
-          // depositOfflineChat reports ordinary failures by RETURNING false (it does not
-          // throw), so honor the boolean — otherwise the entry would be dropped and the
-          // message marked sent with nothing actually delivered or stored.
-          if (entry.operation === 'chat.send') {
-            const deposited = await depositOfflineChat(target, payload).catch(() => false);
-            if (!deposited) allHandled = false;
-          } else {
-            allHandled = false;
-          }
-        }
+        const delivered = channelEnvelope
+          ? await sync.sendToPeer(target, entry.protocol, entry.operation, payload)
+          : await deliverRecipientOperation(
+            target,
+            entry.protocol,
+            entry.operation,
+            payload,
+            `${entry.id}:${target}`,
+            entry.operation === 'chat.send',
+          );
+        if (delivered) {
+          if (channelEnvelope) channelReached = true;
+        } else if (!channelEnvelope) allHandled = false;
+      }
+      if (channelEnvelope) {
+        // A signed channel record needs one additional holder, not one private
+        // mailbox copy per member. Offline/missed members restore from history.
+        allHandled = channelReached;
       }
       if (allHandled) {
         removeOutbox(entry.id);
         if (entry.message_id) setMessageDeliveryStatus(entry.message_id, 'sent');
+        if (entry.friend_request_id) setFriendRequestDeliveryStatus(entry.friend_request_id, 'sent');
       } else {
         // A queued abuse report (notify.push, kind:'report') has no message_id and must not
         // expire on the generic ~50-attempt cap (~21 min) — an ordinary owner outage would
@@ -870,6 +1078,7 @@ async function drainOutboxOnce(): Promise<void> {
           // Give up so the queue can't wedge forever.
           removeOutbox(entry.id);
           if (entry.message_id) setMessageDeliveryStatus(entry.message_id, 'failed');
+          if (entry.friend_request_id) setFriendRequestDeliveryStatus(entry.friend_request_id, 'failed');
           if (reportId) setReportDelivery(reportId, 'failed');
         } else {
           // Re-enqueue with a bumped attempt count (remove + add keeps it deduped).
@@ -936,13 +1145,16 @@ export function nativeSubmitReport(input: ReportInput): XoreinReport {
         content_excerpt: report.content_excerpt ?? '',
       };
       void (async () => {
-        const sync = getPeerSync();
-        const delivered = sync ? await sync.sendToPeer(owner, PROTOCOLS.notify, 'notify.push', payload) : false;
+        const delivered = await deliverRecipientOperation(
+          owner,
+          PROTOCOLS.notify,
+          'notify.push',
+          payload,
+          report.id,
+        );
         if (!delivered) {
           // Owner offline / transport down: durably queue the report so it reaches the
-          // moderator on reconnect instead of being silently lost with only a local copy.
-          // notify.push isn't mailbox-eligible, so the drain simply re-attempts direct
-          // delivery (bounded by MAX_OUTBOX_ATTEMPTS) until it lands.
+          // moderator on a future topology change instead of silently losing it.
           enqueueOutbox({ id: uid(), targets: [owner], protocol: PROTOCOLS.notify, operation: 'notify.push', payload, created_at: nowISO(), attempts: 0 });
         }
       })();
@@ -969,7 +1181,7 @@ function peerIdFromAddr(peerAddr: string): string {
   return trimmed;
 }
 
-export function nativeAddFriendRequest(peerAddr: string): XoreinFriendRecord {
+export async function nativeAddFriendRequest(peerAddr: string): Promise<XoreinFriendRecord> {
   const targetPeerId = peerIdFromAddr(peerAddr);
   const record: XoreinFriendRecord = {
     id: uid(),
@@ -977,6 +1189,7 @@ export function nativeAddFriendRequest(peerAddr: string): XoreinFriendRecord {
     to_peer_id: targetPeerId,
     to_peer_addr: peerAddr,
     status: 'pending',
+    delivery_status: 'pending',
     created_at: nowISO(),
   };
   addFriendRequest(record);
@@ -984,16 +1197,44 @@ export function nativeAddFriendRequest(peerAddr: string): XoreinFriendRecord {
   // P2P: deliver the request to the target so it lands in their Pending tab.
   // If they gave a full multiaddr, register it so we dial the right circuit.
   const sync = getPeerSync();
-  if (sync) {
-    if (peerAddr.includes('/p2p-circuit')) sync.registerPeer(targetPeerId, peerAddr);
-    void sync.sendToPeer(targetPeerId, PROTOCOLS.friends, 'friends.request', {
-      kind: 'request',
-      id: record.id,
-      from_peer_id: localPeerId(),
-      display_name: getState().identity?.profile?.display_name,
+  if (peerAddr.includes('/p2p-circuit')) sync?.registerPeer(targetPeerId, peerAddr);
+  const payload = {
+    kind: 'request',
+    id: record.id,
+    from_peer_id: localPeerId(),
+    display_name: getState().identity?.profile?.display_name,
+  };
+  // A first-contact request must not wait behind a silent direct destination.
+  // Race live/routed delivery with replicated peer custody. Either remote
+  // acknowledgement means the request has left this device and is "sent".
+  const delivered = await deliverRecipientOperation(
+    targetPeerId,
+    PROTOCOLS.friends,
+    'friends.request',
+    payload,
+    record.id,
+  );
+  if (delivered) {
+    setFriendRequestDeliveryStatus(record.id, 'sent');
+  } else {
+    // A friend request is a durable relationship operation, not a best-effort
+    // notification. The recipient-addressed inbox lets a first-contact target
+    // recover it without already knowing our pairwise mailbox token. If no
+    // storage peer answered, retain it in the encrypted local outbox.
+    setFriendRequestDeliveryStatus(record.id, 'queued');
+    enqueueOutbox({
+      id: uid(),
+      targets: [targetPeerId],
+      protocol: PROTOCOLS.friends,
+      operation: 'friends.request',
+      payload,
+      friend_request_id: record.id,
+      created_at: nowISO(),
+      attempts: 0,
     });
   }
-  return record;
+  publishNativeSnapshot();
+  return { ...record, delivery_status: delivered ? 'sent' : 'queued' };
 }
 
 export function nativeAcceptFriend(requestId: string): void {
@@ -1019,10 +1260,13 @@ export function nativeAcceptFriend(requestId: string): void {
       // durable outbox on failure so the drain (reconnect + 25s heartbeat) retries it
       // until the requester's node acknowledges.
       void (async () => {
-        const sync = getPeerSync();
-        const delivered = sync
-          ? await sync.sendToPeer(requesterPeerId, PROTOCOLS.friends, 'friends.accept', payload)
-          : false;
+        const delivered = await deliverRecipientOperation(
+          requesterPeerId,
+          PROTOCOLS.friends,
+          'friends.accept',
+          payload,
+          `accept:${req.id}`,
+        );
         if (!delivered) {
           enqueueOutbox({
             id: uid(),
@@ -1062,6 +1306,9 @@ export function nativeLeaveVoice(channelId: string): void {
 // ── Relays ─────────────────────────────────────────────────────────────────
 
 export function nativeAddRelay(multiaddr: string): void {
+  if (!isTrustedRelayMultiaddr(multiaddr)) {
+    throw new Error('Relay multiaddr must identify a pinned relay over WSS or loopback WS.');
+  }
   addRelay(multiaddr);
   // Persist as a real backup relay: the multi-relay failover list picks it up on
   // the next (re)connect, so "Add relay" is functional, not cosmetic (resil-1).

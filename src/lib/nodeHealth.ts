@@ -20,7 +20,7 @@ export type NodeHealthState = 'unknown' | 'online' | 'offline';
 // Canonical user-facing strings — centralized so E2E tests can assert them.
 export const NODE_OFFLINE_MESSAGE = 'No node currently available. This feature only works with at least one node online.';
 export const NODE_OFFLINE_BANNER_TITLE = 'Node offline';
-export const NODE_OFFLINE_BANNER_DETAIL = 'Peer-to-peer messaging keeps working. Features that need a node are paused until one is reachable.';
+export const NODE_OFFLINE_BANNER_DETAIL = 'Peer routing, contacts, joins, messages, attachments, mailbox delivery, and rendezvous remain active through available peers. Only node-exclusive services pause.';
 
 const PROBE_TIMEOUT_MS = 3_000;
 const PROBE_INITIAL_DELAY_MS = 5_000;

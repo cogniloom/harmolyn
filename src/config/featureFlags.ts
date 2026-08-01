@@ -7,11 +7,11 @@ import { safeStorageGet } from "../lib/browserStorage.js";
  * Features flagged `false` are hidden but their code remains — flip to `true` when
  * the backend is ready.
  *
- * Features whose only behaviour would be browser-local (no xorein control-API
- * endpoint backs them) are flagged `false` and tracked in docs/PROTOCOL_GAPS.md.
- * Re-enable them once the matching runtime endpoint exists and the UI is wired to
- * a real call in src/lib/xoreinControl.ts. Do NOT ship a feature `true` if its
- * actions can only mutate localStorage — that is fake functionality.
+ * Features whose only behaviour would be browser-local (no Xorein protocol or
+ * native-engine operation backs them) remain `false`. Re-enable one only after
+ * the matching runtime operation exists and the UI is wired to it. Do NOT ship
+ * a feature `true` if its actions can only mutate localStorage — that is fake
+ * functionality.
  */
 
 export const FEATURES = {
@@ -28,15 +28,14 @@ export const FEATURES = {
   loginScreen: true,
   registerScreen: true,
   qrLogin: true,
-  mfa: true,
   accountSwitching: true,
 
   // ─── Community / social tooling ─────────────────────────
-  // No DM message-request inbox endpoint (only friend requests). See PROTOCOL_GAPS.md.
+  // No DM message-request inbox operation exists yet (friend requests are separate).
   messageRequests: false,
 
   // ─── Voice text & call helpers ───────────────────────────
-  // Local-only scratchpad; no per-voice-channel text endpoint. See PROTOCOL_GAPS.md.
+  // No durable per-voice-channel text operation exists yet.
   voiceTextChat: false,
 
   // ─── Channel / forum extras ───────────────────────────────
@@ -46,7 +45,7 @@ export const FEATURES = {
   // removed for v1: xorein is a pure P2P network with no payment, ledger, or event
   // primitives, so those surfaces could only ever mutate localStorage. The dead
   // components + flags were deleted rather than shipped dark. Revisit only if the
-  // network grows the matching protocol primitives (see docs/PROTOCOL_GAPS.md).
+  // network grows matching authenticated protocol operations.
 
   // ─── Server moderation / admin extras ────────────────────
   // The current xorein control API does not expose authenticated audit,
@@ -69,10 +68,10 @@ export const FEATURES = {
   messageReplies: true,
   pinnedMessages: true,
   messageEditing: true,
-  // Client-side-encrypted attachments: the file is AES-256-GCM encrypted in-browser
-  // (src/native/blobs/), uploaded as OPAQUE ciphertext to the support node's
-  // /v1/uploads, and the key travels only inside the E2EE message body. Fully wired
-  // in ChatArea + AttachmentView with SHA-256 integrity verification on download.
+  // Client-side-encrypted attachments: AES-256-GCM ciphertext is retained locally,
+  // distributed to authenticated Xorein nodes first and then scope peers until the
+  // replica target is met. The key travels only inside the E2EE message body.
+  // AttachmentView verifies the signed manifest and SHA-256 content address.
   fileUploads: true,
   emojiPicker: true,
   typingIndicators: true,
@@ -117,7 +116,7 @@ export const FEATURES = {
   // ─── Channels ────────────────────────────────────────────
   textVoiceChannels: true,
   channelCategories: true,
-  // No forum-post model (title/tags/votes/views). See PROTOCOL_GAPS.md.
+  // No forum-post model exists yet (title, tags, votes, and views).
   forumChannels: false,
   announcementChannels: true,
   privateChannels: true,
@@ -175,16 +174,13 @@ export const FEATURES = {
   // browser P2P engine. The HTTP control client is still used for support-
   // service operations: joinServerByInvite, identity backup/restore, pins,
   // moderation/roles, notifications, file uploads, and voice frames.
-  // Override via localStorage 'harmolyn:feature-overrides' to revert to
-  // full HTTP for one release if issues are found in production.
+  // This is security-critical and cannot be overridden at runtime: the HTTP
+  // control API is not an E2EE message transport.
   nativeEngine: true,
-  // memberServedHistory: opt-in fallback that pulls a server's read-copy history from
-  // ordinary MEMBERS (invite seeds / cursor paging) when the owner is offline. Ships
-  // DARK: served messages aren't individually authenticated, so a malicious member
-  // could serve forged history, and seeds can't verify the owner-only invite secret
-  // anyway. Until history carries owner signatures, only the owner serves authoritative
-  // history; with this flag off, paging/join fall back to owner-only + a local stub.
-  memberServedHistory: false,
+  // Every portable channel record now carries the original author's hybrid
+  // signature. Members and archivists are untrusted availability providers; the
+  // client verifies records locally and never treats provider quorum as truth.
+  memberServedHistory: true,
   // directTransport: direct browser↔browser WebRTC transport + DCUtR
   // hole-punching, upgrading relayed circuits to direct connections when the NAT
   // allows. ON by default: it only ADDS the /webrtc transport + dcutr service +
@@ -208,6 +204,15 @@ export const FEATURES = {
 
 /** Union type of all feature flag keys */
 export type FeatureKey = keyof typeof FEATURES;
+
+// These flags are part of the confidentiality boundary, not product rollout
+// switches. A same-origin value in localStorage must never be able to turn on
+// an explicitly unsafe/unfinished path or turn off the native E2EE owner.
+const NON_OVERRIDABLE_FEATURES: ReadonlySet<FeatureKey> = new Set([
+  'nativeEngine',
+  'memberServedHistory',
+  'voiceScaleSfu',
+]);
 
 export const FEATURE_OVERRIDES_STORAGE_KEY = 'harmolyn:feature-overrides';
 
@@ -244,6 +249,9 @@ export function readFeatureOverrides(): FeatureOverrides {
 }
 
 export function resolveFeatureFlag(feature: FeatureKey, overrides: FeatureOverrides = readFeatureOverrides()): boolean {
+  if (NON_OVERRIDABLE_FEATURES.has(feature)) {
+    return FEATURES[feature];
+  }
   return overrides[feature] ?? FEATURES[feature];
 }
 

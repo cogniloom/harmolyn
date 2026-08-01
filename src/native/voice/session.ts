@@ -43,6 +43,11 @@ type InsertableCap = 'scriptTransform' | 'encodedStreams' | 'none';
 // Grace window after ICE 'disconnected' before we escalate to recovery — most
 // disconnects are transient network blips that self-heal well within this.
 const DISCONNECT_GRACE_MS = 3000;
+// Voice joins can cross on the wire: the first presence request may arrive just
+// before the other browser has finished publishing its local voice session. A
+// short bounded retry window closes that race without turning presence into a
+// polling loop or making the support node authoritative for call membership.
+const VOICE_PRESENCE_RETRY_DELAYS_MS = [120, 240, 480] as const;
 
 function insertableStreamsCapability(): InsertableCap {
   if (typeof RTCRtpSender === 'undefined') return 'none';
@@ -502,7 +507,15 @@ export class VoiceSession {
       screen_sharing: false,
       ...selfProfile(),
     };
-    const responses = await peerSync.requestScope<VoicePresenceResponse>(members, PROTOCOLS.voice, VOICE_OPS.presence, req);
+    let responses: Array<{ peerId: string; response: VoicePresenceResponse }> = [];
+    for (let attempt = 0; attempt <= VOICE_PRESENCE_RETRY_DELAYS_MS.length; attempt += 1) {
+      if (this.stopped) return;
+      responses = await peerSync.requestScope<VoicePresenceResponse>(members, PROTOCOLS.voice, VOICE_OPS.presence, req);
+      const allMembersAnsweredInChannel = responses.length >= members.length
+        && responses.every(({ response }) => response.in_channel);
+      if (allMembersAnsweredInChannel || attempt === VOICE_PRESENCE_RETRY_DELAYS_MS.length) break;
+      await new Promise<void>((resolve) => setTimeout(resolve, VOICE_PRESENCE_RETRY_DELAYS_MS[attempt]));
+    }
 
     const present = responses.filter(r => r.response?.in_channel);
     for (const { peerId, response } of present) {

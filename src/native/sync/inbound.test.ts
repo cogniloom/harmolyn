@@ -12,8 +12,12 @@ import { initStore, getState, setNativeIdentity, addServer, updateServer, addFri
 import { ChannelCrypto } from '../crowd/channel.js';
 import { SealSessions } from '../seal/session.js';
 import { generateSigningIdentity } from '../crypto/hybrid.js';
+import { generateIdentity, type XoreinIdentity } from '../identity/identity.js';
 import { registerScopeCrypto, resetScopeCrypto, encryptChannelEnvelope, encryptDmEnvelope, applyCrowdRoot } from './secureEnvelope.js';
+import { signChannelMessageVersion } from './signedHistory.js';
 import { ingestMailboxChat, classifyChannelNotification, handleSyncRequest, reconcileFriendAcceptFromPresence } from './inbound.js';
+import type { ChannelSecurityMode } from '../security/channelMode.js';
+import type { XoreinRuntimeMessage } from '../../types.js';
 
 const ME = 'me';
 const ALICE = 'alice';
@@ -27,15 +31,48 @@ function freshRootB64(): string {
   return btoa(s);
 }
 
-function seedServerWithRoot(): void {
+function seedServerWithRoot(member = ALICE): void {
   addServer({
     id: SRV,
     name: 'S',
     owner_peer_id: ME,
-    members: [ME, ALICE],
+    members: [ME, member],
     channels: { [CHAN]: { id: CHAN, server_id: SRV, name: 'general', voice: false } },
   });
   updateServer(SRV, { crowd_root: freshRootB64() });
+}
+
+function signedChannelBase(
+  identity: XoreinIdentity,
+  messageId: string,
+  body: string,
+  mode: ChannelSecurityMode = 'crowd',
+): Record<string, unknown> {
+  const createdAt = '2026-08-01T08:00:00.000Z';
+  const message: XoreinRuntimeMessage = {
+    id: messageId,
+    scope_type: 'channel',
+    scope_id: CHAN,
+    server_id: SRV,
+    sender_peer_id: identity.peerId,
+    body,
+    created_at: createdAt,
+    security_mode: mode,
+    encrypted: true,
+    author_revision: 0,
+  };
+  const authorProof = signChannelMessageVersion(message, identity);
+  if (!authorProof) throw new Error('test fixture failed to sign channel message');
+  return {
+    message_id: messageId,
+    scope_id: CHAN,
+    scope_type: 'channel',
+    server_id: SRV,
+    sender_id: identity.peerId,
+    created_at: createdAt,
+    author_revision: 0,
+    author_proof: authorProof,
+  };
 }
 
 describe('classifyChannelNotification', () => {
@@ -92,29 +129,30 @@ describe('future-epoch channel ciphertext is buffered then replayed on root inst
   });
   afterEach(() => resetScopeCrypto());
 
-  it('holds a message under a not-yet-installed epoch and delivers it once the root arrives', () => {
-    addServer({ id: SRV, name: 'S', owner_peer_id: OWNER, members: [OWNER, ME, ALICE], channels: { [CHAN]: { id: CHAN, server_id: SRV, name: 'general', voice: false } } });
+  it('holds a message under a not-yet-installed epoch and delivers it once the root arrives', async () => {
+    const alice = await generateIdentity();
+    addServer({ id: SRV, name: 'S', owner_peer_id: OWNER, members: [OWNER, ME, alice.peerId], channels: { [CHAN]: { id: CHAN, server_id: SRV, name: 'general', voice: false } } });
 
     // 1) Build a genuine epoch-1 envelope with a sender crypto seeded at the NEW root.
     registerScopeCrypto({ seal: new SealSessions(ME, generateSigningIdentity()), channels: new ChannelCrypto(), fetchBundle: async () => null });
     updateServer(SRV, { crowd_root: R1, crowd_epoch: 1 });
     applyCrowdRoot(SRV);
-    const base = { message_id: 'm-future', scope_id: CHAN, scope_type: 'channel', server_id: SRV, sender_id: ALICE };
-    const envelope = encryptChannelEnvelope(SRV, ALICE, base, 'from the future')!;
+    const base = signedChannelBase(alice, 'm-future', 'from the future');
+    const envelope = encryptChannelEnvelope(SRV, alice.peerId, base, 'from the future')!;
     expect(envelope).toBeTruthy();
 
     // 2) A RECEIVER that is still behind at epoch 0 (fresh crypto, old root) gets it first.
     registerScopeCrypto({ seal: new SealSessions(ME, generateSigningIdentity()), channels: new ChannelCrypto(), fetchBundle: async () => null });
     updateServer(SRV, { crowd_root: R0, crowd_epoch: 0 });
     applyCrowdRoot(SRV);
-    ingestMailboxChat(envelope, ALICE);
+    ingestMailboxChat(envelope, alice.peerId);
     // Can't decrypt yet → buffered, NOT stored (and not dropped).
     expect(getState().messages.some(m => m.id === 'm-future')).toBe(false);
 
     // 3) The owner distributes the epoch-1 root; installing it replays the buffer.
     handleSyncRequest('sync.update', {
       server_id: SRV,
-      server: { id: SRV, owner_peer_id: OWNER, members: [OWNER, ME, ALICE], crowd_root: R1, crowd_epoch: 1, server_rev: 1 },
+      server: { id: SRV, owner_peer_id: OWNER, members: [OWNER, ME, alice.peerId], crowd_root: R1, crowd_epoch: 1, server_rev: 1 },
     }, OWNER);
 
     const stored = getState().messages.find(m => m.id === 'm-future');
@@ -184,6 +222,49 @@ describe('sync.update server_rev monotonic gate', () => {
   });
 });
 
+describe('sync.update channel epoch immutability', () => {
+  const OWNER = 'owner';
+  const ORIGINAL = freshRootB64();
+  const REPLACEMENT = freshRootB64();
+
+  beforeEach(() => {
+    localStorage.clear();
+    initStore();
+    setNativeIdentity({ id: ME, peer_id: ME });
+    addServer({
+      id: SRV,
+      name: 'S',
+      owner_peer_id: OWNER,
+      members: [OWNER, ME],
+      channels: {},
+      crowd_root: ORIGINAL,
+      crowd_epoch: 3,
+      channel_security_mode: 'crowd',
+      channel_crypto_profile: 'scope-aad-v2',
+      server_rev: 1,
+    });
+  });
+
+  it('rejects a different root reusing an installed epoch number', () => {
+    const result = handleSyncRequest('sync.update', {
+      server_id: SRV,
+      server: {
+        id: SRV,
+        owner_peer_id: OWNER,
+        members: [OWNER, ME],
+        channels: {},
+        crowd_root: REPLACEMENT,
+        crowd_epoch: 3,
+        channel_security_mode: 'crowd',
+        channel_crypto_profile: 'scope-aad-v2',
+        server_rev: 2,
+      },
+    }, OWNER);
+    expect(result).toEqual({ ok: false, error: 'channel_epoch_reused' });
+    expect(getState().servers[SRV]?.crowd_root).toBe(ORIGINAL);
+  });
+});
+
 describe('inbound — fail-closed encryption policy (A1)', () => {
   beforeEach(() => {
     localStorage.clear();
@@ -231,21 +312,89 @@ describe('inbound — fail-closed encryption policy (A1)', () => {
     expect(getState().messages.some(m => m.id === 'm-kicked')).toBe(false);
   });
 
-  it('accepts a genuine Crowd envelope and stamps the real security mode (A2)', () => {
-    seedServerWithRoot();
+  it('accepts a signed Crowd envelope and stamps the real security mode (A2)', async () => {
+    const alice = await generateIdentity();
+    seedServerWithRoot(alice.peerId);
     // Build a real crowd envelope as ALICE would (same shared root from the server
     // record), then deliver it authenticated as ALICE.
-    const base = { message_id: 'm-enc', scope_id: CHAN, scope_type: 'channel', server_id: SRV, sender_id: ALICE };
-    const envelope = encryptChannelEnvelope(SRV, ALICE, base, 'real ciphertext body');
+    const base = signedChannelBase(alice, 'm-enc', 'real ciphertext body');
+    const envelope = encryptChannelEnvelope(SRV, alice.peerId, base, 'real ciphertext body');
     expect(envelope).toBeTruthy();
 
-    ingestMailboxChat(envelope!, ALICE);
+    ingestMailboxChat(envelope!, alice.peerId);
 
     const stored = getState().messages.find(m => m.id === 'm-enc');
     expect(stored).toBeTruthy();
     expect(stored!.body).toBe('real ciphertext body');
     expect(stored!.security_mode).toBe('crowd');
     expect(stored!.encrypted).toBe(true);
+  });
+
+  it('rejects a valid shared-key envelope without a hybrid author proof', () => {
+    seedServerWithRoot();
+    const base = { message_id: 'm-unsigned', scope_id: CHAN, scope_type: 'channel', server_id: SRV, sender_id: ALICE };
+    const envelope = encryptChannelEnvelope(SRV, ALICE, base, 'symmetric key alone is not identity');
+    expect(envelope).toBeTruthy();
+
+    ingestMailboxChat(envelope!, ALICE);
+
+    expect(getState().messages.some(message => message.id === 'm-unsigned')).toBe(false);
+  });
+});
+
+describe('inbound — automatic Tree/Crowd transition window', () => {
+  beforeEach(() => {
+    localStorage.clear();
+    initStore();
+    setNativeIdentity({ id: ME, peer_id: ME });
+    registerScopeCrypto({
+      seal: new SealSessions(ME, generateSigningIdentity()),
+      channels: new ChannelCrypto(),
+      fetchBundle: async () => null,
+    });
+  });
+  afterEach(() => resetScopeCrypto());
+
+  it('accepts only the immediately previous mode epoch for in-flight traffic', async () => {
+    const alice = await generateIdentity();
+    addServer({
+      id: SRV,
+      name: 'S',
+      owner_peer_id: ME,
+      members: [ME, alice.peerId],
+      channel_security_mode: 'tree',
+      crowd_root: freshRootB64(),
+      crowd_epoch: 0,
+      channels: { [CHAN]: { id: CHAN, server_id: SRV, name: 'general', voice: false } },
+    });
+    applyCrowdRoot(SRV);
+    const inFlight = encryptChannelEnvelope(
+      SRV,
+      alice.peerId,
+      signedChannelBase(alice, 'm-transition-ok', 'in flight', 'tree'),
+      'in flight',
+    )!;
+    const expired = encryptChannelEnvelope(
+      SRV,
+      alice.peerId,
+      signedChannelBase(alice, 'm-transition-old', 'too old', 'tree'),
+      'too old',
+    )!;
+    expect(inFlight.enc).toBe('tree');
+
+    updateServer(SRV, {
+      channel_security_mode: 'crowd',
+      crowd_root: freshRootB64(),
+      crowd_epoch: 1,
+    });
+    applyCrowdRoot(SRV);
+    ingestMailboxChat(inFlight, alice.peerId);
+    expect(getState().messages.find(m => m.id === 'm-transition-ok')?.security_mode).toBe('tree');
+
+    updateServer(SRV, { crowd_root: freshRootB64(), crowd_epoch: 2 });
+    applyCrowdRoot(SRV);
+    ingestMailboxChat(expired, alice.peerId);
+    expect(getState().messages.some(m => m.id === 'm-transition-old')).toBe(false);
   });
 });
 

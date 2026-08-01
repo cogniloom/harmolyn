@@ -17,5 +17,5 @@ function run(command, args, expectedExitCode, label) {
   }
 }
 
-run('node', ['./scripts/browser-smoke.mjs'], 0, 'browser smoke happy path');
-run('node', ['./scripts/browser-smoke.mjs', 'missing-runtime'], 1, 'browser smoke missing-runtime path');
+run('node', ['./scripts/browser-native-smoke.mjs'], 0, 'native browser smoke happy path');
+run('node', ['./scripts/browser-native-smoke.mjs', 'no-peers'], 0, 'native browser smoke no-peer path');

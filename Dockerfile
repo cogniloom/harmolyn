@@ -1,5 +1,4 @@
-# Build stage: compile the Vite app with Node 20 (matches CI pin)
-FROM node:20-alpine AS build
+FROM node:26-alpine AS build
 
 WORKDIR /app
 
@@ -12,7 +11,7 @@ COPY . .
 
 # Vite inlines VITE_* vars at build time — declare as ARGs and promote to ENV
 ARG VITE_XOREIN_CONTROL_ENDPOINT=https://node.xorein.com
-ARG VITE_SOURCE_URL=https://github.com/kylhuk/harmolyn-preview
+ARG VITE_SOURCE_URL=https://github.com/cogniloom/harmolyn
 ENV VITE_XOREIN_CONTROL_ENDPOINT=$VITE_XOREIN_CONTROL_ENDPOINT
 ENV VITE_SOURCE_URL=$VITE_SOURCE_URL
 

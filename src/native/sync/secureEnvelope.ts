@@ -7,9 +7,15 @@
 // wire. This is the single chokepoint that guarantees no cleartext leaves the
 // device for channel/DM message bodies.
 import { SealSessions, type SealWire, type FetchBundle } from '../seal/session.js';
-import { ChannelCrypto, type CrowdWire } from '../crowd/channel.js';
+import { ChannelCrypto, type ChannelWire } from '../crowd/channel.js';
 import { getState } from '../state/store.js';
 import type { XoreinAttachment } from '../../types.js';
+import {
+  isChannelSecurityMode,
+  recordedChannelSecurityMode,
+  type ChannelSecurityMode,
+  isSupportedChannelCryptoProfile,
+} from '../security/channelMode.js';
 import {
   decodeBase64Strict,
   hasControlCharacters,
@@ -25,10 +31,10 @@ export interface DecryptedMessage {
   media?: XoreinAttachment[];
   /**
    * The mode this message was actually decrypted under. Present only on messages
-   * that were genuinely E2EE (seal for DMs, crowd for channels); the caller stamps
+   * that were genuinely E2EE (seal for DMs, Tree/Crowd for channels); the caller stamps
    * it onto the stored message so the UI badge reflects real encryption.
    */
-  mode?: 'seal' | 'crowd';
+  mode?: 'seal' | ChannelSecurityMode;
 }
 
 /**
@@ -89,7 +95,7 @@ function validSealWire(value: unknown): value is SealWire {
   return true;
 }
 
-function validCrowdWire(value: unknown): value is CrowdWire {
+function validChannelWire(value: unknown): value is ChannelWire {
   return isPlainObject(value)
     && typeof value.epoch === 'number'
     && Number.isSafeInteger(value.epoch)
@@ -130,13 +136,19 @@ function fromUtf8(b: Uint8Array): string {
 
 function rootBytesForServer(serverId: string): Uint8Array | null {
   const server = getState().servers[serverId];
+  if (!isSupportedChannelCryptoProfile((server as { channel_crypto_profile?: unknown } | undefined)?.channel_crypto_profile)) return null;
   const rootB64 = (server as { crowd_root?: string } | undefined)?.crowd_root;
   if (!rootB64) return null;
   const decoded = decodeBase64Strict(rootB64, 32);
   return decoded?.length === 32 ? decoded : null;
 }
 
-/** The owner-authoritative Crowd epoch for a server (0 when absent/legacy). */
+/** The explicit owner-authored mode. Missing legacy records remain Crowd. */
+export function channelModeForServer(serverId: string): ChannelSecurityMode {
+  return recordedChannelSecurityMode(getState().servers[serverId]?.channel_security_mode);
+}
+
+/** The owner-authoritative channel-key epoch for a server (0 when absent/legacy). */
 function crowdEpochForServer(serverId: string): number {
   const server = getState().servers[serverId] as { crowd_epoch?: number } | undefined;
   const e = server?.crowd_epoch;
@@ -152,18 +164,26 @@ function seedChannelRoot(serverId: string): boolean {
   if (!_crypto) return false;
   const root = rootBytesForServer(serverId);
   if (!root) return false;
-  _crypto.channels.setRoot(serverId, root, crowdEpochForServer(serverId));
+  _crypto.channels.setRoot(
+    serverId,
+    root,
+    crowdEpochForServer(serverId),
+    channelModeForServer(serverId),
+  );
   return true;
 }
 
 /**
- * Apply a server's current Crowd root+epoch into the live crypto. Used by the
+ * Apply a server's current channel root+epoch+mode into the live crypto. Used by the
  * rotation paths (owner kick/join) and by the member-side sync.update handler so a
  * rotated root takes effect without waiting for the next message.
  */
-export function applyCrowdRoot(serverId: string): void {
+export function applyChannelRoot(serverId: string): void {
   seedChannelRoot(serverId);
 }
+
+/** Compatibility alias for pre-mode-transition call sites and external tests. */
+export const applyCrowdRoot = applyChannelRoot;
 
 function serverIdForChannel(channelId: string): string | undefined {
   const server = Object.values(getState().servers).find(s =>
@@ -174,13 +194,13 @@ function serverIdForChannel(channelId: string): string | undefined {
 
 /**
  * The security mode a channel message for `serverId` will actually be sent under:
- * `crowd` when the shared epoch root is seeded (the message will be E2EE), else
+ * `tree`/`crowd` when the shared epoch root is seeded (the message will be E2EE), else
  * `clear` — meaning encryption is impossible right now and the message can only be
  * kept local. Lets the send path stamp the true mode on the stored message without
  * re-deriving root availability.
  */
-export function channelSecurityMode(serverId: string): 'crowd' | 'clear' {
-  return rootBytesForServer(serverId) ? 'crowd' : 'clear';
+export function channelSecurityMode(serverId: string): ChannelSecurityMode | 'clear' {
+  return rootBytesForServer(serverId) ? channelModeForServer(serverId) : 'clear';
 }
 
 /**
@@ -204,7 +224,7 @@ export async function encryptDmEnvelope(
 }
 
 /**
- * Build a Crowd-encrypted chat.send payload for a channel (one ciphertext for
+ * Build a mode-explicit E2EE chat.send payload for a channel (one ciphertext for
  * all members). Returns null if the server's shared root is not yet seeded.
  */
 export function encryptChannelEnvelope(
@@ -216,8 +236,57 @@ export function encryptChannelEnvelope(
 ): Record<string, unknown> | null {
   if (!seedChannelRoot(serverId)) return null;
   try {
-    const wire: CrowdWire = _crypto.channels.encrypt(serverId, senderId, utf8(encodePlaintext(body, media)));
-    return { ...base, enc: 'crowd', crowd: wire };
+    const mode = channelModeForServer(serverId);
+    const wire: ChannelWire = _crypto.channels.encrypt(serverId, senderId, utf8(encodePlaintext(body, media)));
+    return { ...base, enc: mode, [mode]: wire };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Encrypt opaque replication material with the current server Crowd epoch.
+ * Unlike chat envelopes this takes bytes directly: the caller is responsible
+ * for validating the signed record before encryption and after decryption.
+ */
+export interface ChannelReplicaWire extends ChannelWire {
+  /** Explicit because a stored replica has no outer chat `enc` field. */
+  mode?: ChannelSecurityMode;
+}
+
+export function encryptChannelReplica(
+  serverId: string,
+  uploaderPeerId: string,
+  plaintext: Uint8Array,
+): ChannelReplicaWire | null {
+  if (!_crypto || !seedChannelRoot(serverId)
+    || plaintext.length === 0
+    || plaintext.length > MAX_ENCRYPTED_MESSAGE_BYTES) return null;
+  try {
+    const mode = channelModeForServer(serverId);
+    return { ..._crypto.channels.encrypt(serverId, uploaderPeerId, plaintext), mode };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Decrypt an opaque history replica. There is deliberately no Noise-peer
+ * equality check here because a storage node, not the original uploader,
+ * transports the ciphertext. Callers must bind `wire.sndr` to the replica's
+ * uploader field and verify the inner author's signature before accepting it.
+ */
+export function decryptChannelReplica(
+  serverId: string,
+  wire: unknown,
+): Uint8Array | null {
+  if (!_crypto || !validChannelWire(wire) || !seedChannelRoot(serverId)) return null;
+  try {
+    const modeValue = (wire as { mode?: unknown }).mode;
+    // Replicas written before mode agility did not carry a mode and were Crowd.
+    const mode = modeValue === undefined ? 'crowd' : modeValue;
+    if (!isChannelSecurityMode(mode)) return null;
+    return _crypto.channels.decrypt(serverId, wire, mode);
   } catch {
     return null;
   }
@@ -243,17 +312,18 @@ export function decryptInboundEnvelope(
       const decoded = decodePlaintext(fromUtf8(_crypto.seal.decrypt(remotePeerId, wire)));
       return decoded ? { ...decoded, mode: 'seal' } : null;
     }
-    if (enc === 'crowd') {
-      const wire = payload.crowd as unknown;
-      if (!validCrowdWire(wire)) return null;
+    if (enc === 'crowd' || enc === 'tree') {
+      const mode: ChannelSecurityMode = enc;
+      const wire = payload[mode] as unknown;
+      if (!validChannelWire(wire)) return null;
       // SECURITY: the authenticated connection peer must be the claimed sender.
       if (wire.sndr && wire.sndr !== remotePeerId) return null;
       const serverId = (typeof payload.server_id === 'string' && payload.server_id)
         || serverIdForChannel(scopeId);
       if (!serverId) return null;
       if (!seedChannelRoot(serverId)) return null;
-      const decoded = decodePlaintext(fromUtf8(_crypto.channels.decrypt(serverId, wire)));
-      return decoded ? { ...decoded, mode: 'crowd' } : null;
+      const decoded = decodePlaintext(fromUtf8(_crypto.channels.decrypt(serverId, wire, mode)));
+      return decoded ? { ...decoded, mode } : null;
     }
   } catch {
     return null;

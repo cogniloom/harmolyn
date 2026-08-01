@@ -10,6 +10,16 @@ vi.mock("@/hooks/useFeature", () => ({
   useFeature: vi.fn(),
 }));
 
+vi.mock("@/config/featureFlags", async () => {
+  const actual = await vi.importActual<typeof import("@/config/featureFlags")>("@/config/featureFlags");
+  return {
+    ...actual,
+    // These tests exercise the explicitly-selected HTTP compatibility path.
+    // Native-mode moderation is covered by useRuntimeMutations.zeroTrust.test.ts.
+    resolveFeatureFlag: (feature: string) => feature === "nativeEngine" ? false : actual.resolveFeatureFlag(feature as never),
+  };
+});
+
 vi.mock("@/lib/xoreinRuntimeContext", () => ({
   useRuntimeSnapshot: vi.fn(),
 }));
@@ -29,13 +39,13 @@ describe("MemberSidebar moderation", () => {
     vi.mocked(useRuntimeSnapshot).mockReturnValue({
       peer_id: "peer-local",
       identity: { peer_id: "peer-local" },
-      control_endpoint: "http://xorein.local",
+      control_endpoint: "http://127.0.0.1:7711",
     });
     vi.mocked(moderationAction).mockResolvedValue(undefined);
     vi.mocked(refreshRuntimeSnapshot).mockResolvedValue({
       peer_id: "peer-local",
       identity: { peer_id: "peer-local" },
-      control_endpoint: "http://xorein.local",
+      control_endpoint: "http://127.0.0.1:7711",
     } as never);
   });
 
@@ -54,7 +64,7 @@ describe("MemberSidebar moderation", () => {
         runtimeSnapshot={{
           peer_id: "peer-local",
           identity: { peer_id: "peer-local" },
-          control_endpoint: "http://xorein.local",
+          control_endpoint: "http://127.0.0.1:7711",
         }}
         collapsed={false}
         onToggleCollapse={vi.fn()}
@@ -101,7 +111,7 @@ describe("MemberSidebar moderation", () => {
         runtimeSnapshot={{
           peer_id: "peer-local",
           identity: { peer_id: "peer-local" },
-          control_endpoint: "http://xorein.local",
+          control_endpoint: "http://127.0.0.1:7711",
         }}
         collapsed={false}
         onToggleCollapse={vi.fn()}
@@ -143,7 +153,7 @@ describe("MemberSidebar moderation", () => {
         runtimeSnapshot={{
           peer_id: "peer-local",
           identity: { peer_id: "peer-local" },
-          control_endpoint: "http://xorein.local",
+          control_endpoint: "http://127.0.0.1:7711",
         }}
         collapsed={false}
         onToggleCollapse={vi.fn()}
@@ -184,7 +194,7 @@ describe("MemberSidebar moderation", () => {
         runtimeSnapshot={{
           peer_id: "peer-local",
           identity: { peer_id: "peer-local" },
-          control_endpoint: "http://xorein.local",
+          control_endpoint: "http://127.0.0.1:7711",
           presence: {
             "peer-remote": { status: "online", status_text: "shipping a fix", updated_at: "2026-04-22T00:00:00Z" },
           },
@@ -209,7 +219,7 @@ describe("MemberSidebar moderation", () => {
         runtimeSnapshot={{
           peer_id: "peer-local",
           identity: { peer_id: "peer-local" },
-          control_endpoint: "http://xorein.local",
+          control_endpoint: "http://127.0.0.1:7711",
           presence: {
             "peer-remote": { status: "online", status_text: "   ", updated_at: "2026-04-22T00:00:00Z" },
           },

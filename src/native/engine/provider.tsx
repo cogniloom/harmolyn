@@ -10,7 +10,6 @@
 //                  supplied yet (await unlock). The engine does not start.
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { resolveFeatureFlag } from '@/config/featureFlags';
-import { hasValidSession } from '@/native/identity/storage';
 import { configureNativeStore } from '@/native/state/store';
 import type { XoreinNativeEngine, EngineActivity } from './engine';
 
@@ -123,9 +122,9 @@ export function NativeEngineProvider({ children, passphrase, passphraseNonce = 0
     return () => { mounted = false; };
   }, [flagOn]);
 
-  // locked: a registered identity exists, no passphrase was supplied, and no
-  // valid 5-day session exists to unlock without a password.
-  const locked = flagOn && hasRegistered === true && !passphrase && !hasValidSession();
+  // Locked: a registered identity exists and no passphrase was supplied. There
+  // is intentionally no disk-backed remember-me bypass.
+  const locked = flagOn && hasRegistered === true && !passphrase;
 
   useEffect(() => {
     if (!flagOn) { setState('disabled'); return; }
@@ -157,7 +156,13 @@ export function NativeEngineProvider({ children, passphrase, passphraseNonce = 0
       engineRef.current = e;
 
       e.start().then(() => {
-        if (mounted) { setEngine(e); setState('connected'); }
+        if (mounted) {
+          setEngine(e);
+          // `start()` resolves after the initial attempt, including when no
+          // relay was reachable. Reflect the actual transport state instead of
+          // upgrading every live local runtime to `connected` unconditionally.
+          setState(e.transport.connectionState === 'connected' ? 'connected' : 'disconnected');
+        }
       }).catch((err: Error) => {
         if (!mounted) return;
         const msg = err?.message ?? String(err);

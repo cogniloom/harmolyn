@@ -9,6 +9,9 @@
 //
 // See docs / memory: friend-held recovery, password is the only secret.
 
+import { isEncryptedSyncBlob } from '../state/stateSync.js';
+import { MAX_SYNC_STATE_BYTES } from '../security/limits.js';
+
 const DB_NAME = 'xorein-recovery';
 const STORE = 'custody';
 const CONTACTS_KEY = 'harmolyn:recovery:contacts';
@@ -16,7 +19,7 @@ const MAX_CUSTODY_ENTRIES = 100;
 const MAX_PEER_ID_BYTES = 256;
 const MAX_DISPLAY_NAME_BYTES = 256;
 const MAX_CUSTODY_BLOB_BYTES = 1 * 1024 * 1024;
-const MAX_CUSTODY_STATE_BYTES = 4 * 1024 * 1024;
+const MAX_CUSTODY_STATE_BYTES = Math.ceil((MAX_SYNC_STATE_BYTES + 16) * 4 / 3) + 4096;
 
 function hasControlCharacters(value: string): boolean {
   for (let i = 0; i < value.length; i++) {
@@ -45,7 +48,7 @@ function validPeerId(value: unknown): value is string {
 function boundedJsonObject(value: unknown, maxBytes: number): value is Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   try {
-    return JSON.stringify(value).length <= maxBytes;
+    return new TextEncoder().encode(JSON.stringify(value)).length <= maxBytes;
   } catch {
     return false;
   }
@@ -57,7 +60,7 @@ function validCustodyEntry(value: unknown): value is CustodyEntry {
   return validPeerId(entry.ownerPeerId)
     && (typeof entry.ownerDisplayName === 'string' && entry.ownerDisplayName.length <= MAX_DISPLAY_NAME_BYTES)
     && boundedJsonObject(entry.blob, MAX_CUSTODY_BLOB_BYTES)
-    && (entry.state === undefined || boundedJsonObject(entry.state, MAX_CUSTODY_STATE_BYTES))
+    && (entry.state === undefined || (isEncryptedSyncBlob(entry.state) && boundedJsonObject(entry.state, MAX_CUSTODY_STATE_BYTES)))
     && typeof entry.receivedAt === 'string' && entry.receivedAt.length <= 64;
 }
 

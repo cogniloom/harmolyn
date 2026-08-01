@@ -1,9 +1,0 @@
-Harmolyn browser smoke suite: happy path
-Base URL: http://127.0.0.1:5173
-Create/join: Alpha Node and Beta Node surfaced in the rail
-Chat: Browser smoke message persisted after reload
-Stickers: picker sent a sticker into the timeline
-Friends: sent request to u6
-Settings: message layout persisted as BUBBLES after reload
-About: source code link points at the AGPL Corresponding Source
-Evidence: .sisyphus/evidence/task-10-e2e-success.png

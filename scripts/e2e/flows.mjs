@@ -5,7 +5,10 @@ import { until } from './harness.mjs';
 export async function register(c, name, password = 'correct horse battery') {
   const { page } = c;
   await until(async () => (await page.locator('#root').innerText()).length > 50, { what: `${c.name} boot` });
-  await page.getByRole('button', { name: 'Create an account' }).click();
+  // Fresh installs may show the auth welcome screen ("Create an account"),
+  // while guest-first startup exposes the same flow from its persistent
+  // "Create account" bar. Exercise whichever entry point the user sees.
+  await page.getByRole('button', { name: /^Create (?:an )?account$/i }).first().click();
   await page.getByPlaceholder('e.g. Sam').fill(name);
   await page.getByPlaceholder('At least 10 characters').fill(password);
   await page.getByPlaceholder('Re-enter your password').fill(password);
@@ -58,7 +61,10 @@ export async function joinByInvite(c, invite, expectedServerName) {
     await page.getByRole('button', { name: 'Create Server' }).click();
     await page.getByRole('button', { name: 'HAVE AN INVITE ALREADY?' }).click();
   }
-  const box = page.getByRole('textbox').last();
+  // Scope to the modal's labelled field. A user can open this flow while a
+  // channel/DM composer remains mounted behind the dialog; selecting the last
+  // textbox silently filled that background composer instead of the invite.
+  const box = page.getByRole('textbox', { name: 'INVITE LINK' });
   await box.fill(invite);
   await page.getByRole('button', { name: 'Join Server' }).click();
   await page.getByRole('button', { name: `Server: ${expectedServerName}` }).waitFor({ timeout: 30000 });

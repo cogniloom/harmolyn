@@ -107,7 +107,7 @@ export const NotificationSettings: React.FC = () => {
           <div className="space-y-3">
             <ToggleRow
               label="Suppress @everyone / @here"
-              desc="Ignore server-wide pings"
+              desc="Ignore Space-wide pings"
               checked={preferences.suppressEveryone}
               onChange={(value) => setPreferences((prev) => ({ ...prev, suppressEveryone: value }))}
             />

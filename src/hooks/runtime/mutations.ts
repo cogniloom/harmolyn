@@ -2,6 +2,7 @@ import { useMutation, useQuery } from '@tanstack/react-query';
 import { useRuntimeMutations } from './useRuntimeMutations';
 import { useRuntimeSnapshot } from '@/lib/xoreinRuntimeContext';
 import { useNodeHealth } from '@/hooks/useNodeHealth';
+import { resolveFeatureFlag } from '@/config/featureFlags';
 import {
   listAuditLog, listAutoModRules, createAutoModRule, updateAutoModRule, deleteAutoModRule,
   listBots, createBot, deleteBot,
@@ -282,72 +283,93 @@ export function useRemoveRelay() {
 // ─── Audit Log ─────────────────────────────────────────────
 export function useAuditLog(serverId: string, options?: { action?: string; limit?: number }) {
   const snapshot = useRuntimeSnapshot();
+  const featureEnabled = resolveFeatureFlag('auditLog');
   // Pause while the support node is offline so the poll does not spam a dead
   // endpoint; flipping back online re-enables (and immediately refetches).
   const { nodeOffline } = useNodeHealth();
   return useQuery({
     queryKey: ['audit-log', serverId, options?.action, options?.limit],
     queryFn: () => listAuditLog(snapshot, serverId, options),
-    enabled: !!serverId && !nodeOffline,
-    refetchInterval: nodeOffline ? false : 10_000,
+    enabled: featureEnabled && !!serverId && !nodeOffline,
+    refetchInterval: featureEnabled && !nodeOffline ? 10_000 : false,
   });
 }
 
 // ─── AutoMod ───────────────────────────────────────────────
 export function useAutoModRules(serverId: string) {
   const snapshot = useRuntimeSnapshot();
+  const featureEnabled = resolveFeatureFlag('autoMod');
   const { nodeOffline } = useNodeHealth();
   return useQuery({
     queryKey: ['automod-rules', serverId],
     queryFn: () => listAutoModRules(snapshot, serverId),
-    enabled: !!serverId && !nodeOffline,
+    enabled: featureEnabled && !!serverId && !nodeOffline,
   });
 }
 
 export function useCreateAutoModRule(serverId: string) {
   const snapshot = useRuntimeSnapshot();
+  const featureEnabled = resolveFeatureFlag('autoMod');
   return useMutation({
-    mutationFn: (input: { name: string; type: AutoModRuleType; enabled: boolean; keyword_patterns?: string[]; actions: AutoModAction[] }) =>
-      createAutoModRule(snapshot, serverId, input),
+    mutationFn: (input: { name: string; type: AutoModRuleType; enabled: boolean; keyword_patterns?: string[]; actions: AutoModAction[] }) => {
+      if (!featureEnabled) return Promise.reject(new Error('AutoMod is not available in this runtime.'));
+      return createAutoModRule(snapshot, serverId, input);
+    },
   });
 }
 
 export function useUpdateAutoModRule(serverId: string) {
   const snapshot = useRuntimeSnapshot();
+  const featureEnabled = resolveFeatureFlag('autoMod');
   return useMutation({
-    mutationFn: ({ ruleId, patch }: { ruleId: string; patch: { name?: string; enabled?: boolean; keyword_patterns?: string[]; actions?: AutoModAction[] } }) =>
-      updateAutoModRule(snapshot, serverId, ruleId, patch),
+    mutationFn: ({ ruleId, patch }: { ruleId: string; patch: { name?: string; enabled?: boolean; keyword_patterns?: string[]; actions?: AutoModAction[] } }) => {
+      if (!featureEnabled) return Promise.reject(new Error('AutoMod is not available in this runtime.'));
+      return updateAutoModRule(snapshot, serverId, ruleId, patch);
+    },
   });
 }
 
 export function useDeleteAutoModRule(serverId: string) {
   const snapshot = useRuntimeSnapshot();
+  const featureEnabled = resolveFeatureFlag('autoMod');
   return useMutation({
-    mutationFn: ({ ruleId }: { ruleId: string }) => deleteAutoModRule(snapshot, serverId, ruleId),
+    mutationFn: ({ ruleId }: { ruleId: string }) => {
+      if (!featureEnabled) return Promise.reject(new Error('AutoMod is not available in this runtime.'));
+      return deleteAutoModRule(snapshot, serverId, ruleId);
+    },
   });
 }
 
 // ─── Bots ───────────────────────────────────────────────────
 export function useBots(serverId: string) {
   const snapshot = useRuntimeSnapshot();
+  const featureEnabled = resolveFeatureFlag('bots');
   const { nodeOffline } = useNodeHealth();
   return useQuery({
     queryKey: ['bots', serverId],
     queryFn: () => listBots(snapshot, serverId),
-    enabled: !!serverId && !nodeOffline,
+    enabled: featureEnabled && !!serverId && !nodeOffline,
   });
 }
 
 export function useCreateBot(serverId: string) {
   const snapshot = useRuntimeSnapshot();
+  const featureEnabled = resolveFeatureFlag('bots');
   return useMutation({
-    mutationFn: ({ name }: { name: string }) => createBot(snapshot, serverId, name),
+    mutationFn: ({ name }: { name: string }) => {
+      if (!featureEnabled) return Promise.reject(new Error('Bots are not available in this runtime.'));
+      return createBot(snapshot, serverId, name);
+    },
   });
 }
 
 export function useDeleteBot(serverId: string) {
   const snapshot = useRuntimeSnapshot();
+  const featureEnabled = resolveFeatureFlag('bots');
   return useMutation({
-    mutationFn: ({ botId }: { botId: string }) => deleteBot(snapshot, serverId, botId),
+    mutationFn: ({ botId }: { botId: string }) => {
+      if (!featureEnabled) return Promise.reject(new Error('Bots are not available in this runtime.'));
+      return deleteBot(snapshot, serverId, botId);
+    },
   });
 }

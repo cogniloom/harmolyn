@@ -13,7 +13,7 @@ import {
   nativeAddReaction, nativeRemoveReaction, nativeEditMessage,
   nativeAddRelay, nativeRemoveRelay,
   nativeCreateRole, nativeUpdateRole, nativeDeleteRole, nativeAssignRole,
-  nativeCastPollVote, nativeRemoveMember,
+  nativeCastPollVote, nativeRemoveMember, rotateChannelEpoch,
   nativeSearchMessages,
 } from './mutations';
 const TEST_STATE_KEY = new Uint8Array(32).fill(7);
@@ -153,6 +153,8 @@ describe('mutations', () => {
     expect(srv.name).toBe('My Server');
     expect(Object.values(srv.channels).length).toBe(1);
     expect(Object.values(srv.channels)[0].name).toBe('general');
+    expect(srv.manifest?.history_retention_messages).toBe(100);
+    expect(srv.manifest?.join_history_messages).toBe(100);
     expect(getState().servers[srv.id]).toBeTruthy();
   });
 
@@ -194,10 +196,11 @@ describe('mutations', () => {
   });
 
   it('nativeAddRelay / nativeRemoveRelay', () => {
-    nativeAddRelay('/ip4/9.9.9.9/tcp/9999');
-    expect(getState().relay_addrs).toContain('/ip4/9.9.9.9/tcp/9999');
-    nativeRemoveRelay('/ip4/9.9.9.9/tcp/9999');
-    expect(getState().relay_addrs).not.toContain('/ip4/9.9.9.9/tcp/9999');
+    const relay = '/ip4/127.0.0.1/tcp/9999/ws/p2p/12D3KooWNNQp1tmRbcLMrqS866jRJbzoPF6sNEZRoPEVdVwLqTv6';
+    nativeAddRelay(relay);
+    expect(getState().relay_addrs).toContain(relay);
+    nativeRemoveRelay(relay);
+    expect(getState().relay_addrs).not.toContain(relay);
   });
 });
 
@@ -416,7 +419,26 @@ describe('polls — P2P poll vote accumulation (Goal 9)', () => {
   });
 });
 
-describe('crowd epoch rotation on member kick', () => {
+describe('channel epoch rotation on membership changes', () => {
+  it('automatically transitions at 51 members and uses re-entry hysteresis', () => {
+    setNativeIdentity({ id: 'owner', peer_id: 'owner' });
+    const srv = nativeCreateServer('Mode Test');
+    expect(getState().servers[srv.id]?.channel_security_mode).toBe('tree');
+
+    getState().servers[srv.id]!.members = Array.from({ length: 51 }, (_, i) => i === 0 ? 'owner' : `p-${i}`);
+    expect(rotateChannelEpoch(srv.id)).toBe(true);
+    expect(getState().servers[srv.id]?.channel_security_mode).toBe('crowd');
+    expect(getState().servers[srv.id]?.manifest?.security_mode).toBe('crowd');
+
+    getState().servers[srv.id]!.members = getState().servers[srv.id]!.members.slice(0, 50);
+    rotateChannelEpoch(srv.id);
+    expect(getState().servers[srv.id]?.channel_security_mode).toBe('crowd');
+
+    getState().servers[srv.id]!.members = getState().servers[srv.id]!.members.slice(0, 40);
+    rotateChannelEpoch(srv.id);
+    expect(getState().servers[srv.id]?.channel_security_mode).toBe('tree');
+  });
+
   it('nativeRemoveMember rotates crowd_root AND bumps crowd_epoch when one is set', () => {
     setNativeIdentity({ id: 'owner', peer_id: 'owner' });
     const srv = nativeCreateServer('Crowd Test');

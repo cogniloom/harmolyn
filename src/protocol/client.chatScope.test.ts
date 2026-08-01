@@ -8,8 +8,8 @@
 //     encrypted and namespaced per peer id — NO plaintext message body is ever
 //     recoverable from browser storage after a write.
 //   • Guests (ephemeral mode) leave NOTHING in browser storage at all.
-//   • Unconfigured mode (no identity) never writes plaintext either — writes
-//     stay in memory; only pre-existing LEGACY plaintext blobs remain readable.
+//   • Unconfigured mode (no identity) never writes or reads plaintext storage —
+//     writes stay in memory and legacy blobs are purged.
 //   • Legacy plaintext blobs are purged the moment persistence is configured.
 //   • Blobs are bound to (namespace, scope): another account or another scope
 //     cannot read or merge them.
@@ -147,10 +147,11 @@ describe("chat-scope persistence — no plaintext at rest (regression)", () => {
     expect(readPersistedChatScopeState("ch-old").messages).toEqual([]);
   });
 
-  it("still READS a pre-existing legacy plaintext blob in unconfigured mode (migration compat)", () => {
+  it("does not read a pre-existing legacy plaintext blob in unconfigured mode", () => {
     window.localStorage.setItem(`${PREFIX}ch-legacy`, JSON.stringify(makeState("legacy body")));
 
-    expect(readPersistedChatScopeState("ch-legacy").messages[0]?.content).toBe("legacy body");
+    expect(readPersistedChatScopeState("ch-legacy").messages).toEqual([]);
+    expect(window.localStorage.getItem(`${PREFIX}ch-legacy`)).toBeNull();
   });
 });
 

@@ -11,8 +11,27 @@ const TRANSIENT: EngineActivityPhase[] = ['starting', 'decrypting', 'connecting-
  * phase so the user is never left wondering "is it still working?".
  */
 export const ConnectionActivityPill: React.FC = () => {
-  const { activity } = useNativeEngine();
+  const { activity, state } = useNativeEngine();
   const { phase, message, detail } = activity;
+
+  // Engine activity also covers local work such as mailbox scans. A completed
+  // local scan must never turn a relay-less, peer-less runtime green. The
+  // provider state is derived from the live transport/peer path, so it wins
+  // over a stale "connected" activity message.
+  if (state === 'disconnected') {
+    const findingDetail = 'No live peer path is available yet. Peer and relay discovery continues automatically.';
+    return (
+      <div
+        role="status"
+        title={findingDetail}
+        aria-label={`Network status: FINDING PEERS — ${findingDetail}`}
+        className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-primary/10 border border-primary/20 text-primary text-[10px] font-medium cursor-help"
+      >
+        <Loader2 size={11} className="flex-shrink-0 animate-spin" />
+        <span className="truncate">Finding peers</span>
+      </div>
+    );
+  }
 
   // Nothing meaningful to show before the engine reports a phase, or during
   // background relay reconnects (handled silently by the engine).

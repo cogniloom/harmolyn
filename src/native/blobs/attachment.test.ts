@@ -3,6 +3,11 @@
 // travels inside the E2EE message — the node never sees plaintext.
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { uploadEncryptedAttachment, downloadDecryptedAttachment } from './blobs.js';
+import { addServer, initStore, setNativeIdentity } from '../state/store.js';
+import { registerPeerSync } from '../sync/registry.js';
+import type { PeerSync } from '../sync/peersync.js';
+import { resetBlobSwarmForTests } from './swarm.js';
+import { resetNodeHealthForTests } from '../../lib/nodeHealth.js';
 
 function mockNodeUploads() {
   const store = new Map<string, string>();
@@ -34,7 +39,10 @@ function mockNodeUploads() {
 }
 
 describe('encrypted attachments (priv-4)', () => {
-  afterEach(() => {
+  afterEach(async () => {
+    registerPeerSync(null as unknown as PeerSync);
+    resetNodeHealthForTests();
+    await resetBlobSwarmForTests();
     vi.restoreAllMocks();
     vi.unstubAllEnvs();
   });
@@ -72,17 +80,15 @@ describe('encrypted attachments (priv-4)', () => {
     expect(att.origin).toBe('https://node.xorein.com');
   });
 
-  it('downloads from the attachment origin (cross-node), not the local default', async () => {
+  it('rejects a peer-chosen attachment origin instead of leaking to an arbitrary host', async () => {
     const { store, urls } = mockNodeUploads();
     const att = await uploadEncryptedAttachment(new TextEncoder().encode('data'), 'f', 'text/plain');
     // Simulate the ref having been minted on a different node.
     const uploadedId = [...store.keys()][0];
     const remote = { ...att, id: uploadedId, origin: 'https://relay.example.org' };
     urls.length = 0;
-    // The remote node has no such blob (our mock store keys off id only) — but the point is
-    // the FETCH URL uses the ref's origin, not the default.
-    await downloadDecryptedAttachment(remote).catch(() => undefined);
-    expect(urls[0].startsWith('https://relay.example.org/v1/uploads/')).toBe(true);
+    await expect(downloadDecryptedAttachment(remote)).rejects.toThrow(/selected support node/i);
+    expect(urls).toEqual([]);
   });
 
   it('fails the integrity check if the ciphertext is tampered', async () => {
@@ -92,5 +98,63 @@ describe('encrypted attachments (priv-4)', () => {
     const id = [...store.keys()][0];
     store.set(id, 'data:application/octet-stream;base64,' + btoa('totally different bytes here!!'));
     await expect(downloadDecryptedAttachment(att)).rejects.toThrow();
+  });
+
+  it('uses the replica protocol directly for scoped attachments without probing legacy HTTP', async () => {
+    localStorage.clear();
+    initStore();
+    setNativeIdentity({ id: 'me', peer_id: 'me' });
+    addServer({
+      id: 'server',
+      name: 'Files',
+      owner_peer_id: 'me',
+      members: ['me', 'p1', 'p2', 'p3'],
+      channels: {
+        channel: {
+          id: 'channel',
+          server_id: 'server',
+          name: 'general',
+          voice: false,
+        },
+      },
+    });
+    const fetchMock = vi.fn().mockRejectedValue(new TypeError('legacy HTTP route is unavailable'));
+    vi.stubGlobal('fetch', fetchMock);
+    const requestPeer = vi.fn(async (
+      _peerId: string,
+      _protocol: string,
+      operation: string,
+      payload: Record<string, unknown>,
+    ) => {
+      if (operation === 'sync.blob.inventory') return { ok: true, indices: [] };
+      if (operation === 'sync.blob.store') {
+        return {
+          ok: true,
+          stored_indices: (payload.chunks as Array<{ index: number }>).map(chunk => chunk.index),
+        };
+      }
+      return { ok: false };
+    });
+    registerPeerSync({ requestPeer } as unknown as PeerSync);
+
+    const plaintext = new TextEncoder().encode('zero-node attachment');
+    const att = await uploadEncryptedAttachment(
+      plaintext,
+      'offline.txt',
+      'text/plain',
+      'channel',
+    );
+
+    expect(att.origin).toBeUndefined();
+    expect(att.swarm?.provider_peer_ids).toHaveLength(3);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(requestPeer).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.any(String),
+      'sync.blob.store',
+      expect.objectContaining({ manifest: expect.any(Object) }),
+    );
+    const recovered = await downloadDecryptedAttachment(att);
+    expect([...recovered]).toEqual([...plaintext]);
   });
 });

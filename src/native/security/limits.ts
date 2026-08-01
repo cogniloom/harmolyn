@@ -1,4 +1,5 @@
 import type { XoreinAttachment } from '../../types.js';
+import { isTrustedHttpOrigin } from '../../lib/trustedOrigin.js';
 
 // These limits are deliberately conservative. They bound work and storage at
 // every trust boundary while leaving enough room for normal text, attachment
@@ -12,6 +13,10 @@ export const MAX_ATTACHMENT_NAME_BYTES = 512;
 export const MAX_ATTACHMENT_TYPE_BYTES = 256;
 export const MAX_ATTACHMENT_KEY_BYTES = 128;
 export const MAX_ATTACHMENT_ORIGIN_BYTES = 512;
+export const BLOB_SWARM_MIN_CHUNK_BYTES = 64 * 1024;
+export const BLOB_SWARM_MAX_CHUNK_BYTES = 256 * 1024;
+export const BLOB_SWARM_MAX_CHUNKS = 1025;
+export const BLOB_SWARM_MAX_PROVIDERS = 2048;
 export const MAX_SYNC_STATE_BYTES = 4 * 1024 * 1024;
 export const MAX_MAILBOX_BODY_BYTES = 1 * 1024 * 1024;
 export const MAX_MAILBOX_DELIVERIES = 100;
@@ -85,9 +90,7 @@ function safeOrigin(value: unknown): value is string | undefined {
   if (!boundedText(value, MAX_ATTACHMENT_ORIGIN_BYTES)) return false;
   try {
     const parsed = new URL(value);
-    return (parsed.protocol === 'https:' || parsed.protocol === 'http:')
-      && !parsed.username
-      && !parsed.password
+    return isTrustedHttpOrigin(parsed)
       && (parsed.pathname === '' || parsed.pathname === '/')
       && !parsed.search
       && !parsed.hash;
@@ -125,6 +128,42 @@ export function isSafeAttachment(value: unknown): value is XoreinAttachment {
   if (value.content_hash !== undefined
     && (typeof value.content_hash !== 'string' || !/^[0-9a-f]{64}$/.test(value.content_hash))) {
     return false;
+  }
+  if (value.swarm !== undefined && !isSafeBlobSwarmManifest(value.swarm)) return false;
+  return true;
+}
+
+export function isSafeBlobSwarmManifest(value: unknown): value is import('../../types.js').BlobSwarmManifest {
+  if (!isPlainObject(value)
+    || value.version !== 1
+    || typeof value.blob_id !== 'string'
+    || !/^[0-9a-f]{64}$/.test(value.blob_id)
+    || (value.node_namespace !== undefined
+      && (typeof value.node_namespace !== 'string'
+        || !/^[A-Za-z0-9_-]{43}$/.test(value.node_namespace)))
+    || !boundedText(value.scope_id, 256)
+    || !boundedText(value.owner_peer_id, 256)
+    || !Number.isSafeInteger(value.ciphertext_size)
+    || Number(value.ciphertext_size) < 16
+    || Number(value.ciphertext_size) > MAX_ATTACHMENT_BYTES + 16
+    || !Number.isSafeInteger(value.chunk_size)
+    || Number(value.chunk_size) < BLOB_SWARM_MIN_CHUNK_BYTES
+    || Number(value.chunk_size) > BLOB_SWARM_MAX_CHUNK_BYTES
+    || !Array.isArray(value.chunk_hashes)
+    || value.chunk_hashes.length < 1
+    || value.chunk_hashes.length > BLOB_SWARM_MAX_CHUNKS
+    || value.chunk_hashes.some(hash => typeof hash !== 'string' || !/^[0-9a-f]{64}$/.test(hash))) {
+    return false;
+  }
+  const expectedChunks = Math.ceil(Number(value.ciphertext_size) / Number(value.chunk_size));
+  if (expectedChunks !== value.chunk_hashes.length) return false;
+  if (value.provider_peer_ids !== undefined) {
+    if (!Array.isArray(value.provider_peer_ids)
+      || value.provider_peer_ids.length > BLOB_SWARM_MAX_PROVIDERS
+      || value.provider_peer_ids.some(peer => !boundedText(peer, 256))) {
+      return false;
+    }
+    if (new Set(value.provider_peer_ids).size !== value.provider_peer_ids.length) return false;
   }
   return true;
 }

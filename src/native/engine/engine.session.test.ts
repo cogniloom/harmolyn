@@ -1,13 +1,9 @@
-// P0 regression cover: reload must keep a registered user signed in and
-// rehydrate their state.
+// Regression cover: registered state remains encrypted at rest, and a reload
+// never unlocks an identity without the password.
 //
-//  (i)  register() must establish the remember-me session at REGISTRATION time
-//       (previously only a later manual unlock saved it, so the first reload
-//       after account creation always demanded the password again).
-//  (ii) bootstrapLocalState() after a "reload" with a persisted identity must
-//       restore the SAME identity from the session and rehydrate the encrypted
-//       state (profile, friends, DMs) — no guest fallback — and pre-bootstrap
-//       stray store writes must never clobber the registered localStorage blob.
+//  (i)  register() persists only the password-encrypted identity and state.
+//  (ii) bootstrapLocalState() with the password rehydrates the same identity;
+//       without it, the engine stays locked.
 import { describe, it, expect, beforeEach } from 'vitest';
 import { installFakeIndexedDB, resetFakeIndexedDB } from '../identity/fakeIndexedDB.testutil';
 import { generateIdentity, identitySigningKey } from '../identity/identity';
@@ -17,11 +13,9 @@ import {
   encryptIdentity,
   saveEncryptedIdentity,
   hasPersistedIdentity,
-  saveSessionIdentity,
   loadSessionIdentity,
   hasValidSession,
   clearSessionIdentity,
-  setRememberMeEnabled,
   ARGON2_TEST_PARAMS,
 } from '../identity/storage';
 import { XoreinNativeEngine } from './engine';
@@ -45,10 +39,6 @@ beforeEach(() => {
   localStorage.clear();
   sessionStorage.clear();
   setStateEncryptionKey(null);
-  // Remember-me is now OPT-IN (default off — the at-rest security finding).
-  // These tests exercise the session-restore machinery itself, so they run as a
-  // user who explicitly chose "keep me signed in on this device".
-  setRememberMeEnabled(true);
 });
 
 /** Persist a registered user's account state the way a live session does. */
@@ -78,8 +68,8 @@ function simulateReloadBoot(): void {
   initStore();
 }
 
-describe('register() session persistence (defect i)', () => {
-  it('persists the encrypted identity AND a remember-me session at registration', async () => {
+describe('register() persistence', () => {
+  it('persists the encrypted identity but never a reload-unlock session', async () => {
     const id = await generateIdentity();
     const engine = new XoreinNativeEngine({});
     // Inject the (guest) identity like the live promotion path: register() only
@@ -90,11 +80,8 @@ describe('register() session persistence (defect i)', () => {
     await engine.register('a strong password', 'Bob');
 
     expect(await hasPersistedIdentity()).toBe(true);
-    // The session must exist NOW — a reload right after registration must not
-    // demand the password again.
-    expect(hasValidSession()).toBe(true);
-    const restored = await loadSessionIdentity();
-    expect(restored?.peerId).toBe(id.peerId);
+    expect(hasValidSession()).toBe(false);
+    expect(await loadSessionIdentity()).toBeNull();
     // And the registered profile is in the store for the snapshot.
     expect(getState().identity?.profile?.display_name).toBe('Bob');
   }, 30_000); // register() runs the real (production-parameter) Argon2 KDF
@@ -107,20 +94,18 @@ describe('register() session persistence (defect i)', () => {
   });
 });
 
-describe('bootstrapLocalState() after reload (defect ii)', () => {
-  it('restores identity from the session and rehydrates state — no guest fallback', async () => {
+describe('bootstrapLocalState() after reload', () => {
+  it('requires the password before rehydrating registered state', async () => {
     const id = await generateIdentity();
     seedRegisteredState(id);
     await saveEncryptedIdentity(encryptIdentity(id, 'pw-123456789', ARGON2_TEST_PARAMS));
-    await saveSessionIdentity(id);
     const blobBefore = localStorage.getItem(STATE_KEY);
     expect(blobBefore).toBeTruthy();
     expect((JSON.parse(blobBefore!) as { v?: number }).v).toBe(2); // encrypted at rest
 
     simulateReloadBoot();
 
-    // NO passphrase: the persisted session must carry the unlock.
-    const engine = new XoreinNativeEngine({});
+    const engine = new XoreinNativeEngine({ passphrase: 'pw-123456789' });
     const { guestMode } = await engine.bootstrapLocalState();
 
     expect(guestMode).toBe(false);
@@ -137,7 +122,6 @@ describe('bootstrapLocalState() after reload (defect ii)', () => {
     const id = await generateIdentity();
     seedRegisteredState(id);
     await saveEncryptedIdentity(encryptIdentity(id, 'pw-123456789', ARGON2_TEST_PARAMS));
-    await saveSessionIdentity(id);
     const blobBefore = localStorage.getItem(STATE_KEY);
 
     simulateReloadBoot();
@@ -149,7 +133,7 @@ describe('bootstrapLocalState() after reload (defect ii)', () => {
     expect(localStorage.getItem(STATE_KEY)).toBe(blobBefore); // blob intact
     expect(sessionStorage.getItem(STATE_KEY)).toBeNull();     // locked state is memory-only
 
-    const engine = new XoreinNativeEngine({});
+    const engine = new XoreinNativeEngine({ passphrase: 'pw-123456789' });
     await engine.bootstrapLocalState();
     // Full rehydration despite the stray write.
     expect(getState().identity?.profile?.display_name).toBe('Bob');
@@ -210,10 +194,10 @@ describe('bootstrapLocalState() after reload (defect ii)', () => {
     const w2 = await bobSeal1.encrypt(aliceId.peerId, utf8('hello alice'), aliceBundle);
     expect(new TextDecoder().decode(aliceSeal.decrypt(bobId.peerId, w2))).toBe('hello alice');
 
-    // "Reload": fresh engine, no passphrase — the 5-day session unlocks it and
-    // wireScopeCrypto(false) must restore the persisted ratchets.
+    // "Reload": fresh engine with the password — wireScopeCrypto(false) must
+    // restore the persisted ratchets.
     simulateReloadBoot();
-    const bob2 = new XoreinNativeEngine({});
+    const bob2 = new XoreinNativeEngine({ passphrase: 'a strong password' });
     const boot2 = await bob2.bootstrapLocalState();
     expect(boot2.guestMode).toBe(false);
     expect(bob2.identity.peerId).toBe(bobId.peerId);
@@ -231,7 +215,7 @@ describe('bootstrapLocalState() after reload (defect ii)', () => {
     expect(new TextDecoder().decode(aliceSeal.decrypt(bobId.peerId, w4))).toBe('bob back online');
   }, 40_000); // register() runs the real (production-parameter) Argon2 KDF
 
-  it('unlocking with the passphrase (no session) also saves a session for next time', async () => {
+  it('unlocking with the passphrase does not create a reload-unlock session', async () => {
     const id = await generateIdentity();
     seedRegisteredState(id);
     await saveEncryptedIdentity(encryptIdentity(id, 'pw-123456789', ARGON2_TEST_PARAMS));
@@ -244,8 +228,8 @@ describe('bootstrapLocalState() after reload (defect ii)', () => {
     expect(guestMode).toBe(false);
     expect(engine.identity.peerId).toBe(id.peerId);
     expect(getState().identity?.profile?.display_name).toBe('Bob');
-    // The fire-and-forget session save settles on the microtask queue.
+    // The fire-and-forget cleanup settles on the microtask queue.
     await new Promise((r) => setTimeout(r, 50));
-    expect(hasValidSession()).toBe(true);
+    expect(hasValidSession()).toBe(false);
   });
 });

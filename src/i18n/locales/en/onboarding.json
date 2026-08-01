@@ -7,16 +7,16 @@
       "privacyNote": "Everything you send is private by default. Look for the lock badge at the top of each chat."
     },
     "servers": {
-      "title": "Servers are communities",
+      "title": "Spaces are communities",
       "leftColumn": "The column on the left",
-      "leftColumnBody": "Each round icon is a server — a community you've joined or created. Tap one to open it.",
+      "leftColumnBody": "Each round icon is a Space — a community you've joined or created. Tap one to open it.",
       "joining": "Joining and creating",
-      "joiningBody": "Use the + button to create your own server or paste an invite link a friend shared with you."
+      "joiningBody": "Use the + button to create your own Space or paste an invite link a friend shared with you."
     },
     "channels": {
       "title": "Channels organize the talk",
       "text": "Text channels",
-      "textBody": "Inside a server, channels split conversations by topic. Tap a channel name to read and post in it.",
+      "textBody": "Inside a Space, channels split conversations by topic. Tap a channel name to read and post in it.",
       "finding": "Finding things",
       "findingBody": "Search looks through the messages already on your device — results show how complete they are, so you're never misled."
     },

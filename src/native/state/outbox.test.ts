@@ -1,12 +1,13 @@
 // Tier-2 T2.1: the durable outbound queue actually persists and replays messages
 // composed while the transport was down — instead of discarding them behind a
 // misleading "offline_queued" badge.
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest';
 import { initStore, getState, setNativeIdentity, addServer, updateServer, getOutbox, enqueueOutbox, addMessage, addReport } from './store';
 import { ChannelCrypto } from '../crowd/channel';
 import { SealSessions } from '../seal/session';
-import { generateSigningIdentity } from '../crypto/hybrid';
+import { generateIdentity, identitySigningKey, type XoreinIdentity } from '../identity/identity';
 import { registerScopeCrypto, resetScopeCrypto } from '../sync/secureEnvelope';
+import { registerHistoryIdentity, resetHistoryIdentity } from '../sync/signedHistory';
 import { registerPeerSync } from '../sync/registry';
 import { nativeSendChannelMessage, nativeSendDmMessage, nativeDrainOutbox } from './mutations';
 import { ensureDm } from './store';
@@ -14,7 +15,8 @@ import type { PeerSync } from '../sync/peersync';
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 15));
 
-const ME = 'me';
+let identity: XoreinIdentity;
+let ME = '';
 const ALICE = 'alice';
 const SRV = 'srv1';
 const CHAN = 'chan1';
@@ -27,16 +29,25 @@ function freshRootB64(): string {
 }
 
 describe('durable outbox (T2.1)', () => {
+  beforeAll(async () => {
+    identity = await generateIdentity();
+    ME = identity.peerId;
+  });
+
   beforeEach(() => {
     localStorage.clear();
     initStore();
     setNativeIdentity({ id: ME, peer_id: ME });
-    registerScopeCrypto({ seal: new SealSessions(ME, generateSigningIdentity()), channels: new ChannelCrypto(), fetchBundle: async () => null });
-    addServer({ id: SRV, name: 'S', owner_peer_id: ME, members: [ME, ALICE], channels: { [CHAN]: { id: CHAN, server_id: SRV, name: 'general', voice: false } } });
+    registerHistoryIdentity(identity);
+    registerScopeCrypto({ seal: new SealSessions(ME, identitySigningKey(identity)), channels: new ChannelCrypto(), fetchBundle: async () => null });
+    addServer({ id: SRV, name: 'S', owner_peer_id: ME, members: [ME, ALICE], channel_security_mode: 'crowd', channel_crypto_profile: 'scope-aad-v2', channels: { [CHAN]: { id: CHAN, server_id: SRV, name: 'general', voice: false } } });
     updateServer(SRV, { crowd_root: freshRootB64(), crowd_epoch: 0 });
     registerPeerSync(null as unknown as PeerSync); // relay down
   });
-  afterEach(() => resetScopeCrypto());
+  afterEach(() => {
+    resetScopeCrypto();
+    resetHistoryIdentity();
+  });
 
   it('queues an encrypted envelope when the transport is down (not discarded)', () => {
     const msg = nativeSendChannelMessage(CHAN, 'hello while offline');

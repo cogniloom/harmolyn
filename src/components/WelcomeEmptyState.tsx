@@ -3,7 +3,7 @@ import { Sparkles, Plus, Link2, UserPlus, Network, Lock, KeyRound, ArrowRight } 
 
 interface WelcomeEmptyStateProps {
   hasIdentity: boolean;
-  /** Whether connectivity actions (create/join server) are currently available. */
+  /** Whether connectivity actions (create/join Space) are currently available. */
   canUseConnectivity: boolean;
   onCreateServer: () => void;
   onJoinServer: () => void;
@@ -19,7 +19,7 @@ const FACTS: { icon: React.ReactNode; text: string }[] = [
 ];
 
 /**
- * Friendly first-screen for a connected user who has no servers yet. Replaces the
+ * Friendly first-screen for a connected user who has no Spaces yet. Replaces the
  * cryptic "Initiate Hub: #empty-shell" placeholder with a plain-language intro to
  * Harmolyn + xorein and three clear next steps.
  */
@@ -34,8 +34,8 @@ export const WelcomeEmptyState: React.FC<WelcomeEmptyStateProps> = ({
   const actionsEnabled = hasIdentity && canUseConnectivity;
 
   const actions: { icon: React.ReactNode; title: string; body: string; onClick: () => void }[] = [
-    { icon: <Plus size={18} className="text-primary" />, title: 'Create a server', body: 'Start a space for your community or friends.', onClick: onCreateServer },
-    { icon: <Link2 size={18} className="text-primary" />, title: 'Join with an invite', body: 'Paste an invite link to join an existing server.', onClick: onJoinServer },
+    { icon: <Plus size={18} className="text-primary" />, title: 'Create a Space', body: 'Start a community for friends, a team, or a project.', onClick: onCreateServer },
+    { icon: <Link2 size={18} className="text-primary" />, title: 'Join with an invite', body: 'Paste an invite link to join an existing Space.', onClick: onJoinServer },
     { icon: <UserPlus size={18} className="text-primary" />, title: 'Add a friend', body: 'Connect one-to-one with someone’s public key.', onClick: onAddFriend },
   ];
 
@@ -49,7 +49,7 @@ export const WelcomeEmptyState: React.FC<WelcomeEmptyStateProps> = ({
           </div>
           <h1 className="text-2xl md:text-3xl font-bold text-white font-display tracking-tight">Welcome to Harmolyn</h1>
           <p className="text-body text-white/60 mt-2 max-w-[440px] mx-auto">
-            A private, peer-to-peer chat network. You don’t have any servers yet — here’s how to get started.
+            A private, peer-to-peer chat network. You don’t have any Spaces yet — here’s how to get started.
           </p>
         </div>
 
@@ -64,7 +64,7 @@ export const WelcomeEmptyState: React.FC<WelcomeEmptyStateProps> = ({
 
         {!hasIdentity ? (
           <div className="glass-card rounded-r3 border border-primary/20 p-6 text-center space-y-4">
-            <p className="text-body text-white/70">Create a free account to start a server, join one, or add a friend.</p>
+            <p className="text-body text-white/70">Create a free account to start a Space, join one, or add a friend.</p>
             <button
               onClick={onOpenAuth}
               className="inline-flex items-center justify-center gap-2 h-12 px-6 rounded-full bg-primary text-bg-0 font-bold text-body-strong hover:shadow-glow transition-all"

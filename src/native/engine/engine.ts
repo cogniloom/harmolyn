@@ -7,43 +7,84 @@
 import type { XoreinIdentity } from '../identity/identity.js';
 import { generateIdentity, createIdentityCert, verifyIdentityCert, identitySigningKey } from '../identity/identity.js';
 import { hybridSign, hybridVerify } from '../crypto/hybrid.js';
-import { encryptIdentity, decryptIdentity, saveEncryptedIdentity, loadEncryptedIdentity, hasPersistedIdentity, loadOrCreateGuestIdentity, clearGuestIdentity, loadSessionIdentity, saveSessionIdentity, type Argon2Params } from '../identity/storage.js';
+import { encryptIdentity, decryptIdentity, saveEncryptedIdentity, loadEncryptedIdentity, hasPersistedIdentity, loadOrCreateGuestIdentity, clearGuestIdentity, configureIdentityChatScopePersistence, type Argon2Params } from '../identity/storage.js';
 import { XoreinTransportManager } from '../transport/manager.js';
-import { RELAY_PEER_ID, RELAY_MULTIADDR, type Libp2p as Libp2pNode } from '../transport/node.js';
+import {
+  RELAY_PEER_ID,
+  RELAY_MULTIADDR,
+  isTrustedPeerCircuitMultiaddr,
+  isTrustedRelayMultiaddr,
+  type Libp2p as Libp2pNode,
+} from '../transport/node.js';
 import { buildBundle, verifyBundle, x3dhInitiate, x3dhRespond, type PrekeyBundle, type PrekeyPrivate } from '../seal/bundle.js';
 import { ratchetEncrypt, ratchetDecrypt, type RatchetState } from '../seal/ratchet.js';
 import { newCrowdGroup, crowdEncrypt, crowdDecrypt, addSender, type CrowdState } from '../crowd/crowd.js';
 import { newGroup as newTreeGroup, addMember, treeEncrypt, treeDecrypt, type GroupState } from '../tree/tree.js';
 import { newPeerKey, encryptFrame, decryptFrame, type PeerKey } from '../voice/mediashield.js';
 import { uploadBlob, downloadBlob, type BlobRef } from '../blobs/blobs.js';
+import { seedBlobSwarm } from '../blobs/swarm.js';
 import { deliverOffline, drainDeliveries } from '../delivery/mailbox.js';
 import { serverRendezvousCID, rendezvousRegister, rendezvousDiscover } from '../transport/rendezvous.js';
-import { initStore, setNativeIdentity, getState, updateState, upsertPeer, resetNativeStore, configureNativeStore, applyJoinedServer, mergeHistoryMessages, setStateEncryptionKey, pinPeerIdentity, removeServerMembership } from '../state/store.js';
+import { initStore, setNativeIdentity, getState, updateState, upsertPeer, resetNativeStore, configureNativeStore, applyJoinedServer, mergeHistoryMessages, setStateEncryptionKey, pinPeerIdentity, removeServerMembership, setTransportState } from '../state/store.js';
 import { identityKeyBlob } from '../identity/safetyNumber.js';
 import { parseInviteMetadata } from '../../protocol/deeplink.js';
 import type { XoreinRuntimeServer, XoreinRuntimeMessage } from '../../types.js';
 import { publishNativeSnapshot } from '../state/snapshot.js';
 import { PeerSync } from '../sync/peersync.js';
-import { registerInboundHandlers, ingestMailboxChat, replayBufferedChannelMessages } from '../sync/inbound.js';
+import {
+  dispatchAuthenticatedOperation,
+  registerInboundHandlers,
+  ingestMailboxChat,
+  replayBufferedChannelMessages,
+} from '../sync/inbound.js';
 import { registerPeerSync } from '../sync/registry.js';
 import { SealSessions } from '../seal/session.js';
 import { loadSealState, saveSealState } from '../seal/persist.js';
 import { ChannelCrypto } from '../crowd/channel.js';
-import { registerScopeCrypto, resetScopeCrypto, applyCrowdRoot } from '../sync/secureEnvelope.js';
+import { registerScopeCrypto, resetScopeCrypto, applyChannelRoot } from '../sync/secureEnvelope.js';
 import { registerOfflineIdentity, resetOfflineIdentity, drainOfflineChat } from '../delivery/offline.js';
+import {
+  drainRecipientInbox,
+  registerRecipientInboxIdentity,
+  resetRecipientInboxIdentity,
+} from '../delivery/recipientInbox.js';
 import { PROTOCOLS, RECOVERY_OPS } from '../families/families.js';
 import { frameMessage, encodePeerStreamResponse, serveFamilyStream, type InboundFamilyStream, type PeerStreamRequest } from '../families/peerstream.js';
 import { VOICE_OPS, type VoicePresenceRequest, type VoiceOfferRequest, type VoiceIceRequest } from '../voice/signaling.js';
 import {
-  handleRecoveryStore, handleRecoveryRequest, handleRecoveryDeliver,
+  handleRecoveryStore, handleRecoveryStoreChunk, handleRecoveryRequest,
+  handleRecoveryDeliver, handleRecoveryDeliverChunk,
   distributeRecovery, sendRecoveryRequest, approveRecovery, denyRecovery,
+  type RecoveryDistributionResult,
 } from '../recovery/recovery.js';
 import { encryptSyncState, captureSyncState, restorePendingSyncState, registerStateSyncHandler, type EncryptedSyncBlob } from '../state/stateSync.js';
 import { getRecoveryContacts } from '../recovery/custody.js';
 import { VoiceSession } from '../voice/session.js';
 import { registerVoiceSession, getVoiceSession, clearVoiceSession, rekeyVoiceForServer } from '../voice/registry.js';
 import { resolveFeatureFlag } from '../../config/featureFlags.js';
-import { decodeBase64Strict } from '../security/limits.js';
+import { decodeBase64Strict, isSafeBlobSwarmManifest } from '../security/limits.js';
+import {
+  registerHistoryIdentity,
+  resetHistoryIdentity,
+  selectNewestVerifiedVersions,
+  verifySignedHistoryMessage,
+} from '../sync/signedHistory.js';
+import { fetchSwarmHistoryPage, type HistoryProviderKind } from '../sync/swarmHistory.js';
+import { registerInviteIdentity, resetInviteIdentity } from '../sync/invite.js';
+import {
+  registerServerSigningIdentity,
+  resetServerSigningIdentity,
+  verifyServerRecord,
+} from '../sync/signedServer.js';
+import {
+  ingestSignedPeerRecords,
+  knownSignedPeerRecords,
+  refreshLocalPeerRecord,
+  registerPeerDiscoveryIdentity,
+  resetPeerDiscovery,
+  type SignedPeerRecord,
+} from '../sync/peerDiscovery.js';
+import { registerRouteIdentity, resetRouteIdentity } from '../sync/routedRequest.js';
 import {
   nativeSendChannelMessage,
   nativeSendDmMessage,
@@ -76,6 +117,7 @@ function isAuthoritativeJoinRecord(
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const server = value as Partial<XoreinRuntimeServer>;
   if (server.id !== expectedServerId || server.owner_peer_id !== expectedOwnerPeerId) return false;
+  if (server.owner_proof && !verifyServerRecord(server as XoreinRuntimeServer)) return false;
   if (server.invite_secret !== undefined
     || !Array.isArray(server.members)
     || !server.members.includes(localPeerId)
@@ -84,6 +126,14 @@ function isAuthoritativeJoinRecord(
     || typeof server.channels !== 'object'
     || Array.isArray(server.channels)) return false;
   if (typeof server.crowd_root !== 'string' || decodeBase64Strict(server.crowd_root, 32)?.length !== 32) return false;
+  if (server.channel_security_mode !== undefined
+    && server.channel_security_mode !== 'tree'
+    && server.channel_security_mode !== 'crowd') return false;
+  if (server.channel_crypto_profile !== undefined
+    && server.channel_crypto_profile !== 'scope-aad-v2') return false;
+  if (server.replica_secret !== undefined
+    && (typeof server.replica_secret !== 'string'
+      || decodeBase64Strict(server.replica_secret, 32)?.length !== 32)) return false;
   if (server.crowd_epoch !== undefined
     && (!Number.isSafeInteger(server.crowd_epoch) || server.crowd_epoch < 0 || server.crowd_epoch > 0xffffffff)) return false;
   for (const [channelId, channel] of Object.entries(server.channels)) {
@@ -198,6 +248,16 @@ export class XoreinNativeEngine {
   private _started = false;
   private _wiredNode: Libp2pNode | null = null;
   private _presenceTimer: ReturnType<typeof setInterval> | null = null;
+  private _peerDiscoveryTimer: ReturnType<typeof setInterval> | null = null;
+  private _recoveryRefreshTimer: ReturnType<typeof setInterval> | null = null;
+  private _peerDiscoveryRunning = false;
+  private _replicaRepairRunning = false;
+  private _replicaRepairCursor = 0;
+  private _blobRepairRunning = false;
+  private _blobRepairCursor = 0;
+  private _legacyMailboxCursor = 0;
+  private _rendezvousCursor = 0;
+  private _lastRendezvousRefresh = 0;
   // Whether the CURRENT identity is an ephemeral guest. Starts true and is
   // resolved by bootstrapLocalState(); register() flips it to false in-session
   // (guest → registered promotion happens WITHOUT an engine restart). Checked
@@ -207,6 +267,8 @@ export class XoreinNativeEngine {
   // The live Seal session manager (X3DH + Double Ratchet), kept so register()
   // can snapshot its state to encrypted storage at promotion time.
   private _seal: SealSessions | null = null;
+  private _historyProviderCursor = 0;
+  private _wakeListenersInstalled = false;
   readonly peerSync: PeerSync;
 
   constructor(opts: NativeEngineOptions) {
@@ -217,6 +279,42 @@ export class XoreinNativeEngine {
 
   private emitActivity(phase: EngineActivityPhase, message: string, detail?: string): void {
     this.opts.onActivity?.({ phase, message, ...(detail ? { detail } : {}) });
+  }
+
+  /** A browser/native app wake or newly connected peer may expose a holder of
+   * our inbox even when no relay exists. Retry custody drains immediately. */
+  private readonly onNetworkWake = (event?: Event): void => {
+    if (event?.type === 'visibilitychange') {
+      // publishNativeSnapshot emits a synthetic visibilitychange for legacy UI
+      // refreshes. Ignore that internal event to avoid a network-drain loop.
+      if (!event.isTrusted || typeof document === 'undefined'
+        || document.visibilityState !== 'visible') return;
+    }
+    if (!this._started || !this._wiredNode) return;
+    this.drainDurableInbox(false);
+    void nativeDrainOutbox();
+    void this.discoverPeersAndRelays();
+    this.scheduleRecoveryResync();
+  };
+
+  private installWakeListeners(): void {
+    if (this._wakeListenersInstalled || typeof window === 'undefined') return;
+    window.addEventListener('online', this.onNetworkWake);
+    window.addEventListener('pageshow', this.onNetworkWake);
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', this.onNetworkWake);
+    }
+    this._wakeListenersInstalled = true;
+  }
+
+  private removeWakeListeners(): void {
+    if (!this._wakeListenersInstalled || typeof window === 'undefined') return;
+    window.removeEventListener('online', this.onNetworkWake);
+    window.removeEventListener('pageshow', this.onNetworkWake);
+    if (typeof document !== 'undefined') {
+      document.removeEventListener('visibilitychange', this.onNetworkWake);
+    }
+    this._wakeListenersInstalled = false;
   }
 
   get identity(): XoreinIdentity {
@@ -237,8 +335,8 @@ export class XoreinNativeEngine {
    * start() so the identity/state bootstrap can be tested without a transport.
    *
    * Identity modes:
-   *  • a persisted (registered) identity unlocks via the 5-day session, else
-   *    requires the user passphrase to decrypt;
+   *  • a persisted (registered) identity always requires the user passphrase
+   *    to decrypt;
    *  • a passphrase with no persisted identity means we are registering now;
    *  • no passphrase + nothing persisted means a guest (ephemeral).
    *
@@ -264,31 +362,23 @@ export class XoreinNativeEngine {
       (window as unknown as Record<string, unknown>).__HARMOLYN_NATIVE_ACTIVE__ = true;
     }
     if (stored) {
-      // Try the 5-day session first — skips the expensive Argon2 KDF on repeat visits.
-      const sessionIdentity = await loadSessionIdentity();
-      if (sessionIdentity) {
-        this._identity = sessionIdentity;
-      } else {
-        if (!this.opts.passphrase) {
-          // Provider gates this; surface a clear locked error if it ever slips through.
-          throw new Error('identity locked: passphrase required');
-        }
-        this.emitActivity('decrypting', 'Unlocking your account…');
-        this._identity = await decryptIdentity(stored, this.opts.passphrase);
-        // Save a 5-day session so subsequent loads skip the password prompt.
-        void saveSessionIdentity(this._identity).catch(() => {});
+      if (!this.opts.passphrase) {
+        // Provider gates this; surface a clear locked error if it ever slips through.
+        throw new Error('identity locked: passphrase required');
       }
+      this.emitActivity('decrypting', 'Unlocking your account…');
+      this._identity = await decryptIdentity(stored, this.opts.passphrase);
     } else if (this.opts.passphrase) {
-      // Registering right now: persist the encrypted identity AND establish the
-      // remember-me session so a reload right after registration stays signed
-      // in instead of demanding the brand-new password again.
+      // Registering right now: persist the encrypted identity. A reload still
+      // requires the password; no identity key is recoverable from storage alone.
       this._identity = await generateIdentity();
       await saveEncryptedIdentity(encryptIdentity(this._identity, this.opts.passphrase));
-      await saveSessionIdentity(this._identity).catch(() => {});
       clearGuestIdentity();
     } else {
       this._identity = await loadOrCreateGuestIdentity();
     }
+
+    if (!guestMode) configureIdentityChatScopePersistence(this._identity);
 
     // Guests keep their app state in per-tab sessionStorage; registered
     // identities use localStorage. Configured AFTER identity resolution and
@@ -321,6 +411,12 @@ export class XoreinNativeEngine {
       // contact verifies against.
       identity_key: identityKeyBlob(this._identity.edPub, this._identity.mldsaPub),
     });
+    registerHistoryIdentity(this._identity);
+    registerInviteIdentity(this._identity);
+    registerServerSigningIdentity(this._identity);
+    registerPeerDiscoveryIdentity(this._identity);
+    registerRouteIdentity(this._identity);
+    registerRecipientInboxIdentity(this._identity);
     // If we just recovered this identity on a new device, a guardian delivered an
     // encrypted snapshot of the account state — decrypt it with the identity key
     // and merge in the servers/DMs/profile so the account looks the same here.
@@ -389,7 +485,14 @@ export class XoreinNativeEngine {
       identity: this._identity,
       relayMultiaddr: this.opts.relayMultiaddr,
       onStateChange: (s) => {
-        this.opts.onStateChange?.(s);
+        // The local control endpoint only proves that the runtime process exists.
+        // Publish the transport lifecycle separately so the UI cannot call a
+        // relay-less client "connected".
+        const effectiveState = s === 'connected' || this._transport?.hasLivePeerPath() === true
+          ? 'connected'
+          : s;
+        setTransportState(effectiveState);
+        this.opts.onStateChange?.(effectiveState);
         if (s === 'connecting') {
           this.emitActivity(
             this._started ? 'reconnecting-relay' : 'connecting-relay',
@@ -403,23 +506,25 @@ export class XoreinNativeEngine {
           if (circuitAddrs.length > 0) {
             updateState(() => ({ relay_addrs: circuitAddrs }));
           }
-          // Record the always-on bootstrap relay as a reachable known peer so the
-          // UI sees a network path (fixes "no-peer" #PEER-UNREACHABLE for servers
-          // whose remote members have not been dialed directly yet).
-          this.seedBootstrapPeer();
+          // Point PeerSync at whichever relay we actually reserved on (multi-relay
+          // failover may have picked a backup), so peer fallback addresses resolve.
+          const active = this._transport.getActiveRelay();
+          if (active) this.peerSync.setRelay(active);
+          // Record the actual bootstrap relay, not the build-time fallback, as a
+          // reachable known peer. Local relays generate a fresh peer ID per data
+          // directory, so seeding the stale production ID breaks first-contact
+          // joins and friend requests even after reservation succeeds.
+          this.seedBootstrapPeer(active ?? undefined);
           // resil-3: every (re)connect builds a NEW libp2p node. Re-point PeerSync
           // and re-register inbound family handlers at the live node so P2P
           // send/receive keeps working after a relay drop (previously this was
           // wired only once and stayed broken until a full page reload).
           void this.wireDataPlane(this._transport.currentNode);
-          // Point PeerSync at whichever relay we actually reserved on (multi-relay
-          // failover may have picked a backup), so peer fallback addresses resolve.
-          const active = this._transport.getActiveRelay();
-          if (active) this.peerSync.setRelay(active);
           this.emitActivity('syncing', 'Syncing your messages…');
           // resil-2: pull any messages deposited in our zero-knowledge mailbox
           // while we were offline.
           this.drainOfflineMailbox();
+          this.drainDurableInbox(true);
           // Reconcile joined servers: re-pull each owner's authoritative record so a
           // membership/epoch change we missed while offline (new crowd_root, roles) is
           // applied — otherwise we'd stay stuck on a stale epoch and fail to decrypt.
@@ -427,6 +532,7 @@ export class XoreinNativeEngine {
           // Replay our own durable outbound queue: messages composed while the relay
           // was down now go out (or into recipients' mailboxes) instead of being lost.
           void nativeDrainOutbox();
+          this.scheduleRecoveryResync();
           // Announce we're online to friends + co-members (and keep a light
           // heartbeat) so they don't show us — and we don't show them — as offline.
           this.startPresenceHeartbeat();
@@ -436,7 +542,6 @@ export class XoreinNativeEngine {
           // gateway, so this never fires on the default path.
           void this.registerServerRendezvous();
         } else if (s === 'disconnected') {
-          this.stopPresenceHeartbeat();
           this.emitActivity(
             this._started ? 'reconnecting-relay' : 'connecting-relay',
             'Reconnecting to the network…',
@@ -455,6 +560,8 @@ export class XoreinNativeEngine {
     await this.wireDataPlane(this._transport?.currentNode ?? null);
 
     this._started = true;
+    this.installWakeListeners();
+    this.startRecoveryRefresh();
     // If the initial relay connection failed, upgrade the activity to the
     // non-blocking 'reconnecting-relay' phase so the startup banner clears.
     // Background retries will continue via scheduleReconnect.
@@ -474,6 +581,13 @@ export class XoreinNativeEngine {
     this.peerSync.setNode(node);
     try {
       await registerInboundHandlers(node, this._identity.peerId, this.peerSync);
+      node.addEventListener('peer:connect', () => this.onNetworkWake());
+      refreshLocalPeerRecord(this.peerSync.localCircuitAddrs());
+      this.startPeerDiscoveryLoop();
+      // Presence and durable outbox retries belong to the peer node, not to a
+      // dedicated relay reservation. Keep them alive in zero-node mode so a
+      // newly discovered direct peer immediately participates in routing.
+      this.startPresenceHeartbeat();
       // Inbound VOICE MESH handler. Peers dial us directly over /aether/voice/0.1.0
       // (there is no SFU): voice.presence (join/leave/state), voice.offer (SDP
       // offer → we answer), voice.leave (teardown). Request/response — we reply
@@ -537,8 +651,10 @@ export class XoreinNativeEngine {
                 payload = req.payload ? (JSON.parse(new TextDecoder().decode(req.payload)) as Record<string, unknown>) : {};
               } catch { return framedReply({ ok: false, error: 'bad_frame' }); }
               if (req.operation === RECOVERY_OPS.store) return framedReply(await handleRecoveryStore(payload, remotePeerId));
+              if (req.operation === RECOVERY_OPS.storeChunk) return framedReply(await handleRecoveryStoreChunk(payload, remotePeerId));
               if (req.operation === RECOVERY_OPS.request) return framedReply(await handleRecoveryRequest(payload, remotePeerId));
-              if (req.operation === RECOVERY_OPS.deliver) return framedReply(handleRecoveryDeliver(payload, remotePeerId));
+              if (req.operation === RECOVERY_OPS.deliver) return framedReply(await handleRecoveryDeliver(payload, remotePeerId));
+              if (req.operation === RECOVERY_OPS.deliverChunk) return framedReply(await handleRecoveryDeliverChunk(payload, remotePeerId));
               return framedReply({ ok: false, error: 'unknown_op' });
             });
           } catch { /* non-fatal */ }
@@ -549,18 +665,276 @@ export class XoreinNativeEngine {
   }
 
   /**
-   * Drain the zero-knowledge mailbox for every known contact (DM partners +
-   * server co-members) and re-inject any recovered messages through the
+   * Drain the legacy pairwise mailbox for DM partners and re-inject any
+   * recovered messages through the
    * authenticated inbound chat path. Idempotent: de-dup drops re-drained items.
+   *
+   * Channel history is reconstructed from the signed multi-source history
+   * swarm; polling one pairwise token per server member does not scale.
    */
   private drainOfflineMailbox(): void {
     const st = getState();
     const contacts = new Set<string>();
     for (const dm of Object.values(st.dms)) for (const p of dm.participants ?? []) contacts.add(p);
-    for (const srv of Object.values(st.servers)) for (const m of srv.members ?? []) contacts.add(m);
-    void drainOfflineChat(contacts, ingestMailboxChat)
-      .then((n) => { if (n > 0) publishNativeSnapshot(); this.emitActivity('connected', 'Connected'); })
-      .catch(() => { /* mailbox unreachable — retried on next connect */ this.emitActivity('connected', 'Connected'); });
+    contacts.delete(this._identity?.peerId ?? '');
+    const eligible = [...contacts];
+    if (!eligible.length) {
+      this.emitCurrentConnectivity();
+      return;
+    }
+    const offset = this._legacyMailboxCursor % eligible.length;
+    const batch = [...eligible.slice(offset), ...eligible.slice(0, offset)].slice(0, 16);
+    this._legacyMailboxCursor = (offset + batch.length) % eligible.length;
+    void drainOfflineChat(batch, ingestMailboxChat)
+      .then((n) => { if (n > 0) publishNativeSnapshot(); this.emitCurrentConnectivity(); })
+      .catch(() => { /* mailbox unreachable — retried on next connect */ this.emitCurrentConnectivity(); });
+  }
+
+  /** Report the actual authenticated network path after background sync work.
+   * Finishing a local mailbox scan is not evidence of network connectivity. */
+  private emitCurrentConnectivity(): void {
+    if (this._transport?.hasLivePeerPath()) {
+      this.emitActivity('connected', 'Connected');
+      return;
+    }
+    this.emitActivity(
+      'discovering-peers',
+      'Finding peers…',
+      'No live peer path is available yet. Peer and relay discovery continues automatically.',
+    );
+  }
+
+  /**
+   * Pull the account's single recipient-addressed inbox. New contacts and any
+   * other targeted operation can be recovered without polling every possible
+   * sender. Packets are opened and hybrid-authenticated before dispatch.
+   */
+  private drainDurableInbox(fullWindow = false): void {
+    void drainRecipientInbox(
+      operation => dispatchAuthenticatedOperation({
+        protocol: operation.protocol,
+        operation: operation.operation,
+        payload: operation.payload,
+      }, operation.origin_peer_id, this.peerSync),
+      fullWindow,
+    ).then((count) => {
+      if (count > 0) publishNativeSnapshot();
+    }).catch(() => { /* provider set is transient; the discovery loop retries */ });
+  }
+
+  private startPeerDiscoveryLoop(): void {
+    if (this._peerDiscoveryTimer != null) return;
+    void this.discoverPeersAndRelays();
+    this._peerDiscoveryTimer = setInterval(() => {
+      void this.discoverPeersAndRelays();
+    }, 30_000);
+  }
+
+  private stopPeerDiscoveryLoop(): void {
+    if (this._peerDiscoveryTimer != null) {
+      clearInterval(this._peerDiscoveryTimer);
+      this._peerDiscoveryTimer = null;
+    }
+  }
+
+  /**
+   * Continuously exchange self-authenticating address records with the active
+   * relay and a rotating sample of connected peers. Candidate nodes are probed
+   * over Noise; only responders that identify as relays enter failover.
+   */
+  private async discoverPeersAndRelays(): Promise<void> {
+    if (this._peerDiscoveryRunning || !this._wiredNode || !this._transport) return;
+    this._peerDiscoveryRunning = true;
+    try {
+      // Inbox/outbox recovery is latency-sensitive and only needs the existing
+      // authenticated graph. Never serialize it behind a dead relay probe,
+      // replica repair, or rendezvous maintenance.
+      this.drainDurableInbox(false);
+      void nativeDrainOutbox();
+      refreshLocalPeerRecord(this.peerSync.localCircuitAddrs());
+      const knownIDs = knownSignedPeerRecords().map(record => record.peer_id).slice(0, 200);
+      const batches: (SignedPeerRecord[] | null)[] = [];
+      const activeRelay = this._transport.getActiveRelay();
+      if (activeRelay) {
+        batches.push(await this.peerSync.exchangePeersAt(activeRelay, knownIDs));
+      }
+      const connected = [...new Set(this._wiredNode.getConnections()
+        .map(connection => connection.remotePeer?.toString())
+        .filter((peer): peer is string => Boolean(peer))
+        .filter(peer => peer !== activeRelay?.split('/p2p/').at(-1)))]
+        .slice(0, 4);
+      batches.push(...await Promise.all(connected.map(peer =>
+        this.peerSync.exchangePeersWith(peer, knownIDs),
+      )));
+
+      const accepted = ingestSignedPeerRecords(
+        batches.flatMap(batch => batch ?? []),
+        this._identity?.peerId,
+      );
+      for (const record of accepted) {
+        const circuitAddresses = record.addresses.filter(address =>
+          isTrustedPeerCircuitMultiaddr(address, record.peer_id),
+        );
+        if (circuitAddresses.length) {
+          this.peerSync.registerPeer(record.peer_id, circuitAddresses[0]);
+        }
+        upsertPeer({
+          peer_id: record.peer_id,
+          role: getState().peers[record.peer_id]?.role ?? 'peer',
+          addresses: record.addresses,
+          source: 'pex',
+          last_seen_at: new Date().toISOString(),
+        });
+
+        // Direct WSS/WebTransport addresses are safe to probe only because the
+        // record is hybrid-signed and the final /p2p id pins the Noise identity.
+        for (const address of record.addresses) {
+          if (!isTrustedRelayMultiaddr(address, record.peer_id)
+            || !this._transport.allowVerifiedCandidate(address)) continue;
+          const info = await this.peerSync.peerInfoAt(address);
+          if (!info || info.peer_id !== record.peer_id) continue;
+          const role = info.role === 'relay' || info.role === 'archivist'
+            || info.role === 'bootstrap' || info.role === 'client'
+            ? info.role
+            : 'peer';
+          upsertPeer({
+            peer_id: record.peer_id,
+            role,
+            addresses: record.addresses,
+            source: 'pex',
+            last_seen_at: new Date().toISOString(),
+          });
+          if (role === 'relay') this._transport.addDiscoveredRelay(address);
+          break;
+        }
+      }
+      if (accepted.length) publishNativeSnapshot();
+      await this.repairHistoryReplicas();
+      await this.repairBlobReplicas();
+      await this.refreshRendezvousMesh();
+      this.drainOfflineMailbox();
+      this.drainDurableInbox(false);
+    } finally {
+      this._peerDiscoveryRunning = false;
+    }
+  }
+
+  /**
+   * Continuously repair recent signed channel history toward three node-held
+   * ciphertext copies. The scan is bounded and rotating, so a large server does
+   * not burst-upload its entire local database when one new node appears.
+   */
+  private async repairHistoryReplicas(): Promise<void> {
+    if (this._replicaRepairRunning) return;
+    const state = getState();
+    const hasStorageNode = Object.values(state.peers)
+      .some(peer => peer.role === 'relay' || peer.role === 'archivist');
+    if (!hasStorageNode) return;
+    this._replicaRepairRunning = true;
+    try {
+      const eligible: XoreinRuntimeMessage[] = [];
+      for (const server of Object.values(state.servers)) {
+        if (!server.replica_secret) continue;
+        const retention = Math.max(1, Math.min(
+          10_000,
+          server.manifest?.history_retention_messages ?? 100,
+        ));
+        const joinWindow = Math.max(0, Math.min(
+          retention,
+          server.manifest?.join_history_messages ?? 0,
+        ));
+        const currentBoundaries = (server.members ?? [])
+          .map(member => server.member_since?.[member])
+          .filter((value): value is string => Boolean(value))
+          .sort();
+        const newestJoin = currentBoundaries.at(-1);
+        for (const channelId of Object.keys(server.channels ?? {})) {
+          const scoped = state.messages
+            .filter(message => message.server_id === server.id
+              && message.scope_type === 'channel'
+              && message.scope_id === channelId
+              && verifySignedHistoryMessage(message).ok)
+            .sort((a, b) =>
+              String(a.created_at ?? '').localeCompare(String(b.created_at ?? ''))
+              || a.id.localeCompare(b.id))
+            .slice(-retention);
+          if (!newestJoin) {
+            eligible.push(...scoped);
+            continue;
+          }
+          const beforeJoin = scoped.filter(message => String(message.created_at ?? '') < newestJoin);
+          const afterJoin = scoped.filter(message => String(message.created_at ?? '') >= newestJoin);
+          // Re-encrypt only the pre-join window the newest member is entitled to.
+          // Older replicas remain under prior Crowd epochs and cannot be read by
+          // that member after the join-triggered key rotation.
+          eligible.push(...beforeJoin.slice(-joinWindow), ...afterJoin);
+        }
+      }
+      if (!eligible.length) return;
+      const offset = this._replicaRepairCursor % eligible.length;
+      const batch = [
+        ...eligible.slice(offset),
+        ...eligible.slice(0, offset),
+      ].slice(0, 12);
+      this._replicaRepairCursor = (offset + batch.length) % eligible.length;
+      // Four concurrent records × at most eight bounded node attempts prevents
+      // one client from spiking node bandwidth during repair.
+      for (let index = 0; index < batch.length; index += 4) {
+        await Promise.all(batch.slice(index, index + 4).map(message =>
+          this.peerSync.repairHistoryReplica(message, 3),
+        ));
+      }
+    } finally {
+      this._replicaRepairRunning = false;
+    }
+  }
+
+  /**
+   * Re-audit locally complete attachment swarms and fill missing replicas.
+   * Only a small rotating batch is touched each discovery tick.
+   */
+  private async repairBlobReplicas(): Promise<void> {
+    if (this._blobRepairRunning) return;
+    const manifests = new Map<string, NonNullable<XoreinRuntimeMessage['media']>[number]['swarm']>();
+    for (const message of getState().messages) {
+      for (const attachment of message.media ?? []) {
+        if (isSafeBlobSwarmManifest(attachment.swarm)) {
+          manifests.set(attachment.swarm.blob_id, attachment.swarm);
+        }
+      }
+    }
+    const eligible = [...manifests.values()].filter(
+      (manifest): manifest is NonNullable<typeof manifest> => Boolean(manifest),
+    );
+    if (!eligible.length) return;
+    this._blobRepairRunning = true;
+    try {
+      const offset = this._blobRepairCursor % eligible.length;
+      const batch = [...eligible.slice(offset), ...eligible.slice(0, offset)].slice(0, 4);
+      this._blobRepairCursor = (offset + batch.length) % eligible.length;
+      await Promise.allSettled(batch.map(manifest => seedBlobSwarm(manifest)));
+    } finally {
+      this._blobRepairRunning = false;
+    }
+  }
+
+  /**
+   * Keep peer-hosted rendezvous records fresh and continuously sample joined
+   * namespaces. This runs even when no support relay answered PEX.
+   */
+  private async refreshRendezvousMesh(): Promise<void> {
+    if (!resolveFeatureFlag('directTransport')) return;
+    const now = Date.now();
+    if (now - this._lastRendezvousRefresh >= 5 * 60_000) {
+      this._lastRendezvousRefresh = now;
+      await this.registerServerRendezvous();
+    }
+    const ids = getState().joined_server_ids;
+    if (!ids.length) return;
+    const offset = this._rendezvousCursor % ids.length;
+    const batch = [...ids.slice(offset), ...ids.slice(0, offset)].slice(0, 2);
+    this._rendezvousCursor = (offset + batch.length) % ids.length;
+    await Promise.allSettled(batch.map(serverId => this.discoverServerPeers(serverId)));
   }
 
   /**
@@ -587,7 +961,12 @@ export class XoreinNativeEngine {
     for (const s of servers) {
       try {
         const priorEpoch = typeof s.crowd_epoch === 'number' ? s.crowd_epoch : -1;
-        const data = await this.peerSync.joinServer(s.owner_peer_id, s.id, displayName);
+        const data = await this.peerSync.joinServer(
+          s.owner_peer_id,
+          s.id,
+          displayName,
+          s.admission_capability,
+        );
         // Reconcile a MISSED KICK: if we were removed while offline, our persisted snapshot
         // still lists us as a member, so this re-pull reaches the owner and is authoritatively
         // rejected ({ ok:false } with a membership error). Drop the stale server locally so it
@@ -600,7 +979,12 @@ export class XoreinNativeEngine {
         }
         if (data?.ok && data.server) {
           const nextServer = data.server as XoreinRuntimeServer;
-          if (!applyJoinedServer(s.id, nextServer, (data.messages ?? []) as XoreinRuntimeMessage[])) {
+          if (!isAuthoritativeJoinRecord(nextServer, s.id, s.owner_peer_id, me)) continue;
+          const supplied = (data.messages ?? []) as XoreinRuntimeMessage[];
+          const verified = selectNewestVerifiedVersions(supplied);
+          const legacyOwnerAuthored = supplied.filter(message =>
+            !message.author_proof && message.sender_peer_id === s.owner_peer_id);
+          if (!applyJoinedServer(s.id, nextServer, [...verified, ...legacyOwnerAuthored])) {
             continue; // owner answered for a different server — ignore
           }
           changed = true;
@@ -612,18 +996,51 @@ export class XoreinNativeEngine {
           // to decrypt current-epoch channel and voice traffic.
           const nextEpoch = typeof nextServer.crowd_epoch === 'number' ? nextServer.crowd_epoch : -1;
           if (typeof nextServer.crowd_root === 'string' && nextEpoch > priorEpoch) {
-            applyCrowdRoot(nextServer.id);
+            applyChannelRoot(nextServer.id);
             replayBufferedChannelMessages(nextServer.id);
             rekeyVoiceForServer(nextServer.id);
           }
+        } else if (s.admission_capability) {
+          // The owner is still unreachable. Re-announce the owner-signed
+          // admission to a rotating set of members so membership converges
+          // without waiting for any dedicated node.
+          void this.propagatePortableAdmission(s, s.admission_capability);
         }
-      } catch { /* owner unreachable — retried on the next reconnect */ }
+      } catch {
+        if (s.admission_capability) {
+          void this.propagatePortableAdmission(s, s.admission_capability);
+        }
+      }
     }
     if (changed) publishNativeSnapshot();
   }
 
+  private async propagatePortableAdmission(
+    server: XoreinRuntimeServer,
+    capability: string,
+    skipPeerId?: string,
+  ): Promise<void> {
+    const me = this._identity?.peerId;
+    if (!me || !capability) return;
+    const peers = [...new Set((server.members ?? []).filter(peer =>
+      peer && peer !== me && peer !== skipPeerId,
+    ))];
+    // Bound concurrency so a 1,000-member server cannot make a newly joined
+    // client stampede every peer at once.
+    for (let offset = 0; offset < peers.length; offset += 8) {
+      await Promise.allSettled(peers.slice(offset, offset + 8).map(peer =>
+        this.peerSync.joinServer(
+          peer,
+          server.id,
+          getState().identity?.profile?.display_name,
+          capability,
+        ),
+      ));
+    }
+  }
+
   private startPresenceHeartbeat(): void {
-    this.stopPresenceHeartbeat();
+    if (this._presenceTimer != null) return;
     nativeAnnouncePresence();
     this._presenceTimer = setInterval(() => {
       nativeAnnouncePresence();
@@ -644,6 +1061,16 @@ export class XoreinNativeEngine {
 
   async stop(): Promise<void> {
     this.stopPresenceHeartbeat();
+    this.stopPeerDiscoveryLoop();
+    this.removeWakeListeners();
+    if (this._recoveryResyncTimer) {
+      clearTimeout(this._recoveryResyncTimer);
+      this._recoveryResyncTimer = null;
+    }
+    if (this._recoveryRefreshTimer) {
+      clearInterval(this._recoveryRefreshTimer);
+      this._recoveryRefreshTimer = null;
+    }
     await this._transport?.stop();
     this._wiredNode = null;
     // Release native snapshot ownership + E2EE managers so a re-init starts clean
@@ -658,6 +1085,12 @@ export class XoreinNativeEngine {
       }
       resetScopeCrypto();
       resetOfflineIdentity();
+      resetHistoryIdentity();
+      resetInviteIdentity();
+      resetServerSigningIdentity();
+      resetPeerDiscovery();
+      resetRouteIdentity();
+      resetRecipientInboxIdentity();
     }
     this._started = false;
   }
@@ -672,10 +1105,10 @@ export class XoreinNativeEngine {
     if (!this._identity) throw new Error('engine: not started');
     if (!passphrase) throw new Error('engine: a passphrase is required to register');
     await saveEncryptedIdentity(encryptIdentity(this._identity, passphrase));
-    // Establish the remember-me session at REGISTRATION time, not only on a later
-    // manual unlock: without this, the very first reload after creating an account
-    // dumps the user on the password screen (Discord-class apps stay signed in).
-    await saveSessionIdentity(this._identity).catch(() => {});
+    // Switch chat-scope persistence from the guest's memory-only mode to an
+    // identity-derived encrypted mode. The identity itself remains password-
+    // gated across reloads.
+    configureIdentityChatScopePersistence(this._identity);
     clearGuestIdentity();
     // Promotion: this identity is registered from here on. Flip BEFORE the seal
     // snapshot below so the dynamic guest check in the seal onChange hook starts
@@ -740,7 +1173,15 @@ export class XoreinNativeEngine {
             throw new Error('join: owner response failed authority or encryption validation');
           }
           const server = data.server;
-          if (!applyJoinedServer(meta.serverId, server, (data.messages ?? []) as XoreinRuntimeMessage[])) {
+          const supplied = (data.messages ?? []) as XoreinRuntimeMessage[];
+          const verified = selectNewestVerifiedVersions(supplied);
+          // Transitional compatibility: over the authenticated OWNER stream, an
+          // unsigned record authored by that same owner is still self-assertion,
+          // not impersonation. Unsigned copies attributed to anyone else are
+          // never accepted.
+          const legacyOwnerAuthored = supplied.filter(message =>
+            !message.author_proof && message.sender_peer_id === meta.ownerPeerId);
+          if (!applyJoinedServer(meta.serverId, server, [...verified, ...legacyOwnerAuthored])) {
             throw new Error('join: owner returned a different server than the invite');
           }
           // Record the owner as a reachable known peer (with the circuit addresses
@@ -755,19 +1196,53 @@ export class XoreinNativeEngine {
           return server;
         }
       } catch {
-        // The owner may be offline. A member response is not an authorization
-        // decision for a new join, so fail closed rather than trusting a seed.
+        // The owner may be offline; continue with an owner-signed portable
+        // capability against the invite's seed members below.
       }
     }
 
-    // Member-served fallback: the owner is offline/unreachable. Try each seed member
-    // carried in the invite. DARK by default (memberServedHistory): a joined member's
-    // server record has the owner-only invite_secret stripped, so the seed's
-    // verifyInviteToken always fails for a new joiner — the fallback can't actually be
-    // granted without a delegatable capability — and served history isn't individually
-    // authenticated. No local placeholder is created when no authenticated
-    // response is available.
-    throw new Error('join failed: the server owner did not provide an authenticated membership response');
+    // Owner offline: a portable owner-signed invite lets any current seed verify
+    // admission. The seed transports an owner-signed server record and
+    // author-signed history; neither its local software nor a provider majority
+    // can rewrite either.
+    for (const seed of [...new Set(meta.seeds ?? [])]) {
+      if (!seed || seed === me || seed === meta.ownerPeerId) continue;
+      try {
+        const data = await this.peerSync.joinServer(
+          seed,
+          meta.serverId,
+          getState().identity?.profile?.display_name,
+          meta.inviteToken,
+        );
+        if (!data?.ok || !data.server) continue;
+        const served = data.server as XoreinRuntimeServer;
+        if (!served.owner_proof || !verifyServerRecord(served)
+          || !isAuthoritativeJoinRecord(
+            served, meta.serverId, meta.ownerPeerId ?? '', me ?? '',
+          )) continue;
+        const portable: XoreinRuntimeServer = {
+          ...served,
+          admission_capability: meta.inviteToken,
+        };
+        const verifiedMessages = selectNewestVerifiedVersions(
+          (data.messages ?? []) as XoreinRuntimeMessage[],
+        );
+        if (!applyJoinedServer(meta.serverId, portable, verifiedMessages)) continue;
+        upsertPeer({
+          peer_id: seed,
+          role: 'peer',
+          addresses: Array.isArray(data.addresses) ? data.addresses : [],
+          last_seen_at: new Date().toISOString(),
+        });
+        publishNativeSnapshot();
+        void this.propagatePortableAdmission(portable, meta.inviteToken ?? '', seed);
+        return portable;
+      } catch {
+        // Try the next independently authenticated seed.
+      }
+    }
+
+    throw new Error('join failed: no owner or invite-authorized member was reachable');
   }
 
   /**
@@ -801,13 +1276,67 @@ export class XoreinNativeEngine {
     const before = oldest ? String(oldest.created_at) : '9999-12-31T23:59:59.999Z';
     const beforeId = oldest ? String(oldest.id) : '￿';
 
-    // Authoritative history comes from the OWNER only: served message copies are not
-    // individually signed, so trusting an arbitrary member's page would let it inject
-    // forged messages into permanent channel history. This remains owner-only even if
-    // a local feature override attempts to enable member-served history.
-    const candidates = [server.owner_peer_id].filter(p => p && p !== me);
+    // Query a bounded rotating slice of the swarm. Storage nodes are preferred;
+    // ordinary members are round-robin fallbacks. Availability advertisements are
+    // hints only — fetchSwarmHistoryPage verifies the original author's hybrid
+    // signature on every record and periodically cross-checks two extra providers.
+    const infrastructure = Object.values(state.peers)
+      .filter(peer => peer.peer_id !== me && (peer.role === 'archivist' || peer.role === 'relay'))
+      .map(peer => peer.peer_id);
+    const memberCandidates = [...new Set([
+      server.owner_peer_id,
+      ...(server.members ?? []),
+    ].filter(peer => peer && peer !== me))];
+    const offset = memberCandidates.length
+      ? this._historyProviderCursor % memberCandidates.length
+      : 0;
+    const rotatedMembers = [
+      ...memberCandidates.slice(offset),
+      ...memberCandidates.slice(0, offset),
+    ];
+    this._historyProviderCursor += 8;
+    const candidates = [...new Set([...infrastructure, ...rotatedMembers])];
 
-    for (const peer of candidates) {
+    const swarm = await fetchSwarmHistoryPage({
+      providers: candidates.map(peerId => {
+        const role = state.peers[peerId]?.role;
+        const kind: HistoryProviderKind = role === 'archivist'
+          ? 'archivist'
+          : role === 'relay'
+            ? 'relay'
+            : 'peer';
+        return {
+          peerId,
+          kind,
+          coverage: () => this.peerSync.historyCoverage(
+            peerId, serverId, channelId, before, beforeId, 50,
+          ),
+          fetch: (messageIds: string[]) => this.peerSync.fetchHistoryRecords(
+            peerId, serverId, channelId, messageIds,
+          ),
+        };
+      }),
+      serverId,
+      channelId,
+      limit: 50,
+      existingMessageIds: new Set(scopeMsgs.map(message => message.id)),
+      maxProviders: 16,
+      maxIDsPerFetch: 25,
+    });
+    if (swarm.messages.length) {
+      const added = mergeHistoryMessages(swarm.messages);
+      publishNativeSnapshot();
+      return { added, hasMore: swarm.hasMore };
+    }
+    if (swarm.answeredProviders > 0 && swarm.advertisedRecords === 0) {
+      return { added: 0, hasMore: swarm.hasMore };
+    }
+
+    // Compatibility fallback for an old owner that predates sync.coverage. Only
+    // the authenticated owner is consulted on this path; arbitrary members never
+    // get to inject unsigned legacy history.
+    const legacyCandidates = [server.owner_peer_id].filter(p => p && p !== me);
+    for (const peer of legacyCandidates) {
       // Paging is a member operation — the responder exempts existing members from
       // the invite-token check, so none is needed here.
       const data = await this.peerSync.pullHistory(peer, serverId, channelId, before, beforeId, 50);
@@ -894,11 +1423,15 @@ export class XoreinNativeEngine {
   }
 
   /** Record the always-on bootstrap relay as a reachable known peer. */
-  private seedBootstrapPeer(): void {
+  private seedBootstrapPeer(relay = RELAY_MULTIADDR): void {
+    const peerId = relay.split('/p2p/').pop() || RELAY_PEER_ID;
     upsertPeer({
-      peer_id: RELAY_PEER_ID,
-      role: 'bootstrap',
-      addresses: [RELAY_MULTIADDR],
+      peer_id: peerId,
+      // reserveAnyRelay succeeded against this address, so this is a verified
+      // relay, not merely a bootstrap hint. Marking it correctly also lets the
+      // replica scheduler prefer it immediately.
+      role: 'relay',
+      addresses: [relay],
       source: 'bootstrap',
       last_seen_at: new Date().toISOString(),
     });
@@ -999,7 +1532,7 @@ export class XoreinNativeEngine {
    * Distribute my password-encrypted identity backup to the chosen guardian
    * peers. They store opaque ciphertext only. Returns which peers received it.
    */
-  async distributeRecovery(contacts: string[]): Promise<{ delivered: string[]; failed: string[] }> {
+  async distributeRecovery(contacts: string[]): Promise<RecoveryDistributionResult> {
     const blob = await loadEncryptedIdentity();
     if (!blob) throw new Error('Set a password for your identity before adding recovery contacts.');
     const displayName = getState().identity?.profile?.display_name ?? '';
@@ -1010,7 +1543,7 @@ export class XoreinNativeEngine {
   }
 
   /** Ask a guardian (by peer id) to release the backup for account `ownerPeerId`. */
-  async requestRecovery(guardianPeerId: string, ownerPeerId: string): Promise<{ ok: boolean; pending?: boolean; error?: string }> {
+  async requestRecovery(guardianPeerId: string, ownerPeerId: string): Promise<{ ok: boolean; pending?: boolean; queued?: boolean; error?: string }> {
     return sendRecoveryRequest(this.peerSync, guardianPeerId, ownerPeerId);
   }
 
@@ -1034,6 +1567,14 @@ export class XoreinNativeEngine {
   }
 
   private _recoveryResyncTimer: ReturnType<typeof setTimeout> | null = null;
+  private startRecoveryRefresh(): void {
+    this.scheduleRecoveryResync();
+    if (this._recoveryRefreshTimer) return;
+    // Recipient-inbox packets have a bounded lifetime. A daily refresh keeps an
+    // offline guardian's sealed copy alive while this device remains active,
+    // and automatically repairs it to newly discovered providers.
+    this._recoveryRefreshTimer = setInterval(() => this.scheduleRecoveryResync(), 24 * 60 * 60 * 1000);
+  }
   /** Debounced re-push of the account-state snapshot to recovery contacts. */
   private scheduleRecoveryResync(): void {
     const contacts = getRecoveryContacts();

@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { JoinServerModal } from "./JoinServerModal";
 
@@ -93,7 +93,7 @@ describe("JoinServerModal", () => {
     // ...but its malformed preview is dropped, so no error alert is shown and the
     // locally-validated invite keeps Join enabled.
     expect(screen.queryByRole("alert")).toBeNull();
-    expect(screen.getByRole("button", { name: /join server/i })).toBeEnabled();
+    expect(screen.getByRole("button", { name: /join space/i })).toBeEnabled();
   });
 
   it("fails closed when the invite link cannot be parsed locally", async () => {
@@ -109,7 +109,7 @@ describe("JoinServerModal", () => {
     await waitFor(() => {
       expect(screen.getByRole("alert")).toBeInTheDocument();
     });
-    expect(screen.getByRole("button", { name: /join server/i })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /join space/i })).toBeDisabled();
     // A locally-invalid invite never reaches the support node.
     expect(discoverServerByInvite).not.toHaveBeenCalled();
   });
@@ -137,9 +137,11 @@ describe("JoinServerModal", () => {
       expect(screen.getByText("Cyber Devs")).toBeInTheDocument();
     });
     // …the 250 ms debounced enrichment window elapses…
-    await new Promise((resolve) => setTimeout(resolve, 400));
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 400));
+    });
     // …and the support node was never told which server this user is looking at.
     expect(discoverServerByInvite).not.toHaveBeenCalled();
-    expect(screen.getByRole("button", { name: /join server/i })).toBeEnabled();
+    expect(screen.getByRole("button", { name: /join space/i })).toBeEnabled();
   });
 });

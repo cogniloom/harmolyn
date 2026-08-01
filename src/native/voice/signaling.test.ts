@@ -34,7 +34,7 @@ describe('fetchTurnCredentials — no third-party STUN by default', () => {
     const servers = await fetchTurnCredentials();
     const urls = urlsOf(servers);
     expect(urls).toHaveLength(1);
-    expect(urls[0]).toMatch(/^stun:.+:3479$/);
+    expect(urls[0]).toMatch(/^stun:.+:3478$/);
     expect(urls[0].includes('google')).toBe(false);
   });
 
@@ -48,6 +48,6 @@ describe('fetchTurnCredentials — no third-party STUN by default', () => {
     localStorage.setItem(PUBLIC_STUN_OPT_IN_KEY, 'true');
     const optedIn = urlsOf(await fetchTurnCredentials());
     expect(optedIn.some(u => u.includes('stun.l.google.com'))).toBe(true);
-    expect(optedIn[0]).toMatch(/^stun:.+:3479$/); // the node's STUN still leads
+    expect(optedIn[0]).toMatch(/^stun:.+:3478$/); // the node's STUN still leads
   });
 });

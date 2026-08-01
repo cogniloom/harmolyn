@@ -216,6 +216,21 @@ describe("readBrowserChatActionSupport", () => {
     });
   });
 
+  it("distinguishes a live native engine from a connected P2P path", () => {
+    vi.stubGlobal("__HARMOLYN_NATIVE_ACTIVE__", true);
+    vi.stubGlobal("__HARMOLYN_XOREIN_RUNTIME__", {
+      identity: { peer_id: "peer-local" },
+      transport_state: "disconnected",
+    });
+
+    expect(readBrowserChatActionSupport()).toEqual({
+      mode: "connected",
+      canPersistLocally: true,
+      canAttemptAttachments: true,
+      detail: "Native engine active locally — no xorein peer path is connected; chat mutations remain local or queued until a peer path is available.",
+    });
+  });
+
   it("falls back to nested settings when the top-level control endpoint is malformed", () => {
     vi.stubGlobal("__HARMOLYN_XOREIN_RUNTIME__", {
       identity: { peer_id: "peer-local" },
@@ -263,7 +278,7 @@ describe("readPersistedChatScopeState", () => {
     });
   });
 
-  it("drops prototype-bearing stored chat messages", () => {
+  it("purges prototype-bearing legacy chat state instead of reading it", () => {
     const stored = Object.create(null);
     stored.version = 1;
     stored.nickname = "Cipher";
@@ -280,13 +295,14 @@ describe("readPersistedChatScopeState", () => {
 
     expect(readPersistedChatScopeState("ch-2")).toEqual({
       version: 1,
-      nickname: "Cipher",
+      nickname: "",
       mutedUserIds: [],
       inboxReadIds: [],
       deletedMessageIds: [],
       messages: [],
       threads: {},
     });
+    expect(window.localStorage.getItem("harmolyn:xorein:chat-scope:ch-2")).toBeNull();
   });
 
   it("normalizes stored thread ids and drops blank thread keys", () => {
@@ -320,22 +336,14 @@ describe("readPersistedChatScopeState", () => {
 
     expect(readPersistedChatScopeState("ch-1")).toEqual({
       version: 1,
-      nickname: "Scout",
+      nickname: "",
       mutedUserIds: [],
       inboxReadIds: [],
       deletedMessageIds: [],
       messages: [],
-      threads: {
-        "thread-1": [
-          {
-            id: "msg-1",
-            userId: "peer-1",
-            content: "hello",
-            timestamp: "2026-05-27T10:00:00Z",
-          },
-        ],
-      },
+      threads: {},
     });
+    expect(window.localStorage.getItem("harmolyn:xorein:chat-scope:ch-1")).toBeNull();
   });
 
   it("normalizes stored messages before hydrating chat state", () => {
@@ -380,29 +388,14 @@ describe("readPersistedChatScopeState", () => {
 
     expect(readPersistedChatScopeState("ch-3")).toEqual({
       version: 1,
-      nickname: "Ops",
+      nickname: "",
       mutedUserIds: [],
       inboxReadIds: [],
       deletedMessageIds: [],
-      messages: [
-        {
-          id: "msg-1",
-          userId: "peer-1",
-          content: "hello",
-          timestamp: "2026-05-27T10:05:00Z",
-          attachments: ["/files/a"],
-          reactions: [
-            { emoji: "👍", count: 2, reacted: true },
-          ],
-          isSystem: true,
-          pinned: false,
-          replyToId: "msg-0",
-          editedAt: "2026-05-27T10:06:00Z",
-          sticker: true,
-        },
-      ],
+      messages: [],
       threads: {},
     });
+    expect(window.localStorage.getItem("harmolyn:xorein:chat-scope:ch-3")).toBeNull();
   });
 
   it("normalizes stored messages before persisting chat state", () => {
@@ -483,13 +476,14 @@ describe("readPersistedChatScopeState", () => {
 
     expect(readPersistedChatScopeState("ch-5")).toEqual({
       version: 1,
-      nickname: "Relay",
-      mutedUserIds: ["peer-1"],
-      inboxReadIds: ["msg-1"],
-      deletedMessageIds: ["msg-2"],
+      nickname: "",
+      mutedUserIds: [],
+      inboxReadIds: [],
+      deletedMessageIds: [],
       messages: [],
       threads: {},
     });
+    expect(window.localStorage.getItem("harmolyn:xorein:chat-scope:ch-5")).toBeNull();
   });
 });
 

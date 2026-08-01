@@ -2,27 +2,56 @@
 //
 // Two clients exchange messages containing unique canary strings, then this
 // scenario audits every place the data could leak:
-//   1. The support node's request log — the node must never see plaintext.
+//   1. The current Xorein node's persisted replica data — no plaintext or
+//      trivially encoded plaintext may exist there.
 //   2. The published runtime snapshot — must never carry crowd_root/invite_secret.
 //   3. Browser at-rest storage (IndexedDB/localStorage) — no plaintext bodies.
 //
-// Requires the local support node to be running with --data-dir pointing at
-// SUPPORT_NODE_DATA (default matches scripts/local-support-node.mjs usage).
+// XOREIN_NODE_DATA (or the legacy SUPPORT_NODE_DATA name) must point at the
+// exact --data-dir used by the current test node.
 import fs from 'node:fs';
 import path from 'node:path';
 import { Scenario, until } from './harness.mjs';
 import { register, createServer, copyInvite, joinByInvite, sendMessage, waitForMessage } from './flows.mjs';
 
-const SUPPORT_DATA = process.env.SUPPORT_NODE_DATA
-  ?? '/tmp/claude-1000/-home-wenga-src-harmolyn/c5d0e408-1a62-4312-81de-c5a267f348cf/scratchpad/support-node-data';
-const REQUEST_LOG = path.join(SUPPORT_DATA, 'requests.jsonl');
+const SUPPORT_DATA = process.env.XOREIN_NODE_DATA?.trim()
+  || process.env.SUPPORT_NODE_DATA?.trim()
+  || '';
+const REQUEST_LOG = SUPPORT_DATA ? path.join(SUPPORT_DATA, 'requests.jsonl') : '';
 
 // Unique per run so a hit can only come from THIS run's traffic.
 const stamp = process.env.CANARY_STAMP ?? String(process.hrtime.bigint());
 const CANARY_CHANNEL = `canaryChannelPlaintext${stamp}`;
-const CANARY_DM = `canaryDirectPlaintext${stamp}`;
+
+function walkFiles(root) {
+  if (!root || !fs.existsSync(root)) return [];
+  const files = [];
+  for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+    const target = path.join(root, entry.name);
+    if (entry.isDirectory()) files.push(...walkFiles(target));
+    else if (entry.isFile()) files.push(target);
+  }
+  return files;
+}
+
+function decodedJsonLeaks(value, canary) {
+  if (typeof value === 'string') {
+    if (value.includes(canary)) return true;
+    if (value.length >= 8 && value.length <= 16 * 1024 * 1024 && /^[A-Za-z0-9+/_=-]+$/.test(value)) {
+      try {
+        const normalized = value.replace(/-/g, '+').replace(/_/g, '/');
+        if (Buffer.from(normalized, 'base64').includes(Buffer.from(canary))) return true;
+      } catch { /* malformed base64 is not a leak */ }
+    }
+    return false;
+  }
+  if (Array.isArray(value)) return value.some(item => decodedJsonLeaks(item, canary));
+  if (value && typeof value === 'object') return Object.values(value).some(item => decodedJsonLeaks(item, canary));
+  return false;
+}
 
 function requestLogOffset() {
+  if (!REQUEST_LOG) return 0;
   try {
     return fs.statSync(REQUEST_LOG).size;
   } catch {
@@ -31,7 +60,7 @@ function requestLogOffset() {
 }
 
 function requestLogSince(offset) {
-  if (!fs.existsSync(REQUEST_LOG)) return [];
+  if (!REQUEST_LOG || !fs.existsSync(REQUEST_LOG)) return [];
   const fd = fs.openSync(REQUEST_LOG, 'r');
   const size = fs.statSync(REQUEST_LOG).size;
   const buf = Buffer.alloc(Math.max(0, size - offset));
@@ -57,27 +86,58 @@ try {
     await bob.page.getByRole('button', { name: 'general' }).click();
   });
 
-  await s.step('exchange canary messages in a Crowd channel', async () => {
+  if (!SUPPORT_DATA || !fs.existsSync(SUPPORT_DATA)) {
+    throw new Error('set XOREIN_NODE_DATA to the current test node data directory for the zero-trust audit');
+  }
+  const nodeFilesBeforeTraffic = new Set(walkFiles(SUPPORT_DATA));
+
+  await s.step('exchange canary messages in an adaptive E2EE channel', async () => {
     await sendMessage(alice, CANARY_CHANNEL);
     await waitForMessage(bob, CANARY_CHANNEL, 30000);
     await sendMessage(bob, `${CANARY_CHANNEL}-reply`);
     await waitForMessage(alice, `${CANARY_CHANNEL}-reply`, 30000);
   });
 
-  await s.step('LEAK CHECK: support node never saw message plaintext', async () => {
-    // Give any deferred/best-effort HTTP call time to fire before auditing.
-    await alice.page.waitForTimeout(3000);
-    const rows = requestLogSince(startOffset);
-    console.log(`  audited ${rows.length} support-node requests from this run`);
-    const leaks = rows.filter(r => {
-      const blob = `${r.path} ${r.body ?? ''}`;
-      return blob.includes(CANARY_CHANNEL) || blob.includes(CANARY_DM);
-    });
-    for (const l of leaks) console.log(`  LEAK: ${l.method} ${l.path} :: ${String(l.body).slice(0, 200)}`);
-    if (leaks.length) throw new Error(`${leaks.length} request(s) carried message plaintext to the support node`);
+  await s.step('LEAK CHECK: Xorein persisted no plaintext or encoded plaintext', async () => {
+    const newReplicaFiles = await until(() => {
+      const files = walkFiles(path.join(SUPPORT_DATA, 'history-replicas'))
+        .filter(file => !nodeFilesBeforeTraffic.has(file));
+      return files.length ? files : false;
+    }, { what: 'current-run Xorein replica records', timeout: 20000 });
+
+    const leaks = [];
+    const allFiles = walkFiles(SUPPORT_DATA);
+    for (const file of allFiles) {
+      const raw = fs.readFileSync(file);
+      if (raw.includes(Buffer.from(CANARY_CHANNEL))) {
+        leaks.push(`${file}:raw`);
+        continue;
+      }
+      if (!file.endsWith('.json') && !file.endsWith('.jsonl')) continue;
+      for (const line of raw.toString('utf8').split('\n').filter(Boolean)) {
+        try {
+          if (decodedJsonLeaks(JSON.parse(line), CANARY_CHANNEL)) leaks.push(`${file}:encoded`);
+        } catch { /* binary or non-JSON node state is covered by the raw scan */ }
+      }
+    }
+    if (leaks.length) throw new Error(`message plaintext leaked into Xorein storage: ${leaks.join(', ')}`);
+    console.log(`  audited ${allFiles.length} node file(s), including ${newReplicaFiles.length} current-run replica(s)`);
   });
 
-  await s.step('LEAK CHECK: no capability secrets in support-node traffic', async () => {
+  await s.step('LEAK CHECK: legacy HTTP request log contains no plaintext', async () => {
+    // Current Xorein does not use the retired request-log shim. If a compatibility
+    // gateway is present, audit it as a secondary boundary as well.
+    const rows = requestLogSince(startOffset);
+    console.log(`  audited ${rows.length} compatibility HTTP request(s) from this run`);
+    const leaks = rows.filter(r => {
+      const blob = `${r.path} ${r.body ?? ''}`;
+      return blob.includes(CANARY_CHANNEL);
+    });
+    for (const l of leaks) console.log(`  LEAK: ${l.method} ${l.path} :: ${String(l.body).slice(0, 200)}`);
+    if (leaks.length) throw new Error(`${leaks.length} request(s) carried message plaintext to the node`);
+  });
+
+  await s.step('LEAK CHECK: no capability secrets in compatibility HTTP traffic', async () => {
     const rows = requestLogSince(startOffset);
     const secretish = rows.filter(r => {
       const body = String(r.body ?? '');
@@ -149,7 +209,7 @@ try {
     console.log('  at-rest storage clean (no plaintext message bodies)');
   });
 
-  await s.step('SUMMARY: what the support node DID see', async () => {
+  await s.step('SUMMARY: compatibility HTTP paths observed', async () => {
     const rows = requestLogSince(startOffset);
     const byPath = new Map();
     for (const r of rows) {

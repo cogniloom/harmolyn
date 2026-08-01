@@ -19,7 +19,7 @@ describe('WelcomeEmptyState', () => {
     expect(screen.getByText('Welcome to Harmolyn')).toBeInTheDocument();
     fireEvent.click(screen.getByText('Create your account'));
     expect(onOpenAuth).toHaveBeenCalledTimes(1);
-    expect(screen.queryByText('Create a server')).toBeNull();
+    expect(screen.queryByText('Create a Space')).toBeNull();
   });
 
   it('offers enabled getting-started actions to a connected, signed-in user', () => {
@@ -35,7 +35,7 @@ describe('WelcomeEmptyState', () => {
       />,
     );
 
-    const createBtn = screen.getByText('Create a server').closest('button')!;
+    const createBtn = screen.getByText('Create a Space').closest('button')!;
     expect(createBtn).not.toBeDisabled();
     fireEvent.click(createBtn);
     expect(onCreateServer).toHaveBeenCalledTimes(1);
@@ -53,7 +53,7 @@ describe('WelcomeEmptyState', () => {
       />,
     );
 
-    expect(screen.getByText('Create a server').closest('button')!).toBeDisabled();
+    expect(screen.getByText('Create a Space').closest('button')!).toBeDisabled();
     expect(screen.getByText(/these actions become available once you’re online/i)).toBeInTheDocument();
   });
 });

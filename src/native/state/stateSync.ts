@@ -47,6 +47,14 @@ export interface EncryptedSyncBlob {
   ciphertext: string;  // base64
 }
 
+/** Validate the transport/storage envelope without attempting decryption. */
+export function isEncryptedSyncBlob(value: unknown): value is EncryptedSyncBlob {
+  if (!isPlainObject(value) || value.v !== 1) return false;
+  const nonce = unhex(value.nonce, 12);
+  const ciphertext = decodeBase64Strict(value.ciphertext, MAX_SYNC_STATE_BYTES + 16);
+  return nonce !== null && ciphertext !== null && ciphertext.length >= 16;
+}
+
 function hex(bytes: Uint8Array): string {
   return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
 }
@@ -84,6 +92,11 @@ function validSyncState(value: unknown): value is SyncState {
       || Object.keys(serverValue.channels).length > 500) return false;
     if (serverValue.crowd_root !== undefined
       && (typeof serverValue.crowd_root !== 'string' || decodeBase64Strict(serverValue.crowd_root, 32)?.length !== 32)) return false;
+    if (serverValue.channel_security_mode !== undefined
+      && serverValue.channel_security_mode !== 'tree'
+      && serverValue.channel_security_mode !== 'crowd') return false;
+    if (serverValue.channel_crypto_profile !== undefined
+      && serverValue.channel_crypto_profile !== 'scope-aad-v2') return false;
     for (const [channelId, channel] of Object.entries(serverValue.channels)) {
       if (!isPlainObject(channel) || channel.id !== channelId || channel.server_id !== serverId || !boundedId(channel.id)) return false;
     }
@@ -132,10 +145,10 @@ export function encryptSyncState(id: XoreinIdentity, state: SyncState): Encrypte
 
 export function decryptSyncState(id: XoreinIdentity, blob: EncryptedSyncBlob): SyncState | null {
   try {
-    if (!isPlainObject(blob) || blob.v !== 1) return null;
+    if (!isEncryptedSyncBlob(blob)) return null;
     const nonce = unhex(blob.nonce, 12);
     const ciphertext = decodeBase64Strict(blob.ciphertext, MAX_SYNC_STATE_BYTES + 16);
-    if (!nonce || !ciphertext || ciphertext.length < 16) return null;
+    if (!nonce || !ciphertext) return null;
     const key = stateKey(id);
     const pt = gcm(key, nonce).decrypt(ciphertext);
     if (pt.length > MAX_SYNC_STATE_BYTES) return null;
@@ -174,7 +187,11 @@ export function restorePendingSyncState(id: XoreinIdentity): boolean {
       localStorage.removeItem(PENDING_STATE_KEY);
       return false;
     }
-    const blob = JSON.parse(raw) as EncryptedSyncBlob;
+    const blob = JSON.parse(raw) as unknown;
+    if (!isEncryptedSyncBlob(blob)) {
+      localStorage.removeItem(PENDING_STATE_KEY);
+      return false;
+    }
     const state = decryptSyncState(id, blob);
     localStorage.removeItem(PENDING_STATE_KEY);
     if (state) { applySyncState(state); return true; }

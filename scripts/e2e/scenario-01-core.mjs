@@ -40,13 +40,10 @@ try {
   await s.step('bob joins via invite', () => joinByInvite(bob, invite, 'Test Hub'));
   await s.shot(bob, 'bob-joined');
 
-  await s.step('bob sees #general but NOT pre-join history (join boundary)', async () => {
+  await s.step('bob sees #general and restores owner-authorized history', async () => {
     await bob.page.getByRole('button', { name: 'general' }).click();
     await bob.page.getByText('Welcome to #general').waitFor({ timeout: 20000 });
-    const text = await bob.page.locator('body').innerText();
-    if (text.includes('hello from alice')) {
-      throw new Error('SECURITY: pre-join history leaked to a new joiner');
-    }
+    await waitForMessage(bob, 'hello from alice', 20000);
   });
 
   await s.step('alice posts after the join; bob receives (latency A→B)', async () => {

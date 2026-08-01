@@ -185,11 +185,11 @@ describe("ServerSettingsScreen", () => {
     });
   });
 
-  it("saves server name/description through the engine", async () => {
+  it("saves Space name/description through the engine", async () => {
     const user = userEvent.setup();
     render(<ServerSettingsScreen server={makeServer()} onClose={() => {}} />);
 
-    const nameInput = screen.getByLabelText(/server name/i);
+    const nameInput = screen.getByLabelText(/space name/i);
     await user.clear(nameInput);
     await user.type(nameInput, "Renamed Server");
     await user.click(screen.getByRole("button", { name: /save changes/i }));
@@ -224,13 +224,13 @@ describe("ServerSettingsScreen", () => {
     expect(await screen.findByText(/clipboard access is unavailable/i)).toBeTruthy();
   });
 
-  it("deletes the server through the engine (real, not a stub)", async () => {
+  it("deletes the Space through the engine (real, not a stub)", async () => {
     vi.spyOn(window, "confirm").mockReturnValue(true);
     const onClose = vi.fn();
     const user = userEvent.setup();
     render(<ServerSettingsScreen server={makeServer()} onClose={onClose} />);
 
-    await user.click(screen.getByRole("button", { name: /delete server/i }));
+    await user.click(screen.getByRole("button", { name: /delete space/i }));
     await waitFor(() => expect(deleteServer).toHaveBeenCalledWith("srv-1"));
     expect(onClose).toHaveBeenCalled();
   });
