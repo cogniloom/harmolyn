@@ -153,7 +153,8 @@ and updater artifacts, atomically advances `staging` and `main` with the release
 tag, then publishes the official GitHub release.
 
 The workflow fails closed when any updater, Apple, or Windows signing credential
-is absent. Configure these repository secrets with the exact value types shown:
+is absent. Configure these as environment secrets in the protected
+`official-release` GitHub environment, using the exact value types shown:
 
 | Secret | Expected value |
 |---|---|

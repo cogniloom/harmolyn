@@ -9,7 +9,8 @@ Harmolyn releases are built by `.github/workflows/release.yml` from the official
    branches. Require review and successful CI before changes enter `staging`.
 2. Register runners with labels `self-hosted`, `linux`, `x64` and
    `self-hosted`, `macOS`. Windows uses GitHub's `windows-latest` image.
-3. Configure these repository secrets:
+3. Configure these secrets in the protected GitHub environment named
+   `official-release` (not as repository-wide secrets):
 
 | Secret | Exact expected value |
 |---|---|
