@@ -156,11 +156,7 @@ export class ChannelCrypto {
       || !wire.sndr || typeof wire.nonce !== 'string' || typeof wire.ct !== 'string') {
       throw new Error('channel: invalid ciphertext');
     }
-    if (selected === state.currentMode) {
-      if (wire.epoch > state.currentEpoch || wire.epoch < state.currentEpoch - 1) {
-        throw new Error('channel: ciphertext outside current transition window');
-      }
-    } else if (wire.epoch !== state.currentEpoch - 1) {
+    if (selected !== state.currentMode && wire.epoch !== state.currentEpoch - 1) {
       throw new Error('channel: inactive mode outside transition window');
     }
     if (selected === 'tree') {

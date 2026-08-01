@@ -595,7 +595,14 @@ export function drainRecipientInbox(
         }
         seenThisPass.add(opened.id);
         try {
-          await apply(opened);
+          const result = await apply(opened);
+          // Inbox handlers may signal a recoverable refusal as { ok: false }
+          // rather than throw.  Treat it exactly like a transient exception:
+          // leave the packet at every provider and retry it on the next drain.
+          if (result && typeof result === 'object' && 'ok' in result
+            && (result as { ok?: unknown }).ok === false) {
+            throw new Error('recipient inbox operation was not accepted');
+          }
           markInboxDeliverySeen(opened.id);
           acknowledgeIds.add(opened.id);
           applied++;

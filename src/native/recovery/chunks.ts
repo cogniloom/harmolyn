@@ -5,6 +5,8 @@
 
 const DB_NAME = 'xorein-recovery-chunks-v1';
 const STORE = 'assemblies';
+const META_STORE = 'assembly-meta';
+const DB_VERSION = 2;
 const MAX_ASSEMBLIES = 100;
 const MAX_ASSEMBLIES_PER_SOURCE = 2;
 const ASSEMBLY_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -15,6 +17,15 @@ interface StoredAssembly {
   fingerprint: string;
   chunkCount: number;
   chunks: Array<string | null>;
+  updatedAt: number;
+}
+
+// Keep quota data separate from the encrypted fragments.  IndexedDB clones a
+// value returned by getAll(), so using the assembly records for housekeeping
+// used to copy up to the entire recovery cache for every arriving fragment.
+interface AssemblyMeta {
+  key: string;
+  source: string;
   updatedAt: number;
 }
 
@@ -36,11 +47,28 @@ let writeChain: Promise<void> = Promise.resolve();
 
 function openDB(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, 1);
+    const req = indexedDB.open(DB_NAME, DB_VERSION);
     req.onupgradeneeded = event => {
       const db = (event.target as IDBOpenDBRequest).result;
       if (!db.objectStoreNames.contains(STORE)) {
         db.createObjectStore(STORE, { keyPath: 'key' });
+      }
+      if (!db.objectStoreNames.contains(META_STORE)) {
+        const meta = db.createObjectStore(META_STORE, { keyPath: 'key' });
+        meta.createIndex('source', 'source', { unique: false });
+        // Populate the compact index once when upgrading existing installs.
+        const assemblies = (event.target as IDBOpenDBRequest).transaction?.objectStore(STORE);
+        if (assemblies) {
+          const cursor = assemblies.openCursor();
+          cursor.onsuccess = () => {
+            const current = cursor.result;
+            if (!current) return;
+            if (validStoredAssembly(current.value)) {
+              meta.put({ key: current.value.key, source: current.value.source, updatedAt: current.value.updatedAt } satisfies AssemblyMeta);
+            }
+            current.continue();
+          };
+        }
       }
     };
     req.onsuccess = () => resolve(req.result);
@@ -66,12 +94,16 @@ function validStoredAssembly(value: unknown): value is StoredAssembly {
 async function pruneAssemblies(now = Date.now()): Promise<void> {
   const db = await openDB();
   await new Promise<void>((resolve, reject) => {
-    const tx = db.transaction(STORE, 'readwrite');
+    const tx = db.transaction([STORE, META_STORE], 'readwrite');
     const store = tx.objectStore(STORE);
-    const req = store.getAll();
+    const metaStore = tx.objectStore(META_STORE);
+    const req = metaStore.getAll();
     req.onsuccess = () => {
       const records = (req.result as unknown[])
-        .filter(validStoredAssembly)
+        .filter((value): value is AssemblyMeta => Boolean(value)
+          && typeof (value as AssemblyMeta).key === 'string'
+          && typeof (value as AssemblyMeta).source === 'string'
+          && Number.isFinite((value as AssemblyMeta).updatedAt))
         .sort((a, b) => b.updatedAt - a.updatedAt);
       const retainedBySource = new Map<string, number>();
       let retained = 0;
@@ -80,6 +112,7 @@ async function pruneAssemblies(now = Date.now()): Promise<void> {
         const expired = now - record.updatedAt > ASSEMBLY_TTL_MS;
         if (expired || retained >= MAX_ASSEMBLIES || sourceCount >= MAX_ASSEMBLIES_PER_SOURCE) {
           store.delete(record.key);
+          metaStore.delete(record.key);
           continue;
         }
         retained++;
@@ -104,8 +137,9 @@ export function appendRecoveryChunk(input: RecoveryChunkInput): Promise<Recovery
     await pruneAssemblies();
     const db = await openDB();
     const result = await new Promise<RecoveryChunkResult>((resolve, reject) => {
-      const tx = db.transaction(STORE, 'readwrite');
+      const tx = db.transaction([STORE, META_STORE], 'readwrite');
       const store = tx.objectStore(STORE);
+      const metaStore = tx.objectStore(META_STORE);
       const req = store.get(input.key);
       let outcome: RecoveryChunkResult = { accepted: false };
       req.onsuccess = () => {
@@ -133,6 +167,7 @@ export function appendRecoveryChunk(input: RecoveryChunkInput): Promise<Recovery
         record.chunks[input.chunkIndex] = input.data;
         record.updatedAt = Date.now();
         store.put(record);
+        metaStore.put({ key: record.key, source: record.source, updatedAt: record.updatedAt } satisfies AssemblyMeta);
         outcome = record.chunks.every(chunk => chunk !== null)
           ? { accepted: true, chunks: record.chunks as string[] }
           : { accepted: true };
@@ -171,8 +206,9 @@ export function deleteRecoveryChunks(key: string): Promise<void> {
   return serializeWrite(async () => {
     const db = await openDB();
     await new Promise<void>((resolve, reject) => {
-      const tx = db.transaction(STORE, 'readwrite');
+      const tx = db.transaction([STORE, META_STORE], 'readwrite');
       tx.objectStore(STORE).delete(key);
+      tx.objectStore(META_STORE).delete(key);
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(tx.error);
     });

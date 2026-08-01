@@ -650,26 +650,37 @@ export const Layout: React.FC = () => {
     setNodeLaunchBusy(true);
     setNodeTestResult(null);
     setNodeLaunchFeedback(null);
+    const previousEndpoint = readPreferredControlEndpoint();
 
     try {
+      // The native bridge authorizes the selected loopback endpoint. Stage the
+      // selection before probing so first-time local connections are checked
+      // through that authenticated bridge, then restore the previous choice if
+      // the probe fails.
+      storePreferredControlEndpoint(normalized);
       const testResult = await testControlEndpoint(normalized);
       setNodeTestResult(testResult);
       if (testResult.status !== 'reachable') {
+        if (previousEndpoint) storePreferredControlEndpoint(previousEndpoint);
+        else clearPreferredControlEndpoint();
         return;
       }
 
       setNodeLaunchFeedback(`Connecting to ${normalized}...`);
       const snapshot = await connectToControlEndpoint(normalized);
       if (snapshot) {
-        storePreferredControlEndpoint(normalized);
         nodeLaunchInteractionRef.current = false;
         setShowNodeLaunch(false);
         setShowWelcome(false);
         setState((prev) => ({ ...prev, showSettings: false }));
         return;
       }
+      if (previousEndpoint) storePreferredControlEndpoint(previousEndpoint);
+      else clearPreferredControlEndpoint();
       setNodeLaunchFeedback(`Unable to reach ${normalized}. Check the node and try again.`);
     } catch (error) {
+      if (previousEndpoint) storePreferredControlEndpoint(previousEndpoint);
+      else clearPreferredControlEndpoint();
       setNodeLaunchFeedback(
         error instanceof Error && error.message.trim()
           ? error.message.trim()

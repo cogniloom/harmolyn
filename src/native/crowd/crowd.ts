@@ -8,7 +8,11 @@ const LABEL_CROWD_SENDER_KEY = 'xorein/crowd/v1/sender-key'; // append peerID
 
 export const MAX_EPOCH_MESSAGES = 1000;
 export const EPOCH_TTL_MS = 7 * 24 * 3600 * 1000;
-export const LEGACY_WINDOW_SIZE = 2;
+// Preserve the keys necessary to decrypt the bounded retained-history window
+// after membership epochs advance. New members only receive the current root,
+// while existing members (including a restored device) retain these prior
+// epochs locally. This is deliberately bounded to avoid indefinite key hoard.
+export const LEGACY_WINDOW_SIZE = 256;
 const MAX_ID_BYTES = 256;
 const MAX_PLAINTEXT_BYTES = 1 << 20;
 

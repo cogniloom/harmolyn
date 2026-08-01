@@ -13,8 +13,10 @@ import {
 } from './inboxToken.js';
 
 const DB_NAME = 'harmolyn-peer-mailbox-v1';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const STORE = 'entries';
+const USAGE_STORE = 'usage';
+const TOTAL_USAGE_KEY = 'total';
 const MAX_TOTAL_BYTES = 256 * 1024 * 1024;
 const MAX_SOURCE_BYTES = 32 * 1024 * 1024;
 const MAX_TOKEN_ENTRIES = MAX_MAILBOX_DELIVERIES;
@@ -29,6 +31,11 @@ interface PeerMailboxEntry {
   size: number;
   stored_at: number;
   expires_at: number;
+}
+
+interface MailboxUsage {
+  key: typeof TOTAL_USAGE_KEY;
+  bytes: number;
 }
 
 const memory = new Map<string, PeerMailboxEntry>();
@@ -57,11 +64,29 @@ function openDatabase(): Promise<IDBDatabase> | null {
     const request = indexedDB.open(DB_NAME, DB_VERSION);
     request.onupgradeneeded = () => {
       const db = request.result;
-      if (db.objectStoreNames.contains(STORE)) return;
-      const store = db.createObjectStore(STORE, { keyPath: 'key' });
-      store.createIndex('token', 'token', { unique: false });
-      store.createIndex('source_peer_id', 'source_peer_id', { unique: false });
-      store.createIndex('expires_at', 'expires_at', { unique: false });
+      if (!db.objectStoreNames.contains(STORE)) {
+        const store = db.createObjectStore(STORE, { keyPath: 'key' });
+        store.createIndex('token', 'token', { unique: false });
+        store.createIndex('source_peer_id', 'source_peer_id', { unique: false });
+        store.createIndex('expires_at', 'expires_at', { unique: false });
+      }
+      if (!db.objectStoreNames.contains(USAGE_STORE)) {
+        const usage = db.createObjectStore(USAGE_STORE, { keyPath: 'key' });
+        let bytes = 0;
+        const entries = request.transaction?.objectStore(STORE).openCursor();
+        if (entries) {
+          entries.onsuccess = () => {
+            const cursor = entries.result;
+            if (!cursor) {
+              usage.put({ key: TOTAL_USAGE_KEY, bytes } satisfies MailboxUsage);
+              return;
+            }
+            const entry = cursor.value as Partial<PeerMailboxEntry>;
+            if (typeof entry.size === 'number' && Number.isFinite(entry.size) && entry.size >= 0) bytes += entry.size;
+            cursor.continue();
+          };
+        }
+      }
     };
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => {
@@ -97,16 +122,23 @@ function pruneMemory(now: number): void {
 }
 
 async function pruneDatabase(db: IDBDatabase, now: number): Promise<void> {
-  const tx = db.transaction(STORE, 'readwrite');
+  const tx = db.transaction([STORE, USAGE_STORE], 'readwrite');
+  const usageStore = tx.objectStore(USAGE_STORE);
+  const usageRequest = usageStore.get(TOTAL_USAGE_KEY);
   const request = tx.objectStore(STORE).index('expires_at').openCursor(IDBKeyRange.upperBound(now));
+  let bytes = 0;
+  usageRequest.onsuccess = () => { bytes = (usageRequest.result as MailboxUsage | undefined)?.bytes ?? 0; };
   await new Promise<void>((resolve, reject) => {
     request.onerror = () => reject(request.error ?? new Error('peer mailbox pruning failed'));
     request.onsuccess = () => {
       const cursor = request.result;
       if (!cursor) {
+        usageStore.put({ key: TOTAL_USAGE_KEY, bytes: Math.max(0, bytes) } satisfies MailboxUsage);
         resolve();
         return;
       }
+      const entry = cursor.value as PeerMailboxEntry;
+      bytes -= entry.size;
       cursor.delete();
       cursor.continue();
     };
@@ -171,25 +203,26 @@ export async function handlePeerMailboxRequest(
 
     try {
       await pruneDatabase(db, now);
-      const readTx = db.transaction(STORE, 'readonly');
+      const readTx = db.transaction([STORE, USAGE_STORE], 'readonly');
       const store = readTx.objectStore(STORE);
-      const [existing, all, source, tokenEntries] = await Promise.all([
+      const [existing, usage, source, tokenEntries] = await Promise.all([
         requestResult(store.get(key)) as Promise<PeerMailboxEntry | undefined>,
-        requestResult(store.getAll()) as Promise<PeerMailboxEntry[]>,
+        requestResult(readTx.objectStore(USAGE_STORE).get(TOTAL_USAGE_KEY)) as Promise<MailboxUsage | undefined>,
         requestResult(store.index('source_peer_id').getAll(remotePeerId)) as Promise<PeerMailboxEntry[]>,
         requestResult(store.index('token').getAll(token)) as Promise<PeerMailboxEntry[]>,
       ]);
       await transactionDone(readTx);
       if (existing) return { ok: true, queued: true, duplicate: true };
-      const totalBytes = all.reduce((sum, candidate) => sum + candidate.size, 0);
+      const totalBytes = usage?.bytes ?? 0;
       const sourceBytes = source.reduce((sum, candidate) => sum + candidate.size, 0);
       if (totalBytes + size > MAX_TOTAL_BYTES
         || sourceBytes + size > MAX_SOURCE_BYTES
         || tokenEntries.length >= MAX_TOKEN_ENTRIES) {
         return { ok: false, error: 'mailbox_quota' };
       }
-      const writeTx = db.transaction(STORE, 'readwrite');
+      const writeTx = db.transaction([STORE, USAGE_STORE], 'readwrite');
       writeTx.objectStore(STORE).put(entry);
+      writeTx.objectStore(USAGE_STORE).put({ key: TOTAL_USAGE_KEY, bytes: totalBytes + size } satisfies MailboxUsage);
       await transactionDone(writeTx);
       return { ok: true, queued: true };
     } catch {
@@ -261,8 +294,13 @@ export async function handlePeerMailboxRequest(
         .slice(0, MAX_MAILBOX_DELIVERIES);
       const entriesToDelete = recipientInbox ? acknowledgedEntries : entries;
       if (entriesToDelete.length > 0) {
-        const writeTx = db.transaction(STORE, 'readwrite');
+        const writeTx = db.transaction([STORE, USAGE_STORE], 'readwrite');
         for (const entry of entriesToDelete) writeTx.objectStore(STORE).delete(entry.key);
+        const usage = await requestResult(writeTx.objectStore(USAGE_STORE).get(TOTAL_USAGE_KEY)) as MailboxUsage | undefined;
+        writeTx.objectStore(USAGE_STORE).put({
+          key: TOTAL_USAGE_KEY,
+          bytes: Math.max(0, (usage?.bytes ?? 0) - entriesToDelete.reduce((sum, entry) => sum + entry.size, 0)),
+        } satisfies MailboxUsage);
         await transactionDone(writeTx);
       }
       return {

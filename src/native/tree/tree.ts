@@ -9,7 +9,12 @@ const LABEL_TREE_EPOCH_ROOT = 'xorein/tree/v1/epoch-root';
 
 export const MAX_MEMBERS        = 50;
 export const MAX_EPOCH_MESSAGES = 1000;
-export const LEGACY_WINDOW_SIZE = 2;
+// See Crowd mode: retained local history may span several membership epochs.
+// A new member receives only the current root; prior keys stay local to the
+// existing membership cohort and are capped to prevent unbounded retention.
+// Tree spaces are capped at 50 members, so 47 prior epochs covers every
+// possible membership transition while leaving the first creator epoch bounded.
+export const LEGACY_WINDOW_SIZE = 47;
 const MAX_ID_BYTES = 256;
 const MAX_PLAINTEXT_BYTES = 1 << 20;
 

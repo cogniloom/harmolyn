@@ -38,6 +38,7 @@ const MAX_FETCH_BATCH_CHUNKS = 2;
 const TARGET_REMOTE_COPIES = 3;
 const MAX_PARALLEL_REQUESTS = 6;
 const MAX_PROVIDER_FAILURES = 3;
+const PROVIDER_FAILURE_BACKOFF_MS = 5 * 60 * 1000;
 const MAX_SPONSOR_ACCOUNTS = 8192;
 
 interface StoredChunk {
@@ -71,6 +72,7 @@ interface ProviderHealth {
   failures: number;
   invalid: number;
   quarantined: boolean;
+  retry_after?: number;
 }
 
 export interface BlobSwarmSeedReport {
@@ -657,12 +659,18 @@ function healthFor(peerId: string): ProviderHealth {
 function recordProviderSuccess(peerId: string): void {
   const health = healthFor(peerId);
   health.failures = Math.max(0, health.failures - 1);
+  health.retry_after = undefined;
 }
 
 function recordProviderFailure(peerId: string): void {
   const health = healthFor(peerId);
   health.failures++;
-  if (health.failures >= MAX_PROVIDER_FAILURES) health.quarantined = true;
+  // Transport failures are not proof of malice. Back off briefly, then allow
+  // a provider to recover when its network path returns. Invalid ciphertext
+  // remains a permanent quarantine below.
+  if (health.failures >= MAX_PROVIDER_FAILURES) {
+    health.retry_after = Date.now() + PROVIDER_FAILURE_BACKOFF_MS;
+  }
 }
 
 function recordProviderInvalid(peerId: string): void {
@@ -672,7 +680,14 @@ function recordProviderInvalid(peerId: string): void {
 }
 
 function usableProvider(peerId: string): boolean {
-  return !healthFor(peerId).quarantined;
+  const health = healthFor(peerId);
+  if (health.quarantined) return false;
+  if (health.retry_after && health.retry_after > Date.now()) return false;
+  if (health.retry_after) {
+    health.retry_after = undefined;
+    health.failures = 0;
+  }
+  return true;
 }
 
 async function sendChunkBatch(
