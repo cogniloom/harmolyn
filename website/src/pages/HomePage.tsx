@@ -1,6 +1,6 @@
 import logo from "../assets/harmolyn-logo.svg";
-import screenshotCrowd from "../assets/screenshot-crowd.jpg";
-import screenshotSeal from "../assets/screenshot-seal.jpg";
+import screenshotSafety from "../assets/screenshot-safety.jpg";
+import screenshotWelcome from "../assets/screenshot-welcome.jpg";
 import { ComparisonSection } from "../components/ComparisonSection";
 import { CurrentStateSection } from "../components/CurrentStateSection";
 import { SiteFooter } from "../components/SiteFooter";
@@ -114,19 +114,6 @@ export function HomePage() {
                   View on GitHub
                 </a>
               </div>
-              <dl className="mt-12 grid grid-cols-2 gap-x-8 gap-y-5 sm:grid-cols-4">
-                {[
-                  { key: "Hybrid", value: "PQ identities" },
-                  { key: "Tree", value: "through 50" },
-                  { key: "Crowd", value: "from 51" },
-                  { key: "AGPL", value: "open source" },
-                ].map((stat) => (
-                  <div key={stat.key}>
-                    <dt className="text-2xl font-bold text-foreground">{stat.key}</dt>
-                    <dd className="label-mono mt-1 text-muted-foreground">{stat.value}</dd>
-                  </div>
-                ))}
-              </dl>
             </div>
 
             <div className="relative mx-auto w-full max-w-md">
@@ -261,23 +248,23 @@ export function HomePage() {
         <section className="mx-auto mt-32 max-w-6xl px-4">
           <span className="label-mono text-primary">the client</span>
           <h2 className="mt-3 max-w-3xl text-4xl sm:text-5xl">
-            Familiar UI. Security always in view.
+            A clear start. Safety always in view.
           </h2>
           <p className="mt-5 max-w-2xl text-muted-foreground">
-            Spaces, channels, and DMs — the layout you already know, with the
-            security badge sitting right in the header.
+            Harmolyn introduces its peer-owned model before you create an
+            account, with a guided walkthrough whenever you want more detail.
           </p>
           <div className="mt-12 grid gap-6 lg:grid-cols-2">
             {[
               {
-                src: screenshotSeal,
-                mode: "Seal",
-                caption: "1:1 end-to-end encrypted DM.",
+                src: screenshotWelcome,
+                mode: "Welcome",
+                caption: "The essentials, before you create an account.",
               },
               {
-                src: screenshotCrowd,
-                mode: "Crowd",
-                caption: "Large channel with signed epoch rotation.",
+                src: screenshotSafety,
+                mode: "Safety guide",
+                caption: "A clear explanation of how the client works.",
               },
             ].map((screenshot) => (
               <figure
@@ -286,9 +273,9 @@ export function HomePage() {
               >
                 <img
                   src={screenshot.src}
-                  alt={`Harmolyn ${screenshot.mode} conversation view`}
-                  width={1920}
-                  height={1080}
+                  alt={`Harmolyn ${screenshot.mode} screen`}
+                  width={1600}
+                  height={1000}
                   loading="lazy"
                   className="aspect-[16/10] w-full object-cover"
                 />
