@@ -47,37 +47,37 @@ export const ReportModal: React.FC<ReportModalProps> = ({ targetLabel, onSubmit,
   const [details, setDetails] = React.useState('');
 
   return (
-    <div className="fixed inset-0 z-[210] flex items-center justify-center p-4" onClick={onClose}>
+    <div className="responsive-overlay-scroll fixed inset-0 z-[210] flex items-center justify-center" onClick={onClose}>
       <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" />
       <div
         role="dialog"
         aria-modal="true"
         aria-label={`Report ${targetLabel}`}
-        className="relative w-full max-w-[460px] max-h-[85vh] flex flex-col glass-card bg-bg-0 border border-white/10 rounded-r2 shadow-2xl overflow-hidden"
+        className="relative flex max-h-full min-h-0 w-full max-w-[460px] flex-col overflow-hidden rounded-r2 border border-white/10 bg-bg-0 shadow-2xl glass-card"
         onClick={(e) => e.stopPropagation()}
       >
-        <header className="flex items-start justify-between gap-3 p-5 border-b border-white/8">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-full bg-accent-danger/15 flex items-center justify-center text-accent-danger">
+        <header className="flex shrink-0 items-start justify-between gap-3 border-b border-white/8 p-4 sm:p-5">
+          <div className="flex min-w-0 items-center gap-3">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-accent-danger/15 text-accent-danger">
               <Flag size={18} />
             </div>
-            <div>
-              <h2 className="text-sm font-bold text-white font-display">Report {targetLabel}</h2>
+            <div className="min-w-0">
+              <h2 className="break-words text-sm font-bold text-white font-display">Report {targetLabel}</h2>
               <p className="text-[11px] text-white/40">Your report is private. Thank you for helping keep Harmolyn safe.</p>
             </div>
           </div>
-          <button onClick={onClose} aria-label="Close" className="focus-ring rounded-full p-1.5 text-white/40 hover:text-white hover:bg-white/5">
+          <button onClick={onClose} aria-label="Close" className="touch-target flex shrink-0 items-center justify-center rounded-full text-white/40 hover:bg-white/5 hover:text-white focus-ring">
             <X size={16} />
           </button>
         </header>
 
-        <div className="overflow-y-auto p-5 space-y-2">
+        <div className="min-h-0 space-y-2 overflow-y-auto overscroll-contain p-4 sm:p-5">
           <fieldset>
             <legend className="micro-label text-white/40 mb-2">Why are you reporting this?</legend>
             {REASONS.map((r) => (
               <label
                 key={r.key}
-                className={`flex items-start gap-3 p-3 rounded-r1 border cursor-pointer transition-all mb-1.5 ${
+                className={`min-h-11 flex items-start gap-3 p-3 rounded-r1 border cursor-pointer transition-all mb-1.5 ${
                   reason === r.key ? 'border-primary/40 bg-primary/5' : 'border-white/8 hover:bg-white/5'
                 }`}
               >
@@ -110,14 +110,14 @@ export const ReportModal: React.FC<ReportModalProps> = ({ targetLabel, onSubmit,
           </div>
         </div>
 
-        <footer className="flex justify-end gap-2 p-4 border-t border-white/8">
-          <button onClick={onClose} className="focus-ring px-4 py-2 text-xs text-white/50 hover:text-white rounded-full border border-white/10 hover:bg-white/5">
+        <footer className="flex shrink-0 flex-wrap justify-end gap-2 border-t border-white/8 px-4 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:py-4">
+          <button onClick={onClose} className="touch-target grow rounded-full border border-white/10 px-4 text-xs text-white/50 hover:bg-white/5 hover:text-white focus-ring sm:grow-0">
             Cancel
           </button>
           <button
             onClick={() => reason && onSubmit({ reason, details: details.trim() })}
             disabled={!reason}
-            className="focus-ring px-5 py-2 bg-accent-danger text-white rounded-full text-xs font-bold hover:brightness-110 transition-all disabled:opacity-40"
+            className="touch-target grow rounded-full bg-accent-danger px-5 text-xs font-bold text-white transition-all hover:brightness-110 disabled:opacity-40 focus-ring sm:grow-0"
           >
             Submit report
           </button>

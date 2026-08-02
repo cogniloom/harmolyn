@@ -176,14 +176,14 @@ export const SearchPanel: React.FC<SearchPanelProps> = ({ onClose, scopeType, sc
       role="dialog"
       aria-modal="true"
       aria-label="Search messages"
-      className="absolute inset-0 z-50 flex flex-col bg-bg-0/95 backdrop-blur-sm animate-in fade-in duration-200"
+      className="safe-top absolute inset-0 z-50 flex min-h-0 flex-col overflow-hidden bg-bg-0/95 backdrop-blur-sm animate-in fade-in duration-200"
     >
       {/* Header */}
-      <div className="p-4 border-b border-white/5 flex-shrink-0">
+      <div className="max-h-[min(60dvh,26rem)] flex-shrink-0 overflow-y-auto overscroll-contain p-3 sm:p-4 border-b border-white/5">
         <div className="flex items-center gap-3 mb-3">
           <Search size={18} className="text-primary" />
           <h2 className="text-title font-semibold text-text-primary flex-1">SEARCH // CHANNEL</h2>
-          <button onClick={onClose} aria-label="Close search" className="w-8 h-8 rounded-full glass-panel border border-stroke-subtle flex items-center justify-center text-text-secondary hover:text-primary transition-all focus-ring">
+          <button onClick={onClose} aria-label="Close search" className="touch-target rounded-full glass-panel border border-stroke-subtle flex items-center justify-center text-text-secondary hover:text-primary transition-all focus-ring">
             <X size={16} />
           </button>
         </div>
@@ -203,17 +203,17 @@ export const SearchPanel: React.FC<SearchPanelProps> = ({ onClose, scopeType, sc
 
         {/* Filter chips */}
         <div className="flex items-center gap-2 mt-3 flex-wrap">
-          <button onClick={() => setShowFilterMenu(showFilterMenu === 'from' ? null : 'from')} aria-expanded={showFilterMenu === 'from'} className="px-3 py-1.5 rounded-full text-[10px] font-bold border border-stroke-subtle text-text-secondary hover:bg-white/5 flex items-center gap-1.5 transition-all focus-ring">
+          <button onClick={() => setShowFilterMenu(showFilterMenu === 'from' ? null : 'from')} aria-expanded={showFilterMenu === 'from'} className="compact-touch-target px-3 py-1.5 rounded-full text-[10px] font-bold border border-stroke-subtle text-text-secondary hover:bg-white/5 flex items-center gap-1.5 transition-all focus-ring">
             <User size={10} /> From
           </button>
-          <button onClick={() => setShowFilterMenu(showFilterMenu === 'before' ? null : 'before')} aria-expanded={showFilterMenu === 'before'} className="px-3 py-1.5 rounded-full text-[10px] font-bold border border-stroke-subtle text-text-secondary hover:bg-white/5 flex items-center gap-1.5 transition-all focus-ring">
+          <button onClick={() => setShowFilterMenu(showFilterMenu === 'before' ? null : 'before')} aria-expanded={showFilterMenu === 'before'} className="compact-touch-target px-3 py-1.5 rounded-full text-[10px] font-bold border border-stroke-subtle text-text-secondary hover:bg-white/5 flex items-center gap-1.5 transition-all focus-ring">
             <Calendar size={10} /> Date
           </button>
 
           {filters.map((f, i) => (
             <span key={i} className="px-2.5 py-1 rounded-full text-[10px] font-bold bg-primary/15 text-primary border border-primary/30 flex items-center gap-1.5">
               {f.type}: {f.label}
-              <button onClick={() => removeFilter(i)} aria-label={`Remove ${f.type} filter`} className="hover:text-white transition-colors focus-ring rounded-full"><X size={9} /></button>
+              <button onClick={() => removeFilter(i)} aria-label={`Remove ${f.type} filter`} className="compact-touch-target flex items-center justify-center hover:text-white transition-colors focus-ring rounded-full"><X size={12} /></button>
             </span>
           ))}
         </div>
@@ -222,7 +222,7 @@ export const SearchPanel: React.FC<SearchPanelProps> = ({ onClose, scopeType, sc
         {showFilterMenu === 'from' && (
           <div className="mt-2 glass-card rounded-r2 border border-stroke p-2 max-h-40 overflow-y-auto">
             {normalizedUsers.filter(u => u.id !== 'me').map(u => (
-              <button key={u.id} onClick={() => addFilter('from', u.id, u.username)} className="w-full flex items-center gap-2 px-3 py-2 rounded-r1 text-text-secondary hover:bg-white/5 hover:text-text-primary text-xs transition-all">
+              <button key={u.id} onClick={() => addFilter('from', u.id, u.username)} className="compact-touch-target w-full flex items-center gap-2 px-3 py-2 rounded-r1 text-text-secondary hover:bg-white/5 hover:text-text-primary text-xs transition-all">
                 <img referrerPolicy="no-referrer" src={resolveAvatarSrc(u.avatar, u.username)} className="w-5 h-5 rounded-full" alt="" />
                 {u.username}
               </button>
@@ -238,9 +238,9 @@ export const SearchPanel: React.FC<SearchPanelProps> = ({ onClose, scopeType, sc
                   type="date"
                   value={beforeDraft}
                   onChange={(e) => setBeforeDraft(e.target.value)}
-                  className="flex-1 h-10 px-3 rounded-full bg-surface-dark border border-stroke-subtle text-text-primary text-caption focus:border-stroke-primary focus:outline-none"
+                  className="min-w-0 flex-1 h-11 px-3 rounded-full bg-surface-dark border border-stroke-subtle text-text-primary text-caption focus:border-stroke-primary focus:outline-none"
                 />
-                <button onClick={() => applyDateFilter('before', beforeDraft)} className="h-10 px-4 rounded-full bg-primary text-bg-0 text-caption font-bold">
+                <button onClick={() => applyDateFilter('before', beforeDraft)} className="h-11 min-w-[64px] px-4 rounded-full bg-primary text-bg-0 text-caption font-bold">
                   Apply
                 </button>
               </div>
@@ -252,9 +252,9 @@ export const SearchPanel: React.FC<SearchPanelProps> = ({ onClose, scopeType, sc
                   type="date"
                   value={afterDraft}
                   onChange={(e) => setAfterDraft(e.target.value)}
-                  className="flex-1 h-10 px-3 rounded-full bg-surface-dark border border-stroke-subtle text-text-primary text-caption focus:border-stroke-primary focus:outline-none"
+                  className="min-w-0 flex-1 h-11 px-3 rounded-full bg-surface-dark border border-stroke-subtle text-text-primary text-caption focus:border-stroke-primary focus:outline-none"
                 />
-                <button onClick={() => applyDateFilter('after', afterDraft)} className="h-10 px-4 rounded-full bg-primary text-bg-0 text-caption font-bold">
+                <button onClick={() => applyDateFilter('after', afterDraft)} className="h-11 min-w-[64px] px-4 rounded-full bg-primary text-bg-0 text-caption font-bold">
                   Apply
                 </button>
               </div>
@@ -264,7 +264,7 @@ export const SearchPanel: React.FC<SearchPanelProps> = ({ onClose, scopeType, sc
       </div>
 
       {/* Results */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-2">
+      <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain p-3 sm:p-4 pb-safe space-y-2">
         {query.trim().length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full text-text-tertiary gap-3">
             <Search size={40} className="text-white/10" />

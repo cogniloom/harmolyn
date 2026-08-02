@@ -42,19 +42,19 @@ export const PollCreator: React.FC<PollCreatorProps> = ({ onSubmit, onClose }) =
       role="dialog"
       aria-modal="true"
       aria-label="Create poll"
-      className="absolute bottom-20 left-4 right-4 md:left-6 md:right-auto md:w-[380px] glass-card bg-bg-0 border border-white/10 rounded-r2 shadow-2xl z-50 overflow-hidden animate-in slide-in-from-bottom-2 duration-200"
+      className="absolute bottom-20 left-[max(1rem,env(safe-area-inset-left))] right-[max(1rem,env(safe-area-inset-right))] z-50 flex max-h-[calc(100%-5.5rem)] min-h-0 flex-col overflow-hidden rounded-r2 border border-white/10 bg-bg-0 shadow-2xl glass-card animate-in slide-in-from-bottom-2 duration-200 md:left-6 md:right-auto md:w-[380px]"
     >
-      <div className="flex items-center justify-between px-4 py-3 border-b border-white/5">
+      <div className="flex shrink-0 items-center justify-between gap-2 border-b border-white/5 px-4 py-2">
         <div className="flex items-center gap-2">
           <BarChart3 size={16} className="text-primary" />
           <span className="text-xs font-bold text-white font-display">CREATE // POLL</span>
         </div>
-        <button onClick={onClose} aria-label="Close poll creator" className="p-1 text-white/30 hover:text-white transition-colors focus-ring rounded-r1">
+        <button onClick={onClose} aria-label="Close poll creator" className="touch-target flex shrink-0 items-center justify-center rounded-full text-white/30 transition-colors hover:bg-white/5 hover:text-white focus-ring">
           <X size={14} />
         </button>
       </div>
 
-      <div className="p-4 space-y-3">
+      <div className="min-h-0 space-y-3 overflow-y-auto overscroll-contain p-4">
         <div>
           <div className="flex items-center justify-between mb-1">
             <label htmlFor="poll-question" className="micro-label text-white/40">QUESTION</label>
@@ -68,7 +68,7 @@ export const PollCreator: React.FC<PollCreatorProps> = ({ onSubmit, onClose }) =
             maxLength={QUESTION_MAX}
             onChange={e => setQuestion(e.target.value)}
             placeholder="Ask something..."
-            className="w-full bg-surface-dark border border-white/5 rounded-r1 px-3 py-2 text-xs text-white font-mono placeholder-white/20 focus:outline-none focus:border-primary/50 focus-ring"
+            className="min-h-11 w-full rounded-r1 border border-white/5 bg-surface-dark px-3 py-2 text-xs text-white placeholder-white/20 focus:border-primary/50 focus:outline-none font-mono focus-ring"
           />
         </div>
 
@@ -84,10 +84,10 @@ export const PollCreator: React.FC<PollCreatorProps> = ({ onSubmit, onClose }) =
                 onChange={e => updateOption(i, e.target.value)}
                 placeholder={`Option ${i + 1}`}
                 aria-label={`Option ${i + 1}`}
-                className="flex-1 bg-surface-dark border border-white/5 rounded-r1 px-3 py-1.5 text-xs text-white font-mono placeholder-white/15 focus:outline-none focus:border-primary/50 focus-ring"
+                className="min-h-11 min-w-0 flex-1 rounded-r1 border border-white/5 bg-surface-dark px-3 py-2 text-xs text-white placeholder-white/15 focus:border-primary/50 focus:outline-none font-mono focus-ring"
               />
               {options.length > 2 && (
-                <button onClick={() => removeOption(i)} aria-label={`Remove option ${i + 1}`} className="p-1 text-white/20 hover:text-accent-danger transition-colors focus-ring rounded-r1">
+                <button onClick={() => removeOption(i)} aria-label={`Remove option ${i + 1}`} className="touch-target flex shrink-0 items-center justify-center rounded-full text-white/20 transition-colors hover:bg-accent-danger/10 hover:text-accent-danger focus-ring">
                   <X size={12} />
                 </button>
               )}
@@ -96,7 +96,7 @@ export const PollCreator: React.FC<PollCreatorProps> = ({ onSubmit, onClose }) =
           {options.length < 6 && (
             <button
               onClick={addOption}
-              className="flex items-center gap-1 text-[10px] text-primary/60 hover:text-primary transition-colors font-mono mt-1 focus-ring rounded-r1"
+              className="touch-target mt-1 flex items-center gap-1 rounded-r1 text-[10px] text-primary/60 transition-colors hover:text-primary font-mono focus-ring"
             >
               <Plus size={12} /> ADD OPTION
             </button>
@@ -104,8 +104,8 @@ export const PollCreator: React.FC<PollCreatorProps> = ({ onSubmit, onClose }) =
         </div>
       </div>
 
-      <div className="flex justify-end gap-2 px-4 py-3 border-t border-white/5">
-        <button onClick={onClose} className="px-3 py-1.5 text-xs text-white/40 hover:text-white transition-colors focus-ring rounded-r1">
+      <div className="flex shrink-0 flex-wrap justify-end gap-2 border-t border-white/5 px-4 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
+        <button onClick={onClose} className="touch-target grow rounded-full px-4 text-xs text-white/40 transition-colors hover:bg-white/5 hover:text-white focus-ring sm:grow-0">
           Cancel
         </button>
           <button
@@ -117,7 +117,7 @@ export const PollCreator: React.FC<PollCreatorProps> = ({ onSubmit, onClose }) =
               }
             }}
             disabled={!canSubmit}
-            className="px-4 py-1.5 bg-primary text-bg-0 rounded-full text-xs font-bold shadow-glow-sm hover:brightness-110 transition-all disabled:opacity-30 disabled:cursor-not-allowed focus-ring"
+            className="touch-target grow rounded-full bg-primary px-4 text-xs font-bold text-bg-0 shadow-glow-sm transition-all hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-30 focus-ring sm:grow-0"
           >
           Create Poll
         </button>

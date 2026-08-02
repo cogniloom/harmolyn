@@ -153,20 +153,20 @@ export const JoinServerModal: React.FC<JoinServerModalProps> = ({ onClose, onJoi
   };
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
-      <div role="dialog" aria-modal="true" aria-labelledby="join-server-title" className="w-full max-w-[480px] mx-6 glass-card rounded-r3 border border-stroke overflow-hidden">
-        <div className="p-6">
+    <div className="responsive-overlay-scroll fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
+      <div role="dialog" aria-modal="true" aria-labelledby="join-server-title" className="flex max-h-full w-full max-w-[480px] flex-col overflow-hidden rounded-r3 border border-stroke glass-card">
           {/* Header */}
-          <div className="flex items-center justify-between mb-6">
-            <div>
+          <div className="flex shrink-0 items-center justify-between gap-3 border-b border-white/5 px-4 py-4 sm:px-6">
+            <div className="min-w-0">
               <h2 id="join-server-title" className="text-title font-semibold text-text-primary">Join a Space</h2>
               <p className="text-caption text-text-tertiary mt-1">Paste a signed invite link to request membership</p>
             </div>
-            <button onClick={onClose} aria-label="Close" className="w-8 h-8 rounded-full glass-panel border border-stroke-subtle flex items-center justify-center text-text-secondary hover:text-primary hover:border-primary transition-all focus-ring">
+            <button onClick={onClose} aria-label="Close" className="touch-target flex shrink-0 items-center justify-center rounded-full border border-stroke-subtle glass-panel text-text-secondary transition-all hover:border-primary hover:text-primary focus-ring">
               <X size={16} />
             </button>
           </div>
 
+        <div className="min-h-0 overflow-y-auto overscroll-contain px-4 py-4 sm:px-6 sm:py-5">
           {/* Input */}
           <div className="space-y-1.5 mb-5">
             <label htmlFor="join-server-invite" className="micro-label text-text-tertiary">INVITE LINK</label>
@@ -231,9 +231,11 @@ export const JoinServerModal: React.FC<JoinServerModalProps> = ({ onClose, onJoi
             </div>
           </div>
 
+        </div>
+
           {/* Actions */}
-          <div className="flex justify-end gap-3">
-            <button onClick={onClose} className="h-12 px-5 rounded-full border border-stroke-subtle text-text-secondary text-body-strong hover:bg-white/5 transition-all">
+          <div className="flex shrink-0 justify-end gap-3 border-t border-white/5 px-4 py-3 sm:px-6 sm:py-4">
+            <button onClick={onClose} className="touch-target px-5 rounded-full border border-stroke-subtle text-text-secondary text-body-strong hover:bg-white/5 transition-all">
               Cancel
             </button>
             <PendingButton
@@ -241,13 +243,12 @@ export const JoinServerModal: React.FC<JoinServerModalProps> = ({ onClose, onJoi
               pending={joining}
               pendingLabel="Finding Space…"
               disabled={!inviteLink.trim() || !localMeta}
-              className="h-12 px-6 rounded-full bg-primary text-bg-0 font-bold text-body-strong flex items-center gap-2 hover:shadow-glow transition-all disabled:opacity-40"
+              className="touch-target px-5 sm:px-6 rounded-full bg-primary text-bg-0 font-bold text-body-strong flex items-center justify-center gap-2 hover:shadow-glow transition-all disabled:opacity-40"
             >
               <ArrowRight size={16} />
               Join Space
             </PendingButton>
           </div>
-        </div>
       </div>
     </div>
   );

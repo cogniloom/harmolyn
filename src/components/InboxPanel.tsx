@@ -122,34 +122,36 @@ export const InboxPanel: React.FC<InboxPanelProps> = ({ items, messages, users, 
   const unreadCount = normalizedItems.filter(i => !i.read).length;
 
   return (
-    <div className="absolute right-0 top-[52px] bottom-0 w-[380px] z-50 glass-card border-l border-stroke flex flex-col animate-in slide-in-from-right duration-200">
+    <div className="absolute bottom-0 right-0 top-[52px] z-50 flex min-h-0 w-full max-w-full flex-col overflow-hidden border-l border-stroke pb-[env(safe-area-inset-bottom)] glass-card animate-in slide-in-from-right duration-200 sm:w-[380px]">
       {/* Header */}
-      <div className="p-4 border-b border-white/5 flex-shrink-0">
-        <div className="flex items-center justify-between mb-3">
-          <div className="flex items-center gap-2">
+      <div className="flex-shrink-0 border-b border-white/5 p-3 sm:p-4">
+        <div className="mb-2 flex min-w-0 items-center justify-between gap-2 sm:mb-3">
+          <div className="flex min-w-0 items-center gap-2">
             <Inbox size={18} className="text-primary" />
-            <h2 className="text-title font-semibold text-text-primary">INBOX</h2>
+            <h2 className="truncate text-title font-semibold text-text-primary">INBOX</h2>
             {unreadCount > 0 && (
               <span className="px-2 py-0.5 rounded-full bg-accent-danger/20 text-accent-danger text-[10px] font-bold border border-accent-danger/30">
                 {unreadCount}
               </span>
             )}
           </div>
-          <div className="flex items-center gap-2">
-            <button onClick={onMarkAllRead} className="text-[10px] text-primary hover:underline font-bold">Mark all read</button>
-            <button onClick={onClose} className="w-7 h-7 rounded-full glass-panel border border-stroke-subtle flex items-center justify-center text-text-secondary hover:text-primary transition-all">
+          <div className="flex shrink-0 items-center gap-1">
+            <button type="button" onClick={onMarkAllRead} className="compact-touch-target whitespace-nowrap rounded-full px-2 text-[10px] font-bold text-primary hover:bg-white/5 hover:underline focus-ring">Mark all read</button>
+            <button type="button" onClick={onClose} aria-label="Close inbox" className="compact-touch-target flex h-7 w-7 items-center justify-center rounded-full border border-stroke-subtle text-text-secondary transition-all glass-panel hover:text-primary focus-ring">
               <X size={14} />
             </button>
           </div>
         </div>
 
         {/* Filter tabs */}
-        <div className="flex gap-1 bg-glass-overlay rounded-full border border-stroke-subtle p-0.5">
+        <div className="flex min-w-0 gap-1 rounded-full border border-stroke-subtle bg-glass-overlay p-0.5">
           {(['all', 'mentions', 'replies'] as InboxFilter[]).map(f => (
             <button
               key={f}
+              type="button"
               onClick={() => setFilter(f)}
-              className={`flex-1 px-3 py-1.5 rounded-full text-[10px] font-bold uppercase tracking-wider transition-all ${
+              aria-pressed={filter === f}
+              className={`compact-touch-target min-w-0 flex-1 rounded-full px-2 py-1.5 text-[10px] font-bold uppercase tracking-wider transition-all sm:px-3 ${
                 filter === f ? 'bg-primary text-bg-0' : 'text-text-secondary hover:text-text-primary'
               }`}
             >
@@ -160,7 +162,7 @@ export const InboxPanel: React.FC<InboxPanelProps> = ({ items, messages, users, 
       </div>
 
       {/* Items */}
-      <div className="flex-1 overflow-y-auto p-3 space-y-1.5">
+      <div className="min-h-0 flex-1 space-y-1.5 overflow-y-auto overscroll-contain p-3">
         {filtered.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full text-text-tertiary gap-3">
             <Inbox size={32} className="text-white/10" />

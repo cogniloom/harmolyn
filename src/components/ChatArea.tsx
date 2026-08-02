@@ -56,6 +56,38 @@ const ActionBtn = ({ icon, label, onClick }: { icon: React.ReactNode, label: str
   </button>
 );
 
+const MobileChatTool = ({
+  icon,
+  label,
+  active = false,
+  badge,
+  onClick,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  active?: boolean;
+  badge?: number;
+  onClick: () => void;
+}) => (
+  <button
+    type="button"
+    onClick={onClick}
+    className={`touch-target relative flex items-center gap-3 rounded-r1 border px-3 py-2 text-left text-xs font-semibold transition-colors ${
+      active
+        ? 'border-primary/30 bg-primary/10 text-primary'
+        : 'border-white/5 bg-white/[0.03] text-white/70 active:bg-white/10'
+    }`}
+  >
+    <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-white/5">{icon}</span>
+    <span className="min-w-0 flex-1 truncate">{label}</span>
+    {badge ? (
+      <span className="min-w-5 rounded-full bg-accent-danger px-1.5 py-0.5 text-center text-[9px] font-bold text-white">
+        {Math.min(badge, 99)}
+      </span>
+    ) : null}
+  </button>
+);
+
 // Tiny delivery status tick/icon shown on outbound messages
 const DeliveryStatusIcon = ({ status }: { status: Message['delivery_status'] }) => {
   if (!status || status === 'sent') return <Check size={9} className="text-primary/60" />;
@@ -511,6 +543,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   };
   const scrollRef = useRef<HTMLDivElement>(null);
   const [showPinned, setShowPinned] = useState(false);
+  const [showMobileTools, setShowMobileTools] = useState(false);
   const [showSecuritySummary, setShowSecuritySummary] = useState(false);
   const [showKeyVerification, setShowKeyVerification] = useState(false);
   const setPeerVerified = useSetPeerVerified();
@@ -525,6 +558,8 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   const [showSlashCommands, setShowSlashCommands] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
+  const inputAreaRef = useRef<HTMLDivElement>(null);
+  const [inputAreaHeight, setInputAreaHeight] = useState(128);
   const COMPOSER_MAX_HEIGHT = 160;
   const [replyingTo, setReplyingTo] = useState<Message | null>(null);
   const [editingMsgId, setEditingMsgId] = useState<string | null>(null);
@@ -596,6 +631,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
       : 'p2p offline';
 
   useEscapeKey(() => setShowSecuritySummary(false), showSecuritySummary);
+  useEscapeKey(() => setShowMobileTools(false), showMobileTools);
 
   // Ctrl/Cmd+F opens the advanced message search — the shortcut documented in the
   // keyboard-shortcuts overlay ("Search Messages"). Browser find is intentionally
@@ -1184,6 +1220,31 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   }, []);
 
   useEffect(() => {
+    const inputArea = inputAreaRef.current;
+    if (!inputArea) return;
+
+    let frame: number | null = null;
+    const measureAndAnchor = () => {
+      const nextHeight = Math.ceil(inputArea.getBoundingClientRect().height);
+      setInputAreaHeight((current) => current === nextHeight ? current : nextHeight);
+      if (!isScrolledUp) {
+        if (frame !== null) cancelAnimationFrame(frame);
+        frame = requestAnimationFrame(scrollToBottom);
+      }
+    };
+
+    measureAndAnchor();
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(measureAndAnchor);
+    observer?.observe(inputArea);
+    window.addEventListener('resize', measureAndAnchor);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener('resize', measureAndAnchor);
+      if (frame !== null) cancelAnimationFrame(frame);
+    };
+  }, [isScrolledUp, scrollToBottom]);
+
+  useEffect(() => {
     // When we just prepended older history, keep the viewport anchored to the same
     // messages (restore by the height delta) instead of snapping to the bottom.
     if (preserveScrollRef.current != null && scrollRef.current) {
@@ -1492,9 +1553,9 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
       <div className="absolute inset-0 grid-overlay opacity-30 z-[-1]"></div>
       
       {/* Header */}
-      <div className="absolute top-0 left-0 right-0 h-[52px] flex items-center justify-between px-3 lg:px-6 border-b theme-border glass-realistic z-20">
-        <div className="flex items-center gap-2.5 overflow-hidden">
-          <button onClick={onToggleMobileMenu} className="lg:hidden text-primary/80 hover:text-primary transition-colors p-2 min-w-[44px] min-h-[44px] flex items-center justify-center" aria-label="Open Menu">
+      <div className="absolute top-0 left-0 right-0 h-[52px] flex items-center justify-between px-3 min-[1100px]:px-6 border-b theme-border glass-realistic z-20">
+        <div className="flex min-w-0 flex-1 items-center gap-2.5 overflow-hidden">
+          <button onClick={onToggleMobileMenu} className="min-[1100px]:hidden text-primary/80 hover:text-primary transition-colors p-2 min-w-[44px] min-h-[44px] flex items-center justify-center" aria-label="Open Menu">
             <Menu size={22} />
           </button>
           
@@ -1506,7 +1567,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
             <button
               type="button"
               onClick={() => setShowSecuritySummary((prev) => !prev)}
-              className={`micro-label tracking-widest text-[7px] hidden md:flex items-center gap-1 focus-ring rounded-r1 hover:brightness-125 transition-all ${securityBadge.className}`}
+              className={`micro-label tracking-widest text-[7px] hidden min-[1100px]:flex items-center gap-1 focus-ring rounded-r1 hover:brightness-125 transition-all ${securityBadge.className}`}
               title="View this conversation's security mode"
               aria-haspopup="dialog"
               aria-expanded={showSecuritySummary}
@@ -1517,22 +1578,22 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
           </div>
         </div>
 
-        <div className="flex items-center gap-1.5 md:gap-5">
-           {headerControl}
+        <div className="flex shrink-0 items-center gap-0.5 sm:gap-1.5 min-[1100px]:gap-5">
+           <div className="hidden min-[1100px]:block">{headerControl}</div>
            {channelFollowingEnabled && !isDM && (
              <button
                onClick={toggleFollowChannel}
                aria-label={isFollowingChannel ? 'Unfollow channel' : 'Follow channel'}
                aria-pressed={isFollowingChannel}
                title={isFollowingChannel ? 'Following' : 'Follow channel'}
-               className={`p-1.5 transition-colors ${isFollowingChannel ? 'text-accent-warning' : 'text-white/40 hover:text-primary'}`}
+               className={`hidden min-[1100px]:inline-flex p-1.5 transition-colors ${isFollowingChannel ? 'text-accent-warning' : 'text-white/40 hover:text-primary'}`}
              >
                <Star size={16} fill={isFollowingChannel ? 'currentColor' : 'none'} />
              </button>
            )}
            <button
              onClick={onToggleLayout} 
-             className="text-white/40 hover:text-primary transition-colors p-1.5" 
+             className="hidden min-[1100px]:inline-flex text-white/40 hover:text-primary transition-colors p-1.5"
              title={`Change View: ${messageLayout}`}
              aria-label="Change Chat View"
            >
@@ -1540,11 +1601,22 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
            </button>
 
            {/* Member Toggle - Mobile & Tablet */}
-           <button onClick={onToggleMemberList} className="lg:hidden text-white/40 hover:text-primary transition-colors p-2 min-w-[44px] min-h-[44px] flex items-center justify-center" aria-label="Member List">
+           <button onClick={onToggleMemberList} className="min-[1100px]:hidden text-white/40 hover:text-primary transition-colors p-2 min-w-[44px] min-h-[44px] flex items-center justify-center" aria-label="Member List">
                <Users size={20} />
            </button>
 
-          <div className="hidden lg:flex items-center gap-4 text-white/40">
+           <button
+             type="button"
+             onClick={() => setShowMobileTools((open) => !open)}
+             className={`min-[1100px]:hidden touch-target flex items-center justify-center rounded-r1 transition-colors ${showMobileTools ? 'bg-primary/10 text-primary' : 'text-white/60 active:bg-white/10'}`}
+             aria-label="More chat tools"
+             aria-haspopup="dialog"
+             aria-expanded={showMobileTools}
+           >
+             <MoreHorizontal size={21} />
+           </button>
+
+          <div className="hidden min-[1100px]:flex items-center gap-4 text-white/40">
              {hasInbox && (
                 <button aria-label="Inbox" onClick={() => setShowInbox(!showInbox)} className={`transition-colors relative ${showInbox ? 'text-primary' : 'hover:text-primary'}`}>
                   <Inbox size={16} />
@@ -1590,12 +1662,142 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
         </div>
       </div>
 
+      {/* Mobile/tablet tools: desktop keeps these actions in the full header,
+          while compact widths get one explicit, scroll-safe command surface. */}
+      {showMobileTools && (
+        <>
+          <button
+            type="button"
+            className="absolute inset-0 z-30 bg-black/45 min-[1100px]:hidden"
+            onClick={() => setShowMobileTools(false)}
+            aria-label="Close chat tools"
+          />
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label="Chat tools"
+            className="absolute right-3 top-[58px] z-40 flex max-h-[calc(100%-70px)] w-[min(22rem,calc(100%-1.5rem))] flex-col overflow-hidden rounded-r2 border border-white/10 bg-bg-0/95 shadow-2xl min-[1100px]:hidden"
+          >
+            <div className="flex items-center justify-between border-b border-white/5 px-4 py-3">
+              <div>
+                <div className="text-sm font-bold text-white">Chat tools</div>
+                <div className="text-[10px] text-white/40">{isDM ? '@' : '#'}{channel.name}</div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowMobileTools(false)}
+                className="touch-target flex items-center justify-center rounded-full text-white/50 active:bg-white/10"
+                aria-label="Close chat tools"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="overflow-y-auto overscroll-contain p-3">
+              {headerControl ? (
+                <div className="mb-3 flex items-center justify-between gap-3 rounded-r1 border border-white/5 bg-white/[0.03] px-3 py-2">
+                  <span className="text-xs font-semibold text-white/70">Channel type</span>
+                  {headerControl}
+                </div>
+              ) : null}
+              <div className="mb-3 grid grid-cols-1 gap-2 min-[360px]:grid-cols-2">
+                <MobileChatTool
+                  icon={securityBadge.insecure ? <AlertTriangle size={15} /> : <Lock size={15} />}
+                  label={`Security: ${securityBadge.label}`}
+                  active={showSecuritySummary}
+                  onClick={() => {
+                    setShowMobileTools(false);
+                    setShowSecuritySummary(true);
+                  }}
+                />
+                <MobileChatTool
+                  icon={<LayoutTemplate size={15} />}
+                  label="Change layout"
+                  onClick={() => {
+                    onToggleLayout();
+                    setShowMobileTools(false);
+                  }}
+                />
+                {channelFollowingEnabled && !isDM ? (
+                  <MobileChatTool
+                    icon={<Star size={15} fill={isFollowingChannel ? 'currentColor' : 'none'} />}
+                    label={isFollowingChannel ? 'Unfollow channel' : 'Follow channel'}
+                    active={isFollowingChannel}
+                    onClick={toggleFollowChannel}
+                  />
+                ) : null}
+                <MobileChatTool
+                  icon={<Pin size={15} />}
+                  label="Pinned messages"
+                  badge={messagesState.filter((message) => message.pinned).length}
+                  active={showPinned}
+                  onClick={() => {
+                    setShowPinned(true);
+                    setShowMobileTools(false);
+                  }}
+                />
+                {hasInbox ? (
+                  <MobileChatTool
+                    icon={<Inbox size={15} />}
+                    label="Inbox"
+                    badge={unreadInboxItems.length}
+                    active={showInbox}
+                    onClick={() => {
+                      setShowInbox(true);
+                      setShowMobileTools(false);
+                    }}
+                  />
+                ) : null}
+                {hasAdvancedSearch ? (
+                  <MobileChatTool
+                    icon={<SlidersHorizontal size={15} />}
+                    label="Advanced search"
+                    active={showSearchPanel}
+                    onClick={() => {
+                      setShowSearchPanel(true);
+                      setShowMobileTools(false);
+                    }}
+                  />
+                ) : null}
+                <MobileChatTool
+                  icon={<Bell size={15} />}
+                  label="Notification settings"
+                  onClick={() => {
+                    showFeedback('info', 'Notification routing is managed from Settings → Signal Alerts.', 'system');
+                    setShowMobileTools(false);
+                  }}
+                />
+              </div>
+
+              <label className="block">
+                <span className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wider text-white/40">Filter this conversation</span>
+                <span className="relative block">
+                  <Search size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-white/30" />
+                  <input
+                    type="search"
+                    value={searchQuery}
+                    onChange={(event) => setSearchQuery(event.target.value)}
+                    placeholder="Search visible messages…"
+                    className="h-12 w-full rounded-full border border-white/10 bg-white/5 pl-10 pr-4 text-white placeholder:text-white/35 focus:border-primary/50 focus:outline-none"
+                  />
+                </span>
+              </label>
+            </div>
+          </div>
+        </>
+      )}
+
       {/* Messages Area */}
-      <div className={`absolute inset-0 overflow-y-auto px-3 md:px-10 pt-20 pb-28 ${
+      <div
+        className={`absolute inset-x-0 top-0 overflow-y-auto px-3 md:px-10 pt-20 pb-4 ${
           messageLayout === 'terminal' ? 'space-y-0.5 font-mono' : 
           messageLayout === 'bubbles' ? 'space-y-2.5' : 
           'space-y-6'
-        }`} ref={scrollRef} onScroll={handleScroll}>
+        }`}
+        style={{ bottom: inputAreaHeight }}
+        ref={scrollRef}
+        onScroll={handleScroll}
+      >
 
         {/* Load older history — only for server channels (DMs page differently) and
             when not filtering. Shown even on an EMPTY channel (a recovered device
@@ -1690,7 +1892,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                   <div 
                      id={buildMessageElementId(msg.id)}
                      onContextMenu={(e) => handleContextMenu(e, msg.id)}
-                     className="flex text-xs hover:bg-white/5 px-1.5 -mx-1.5 py-0.5 rounded font-mono"
+                     className="flex items-start text-xs hover:bg-white/5 px-1.5 -mx-1.5 py-0.5 rounded font-mono"
                   >
                      <span className="text-white/30 text-[10px] select-none whitespace-nowrap shrink-0 pt-[1px] inline-flex items-center gap-0.5">{msg.timestamp}{isMe && msg.delivery_status && <DeliveryStatusIcon status={msg.delivery_status} />}&nbsp;</span>
                      <div className="min-w-0">
@@ -1698,6 +1900,16 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                        <span className="text-white/40">:&nbsp;</span>
                        <span className="text-white/90 break-words">{displayContent}{msg.editedAt && <span className="text-white/20 text-[8px] ml-1">(edited)</span>}</span>
                      </div>
+                     <button
+                       type="button"
+                       onClick={(event) => handleContextMenu(event as unknown as React.MouseEvent, msg.id)}
+                       className="compact-message-trigger compact-touch-target ml-auto shrink-0 items-center justify-center rounded-full text-white/50"
+                       aria-label="More message actions"
+                       title={`Actions for ${user.username}'s message`}
+                       aria-haspopup="menu"
+                     >
+                       <MoreHorizontal size={16} />
+                     </button>
                  </div>
                  </React.Fragment>
              )
@@ -1720,6 +1932,20 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                          onMouseLeave={(e) => { if (!e.buttons && !reactionMenuMsgId) setHoveredMessageId(null); }}
                          onContextMenu={(e) => handleContextMenu(e, msg.id)}
                         className={`flex gap-2.5 w-full group relative ${isMe ? 'justify-end' : 'justify-start'} animate-in fade-in slide-in-from-bottom-2 duration-300`}>
+                      <button
+                        type="button"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setHoveredMessageId(null);
+                          handleContextMenu(event, msg.id);
+                        }}
+                        className="compact-message-trigger absolute right-0 top-0 z-20 min-h-[44px] min-w-[44px] items-center justify-center rounded-full border border-white/10 bg-bg-0/80 text-white/60 transition-colors"
+                        aria-label="More message actions"
+                        title={`Actions for ${user.username}'s message`}
+                        aria-haspopup="menu"
+                      >
+                        <MoreHorizontal size={17} />
+                      </button>
                       {!isMe && (
                         <UserPopup user={user}>
                             <UserAvatar user={user} className="w-7 h-7 rounded-full self-end mb-1 cursor-pointer hover:ring-2 hover:ring-primary transition-all shadow-lg" />
@@ -1777,7 +2003,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
 
                        {/* Action Menu for Bubbles */}
                        {hoveredMessageId === msg.id && (
-                           <div className={`absolute top-0 ${isMe ? 'left-auto right-[calc(100%+6px)]' : 'left-[calc(100%+6px)]'} glass-panel border border-white/10 rounded-full px-1 py-0.5 flex items-center gap-0.5 shadow-xl animate-in fade-in zoom-in-95 z-10`}>
+                           <div className={`mobile-message-actions absolute top-0 ${isMe ? 'left-auto right-[calc(100%+6px)]' : 'left-[calc(100%+6px)]'} glass-panel border border-white/10 rounded-full px-1 py-0.5 flex items-center gap-0.5 shadow-xl animate-in fade-in zoom-in-95 z-10`}>
                              {!hasIdentity ? (
                                <button onClick={() => onOpenAuth?.()} className="px-2.5 py-1 text-[10px] font-bold text-primary hover:text-primary/80 transition-colors whitespace-nowrap">
                                  Sign in to react
@@ -1834,6 +2060,20 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                 onDoubleClick={() => { if (isMe) startEdit(msg); }}
                 className={`flex gap-5 group relative p-2.5 -mx-2.5 rounded-r1 transition-all hover:bg-white/[0.03] ${isSpecial ? 'bg-gradient-to-r from-primary/5 to-transparent border-l-2 border-primary/20' : ''}`}
             >
+              <button
+                type="button"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  setHoveredMessageId(null);
+                  handleContextMenu(event, msg.id);
+                }}
+                className="compact-message-trigger absolute right-1 top-1 z-20 min-h-[44px] min-w-[44px] items-center justify-center rounded-full border border-white/10 bg-bg-0/80 text-white/60 transition-colors"
+                aria-label="More message actions"
+                title={`Actions for ${user.username}'s message`}
+                aria-haspopup="menu"
+              >
+                <MoreHorizontal size={17} />
+              </button>
               {isSpecial && <div className="absolute left-0 top-2.5 bottom-2.5 w-[2px] bg-primary rounded-full shadow-glow"></div>}
 
                <UserPopup user={user}>
@@ -1931,7 +2171,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
               </div>
 
               {hoveredMessageId === msg.id && (
-                  <div className="absolute -top-4 right-6 glass-panel border border-white/10 rounded-full px-2.5 py-1 flex items-center gap-1.5 shadow-2xl animate-in fade-in zoom-in-95 z-10">
+                  <div className="mobile-message-actions absolute -top-4 right-6 glass-panel border border-white/10 rounded-full px-2.5 py-1 flex items-center gap-1.5 shadow-2xl animate-in fade-in zoom-in-95 z-10">
                       {!hasIdentity ? (
                         <button onClick={() => onOpenAuth?.()} className="px-2 py-0.5 text-[10px] font-bold text-primary hover:text-primary/80 transition-colors whitespace-nowrap">
                           Sign in to react
@@ -1985,7 +2225,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                 <h3 className="font-bold text-white text-xs font-display">PINNED // MESSAGES</h3>
                 <span className="micro-label text-white/30 text-[8px]">ARCHIVE // {messagesState.filter(m => m.pinned).length} ENTRIES</span>
               </div>
-              <button onClick={() => setShowPinned(false)} className="p-1.5 text-white/40 hover:text-primary transition-colors rounded-full hover:bg-white/5">
+              <button onClick={() => setShowPinned(false)} className="compact-touch-target flex items-center justify-center text-white/40 hover:text-primary transition-colors rounded-full hover:bg-white/5" aria-label="Close pinned messages">
                 <X size={16} />
               </button>
             </div>
@@ -2009,7 +2249,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                         </div>
                         <button 
                           onClick={() => togglePin(m.id)}
-                          className="p-1 text-white/20 hover:text-accent-danger hover:bg-accent-danger/10 rounded-full transition-all opacity-0 group-hover:opacity-100"
+                          className="compact-touch-target flex items-center justify-center text-white/50 hover:text-accent-danger hover:bg-accent-danger/10 rounded-full transition-all"
                           aria-label="Unpin"
                         >
                           <X size={12} />
@@ -2027,7 +2267,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
 
 
       {/* Input Area */}
-      <div className="absolute bottom-0 left-0 right-0 p-3 md:p-6 pt-0 z-10">
+      <div ref={inputAreaRef} className="absolute bottom-0 left-0 right-0 p-3 md:p-6 pt-0 z-10">
         {showSlashCommands && (
             <div className="absolute bottom-20 left-6 w-52 bg-bg-0 border border-white/10 rounded-r2 shadow-2xl z-50 glass-card overflow-hidden animate-in slide-in-from-bottom-2">
                 <div className="micro-label text-primary/60 px-3 py-1.5 bg-white/5">COMMANDS</div>
@@ -2070,13 +2310,13 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                   <div className="micro-label text-primary mb-0.5">REPLYING TO // {getUser(replyingTo.userId).username.toUpperCase()}</div>
                   <div className="text-[10px] text-white/50 truncate">{messagePreviewText(replyingTo.content)}</div>
                 </div>
-                <button onClick={() => setReplyingTo(null)} className="p-1 text-white/30 hover:text-white hover:bg-white/10 rounded-full transition-colors" aria-label="Cancel reply">
+                <button onClick={() => setReplyingTo(null)} className="compact-touch-target flex items-center justify-center text-white/30 hover:text-white hover:bg-white/10 rounded-full transition-colors" aria-label="Cancel reply">
                   <X size={14} />
                 </button>
               </div>
             )}
 
-            <div className={`glass-realistic ${replyingTo ? 'rounded-b-r2 rounded-t-none' : 'rounded-r2'} flex items-end p-1.5 focus-within:border-primary/50 transition-all shadow-2xl relative overflow-visible group`}>
+            <div className={`glass-realistic ${replyingTo ? 'rounded-b-r2 rounded-t-none' : 'rounded-r2'} flex flex-wrap items-end p-1.5 min-[600px]:flex-nowrap focus-within:border-primary/50 transition-all shadow-2xl relative overflow-visible group`}>
                 <div className="absolute inset-0 grid-overlay opacity-5 group-focus-within:opacity-10 pointer-events-none"></div>
 
                 {/* Mention Autocomplete */}
@@ -2092,37 +2332,39 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                   />
                 )}
 
-                {hasFileUploads && (
+                <div className="order-2 flex items-center min-[600px]:order-none">
+                  {hasFileUploads && (
                   <>
                     <input type="file" ref={fileInputRef} className="hidden" onChange={handleFileUpload} />
                     <button
                       onClick={() => fileInputRef.current?.click()}
-                      className="p-3 text-white/30 hover:text-primary transition-colors"
+                      className="compact-touch-target flex items-center justify-center text-white/30 hover:text-primary transition-colors"
                       aria-label="Add attachment"
                     ><PlusCircle size={20} /></button>
                   </>
-                )}
-                {hasPolls && (
-                  <button onClick={() => setShowPollCreator(!showPollCreator)} className={`p-2 transition-colors ${showPollCreator ? 'text-primary' : 'text-white/30 hover:text-primary'}`} aria-label="Create Poll">
+                  )}
+                  {hasPolls && (
+                  <button onClick={() => setShowPollCreator(!showPollCreator)} className={`compact-touch-target flex items-center justify-center transition-colors ${showPollCreator ? 'text-primary' : 'text-white/30 hover:text-primary'}`} aria-label="Create Poll">
                     <BarChart3 size={18} />
                   </button>
-                )}
+                  )}
+                </div>
 
                 <textarea
                     ref={composerRef}
                     rows={1}
                     placeholder={`INPUT // ${isDM ? '@' : '#'}${channel.name.toUpperCase()}`}
-                    className="flex-1 bg-transparent border-none focus:outline-none text-white px-3 py-2 font-mono text-xs placeholder-white/40 focus-ring rounded-r1 resize-none leading-relaxed"
+                    className="order-1 min-h-[44px] w-full min-w-0 flex-1 bg-transparent border-none focus:outline-none text-white px-3 py-2 font-mono text-xs placeholder-white/40 focus-ring rounded-r1 resize-none leading-relaxed min-[600px]:order-none min-[600px]:w-auto"
                     aria-label="Message Input"
                     aria-multiline="true"
                     value={inputValue}
                     onChange={handleInputChange}
                     onKeyDown={handleKeyDown}
                 />
-                <div className="flex items-center gap-2.5 px-1.5">
+                <div className="order-3 ml-auto flex items-center gap-1 px-1.5 min-[600px]:order-none min-[600px]:gap-2.5">
                     {hasStickers && (
                       <div className="relative">
-                          <button onClick={() => { setShowStickerPicker(prev => !prev); setShowEmojiPicker(false); }} className={`p-2 transition-all ${showStickerPicker ? 'text-primary' : 'text-white/40 hover:text-primary'}`} aria-label="Stickers"><Sticker size={18} /></button>
+                          <button onClick={() => { setShowStickerPicker(prev => !prev); setShowEmojiPicker(false); }} className={`compact-touch-target flex items-center justify-center transition-all ${showStickerPicker ? 'text-primary' : 'text-white/40 hover:text-primary'}`} aria-label="Stickers"><Sticker size={18} /></button>
                           {showStickerPicker && (
                             <StickerPicker
                               onSelect={handleSendSticker}
@@ -2132,7 +2374,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                       </div>
                     )}
                     <div className="relative">
-                        <button onClick={() => { setShowEmojiPicker(prev => !prev); setShowStickerPicker(false); }} className={`p-2 transition-all ${showEmojiPicker ? 'text-primary' : 'text-white/40 hover:text-primary'}`} aria-label="Emoji Picker"><Smile size={18} /></button>
+                        <button onClick={() => { setShowEmojiPicker(prev => !prev); setShowStickerPicker(false); }} className={`compact-touch-target flex items-center justify-center transition-all ${showEmojiPicker ? 'text-primary' : 'text-white/40 hover:text-primary'}`} aria-label="Emoji Picker"><Smile size={18} /></button>
                         {showEmojiPicker && (
                           <EmojiPicker
                             onSelect={(emoji) => { setInputValue(prev => prev + emoji); setShowEmojiPicker(false); }}
@@ -2143,7 +2385,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                     <button
                       onClick={handleSendMessage}
                       disabled={!inputValue.trim()}
-                      className={`w-10 h-10 rounded-full flex items-center justify-center transition-all btn-press focus-ring ${
+                      className={`touch-target rounded-full flex items-center justify-center transition-all btn-press focus-ring ${
                         inputValue.trim()
                           ? 'bg-primary text-bg-0 shadow-glow hover:scale-105 group-focus-within:shadow-[0_0_20px_#13DDEC] cursor-pointer'
                           : 'bg-white/10 text-white/30 cursor-not-allowed'
@@ -2273,7 +2515,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
             role="dialog"
             aria-modal="true"
             aria-label="Conversation security mode"
-            className="absolute top-[56px] left-3 lg:left-6 z-40 w-[300px] glass-card border border-white/10 rounded-r2 shadow-2xl p-4 animate-in fade-in slide-in-from-top-2 duration-200"
+            className="absolute top-[56px] left-3 min-[1100px]:left-6 z-40 w-[min(300px,calc(100%-1.5rem))] glass-card border border-white/10 rounded-r2 shadow-2xl p-4 animate-in fade-in slide-in-from-top-2 duration-200"
           >
             <div className="flex items-center justify-between mb-2.5">
               <div className={`flex items-center gap-1.5 ${securityBadge.className}`}>
@@ -2282,7 +2524,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
               </div>
               <button
                 onClick={() => setShowSecuritySummary(false)}
-                className="p-1 text-white/30 hover:text-white hover:bg-white/10 rounded-full transition-colors focus-ring"
+                className="compact-touch-target flex items-center justify-center text-white/30 hover:text-white hover:bg-white/10 rounded-full transition-colors focus-ring"
                 aria-label="Close security summary"
               >
                 <X size={14} />
@@ -2297,7 +2539,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
             {isDM && dmVerification && (
               <button
                 onClick={() => { setShowSecuritySummary(false); setShowKeyVerification(true); }}
-                className={`focus-ring mt-3 w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-full text-[11px] font-bold transition-all ${
+                className={`touch-target focus-ring mt-3 w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-full text-[11px] font-bold transition-all ${
                   dmVerification.changed
                     ? 'bg-accent-danger/15 text-accent-danger hover:brightness-110'
                     : dmVerification.verified

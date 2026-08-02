@@ -1,7 +1,7 @@
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Channel, ConnectionState, DirectMessageChannel, Server, User, UserStatus } from '@/types';
-import { ChevronDown, ChevronRight, Hash, Megaphone, Volume2, Mic, MicOff, Video, MonitorUp, Headphones, HeadphoneOff, Settings, X, LogOut, Radio, PanelLeftClose, ArrowUpDown, FileText, Heart, Plus, Check, Pencil, Trash2, Copy, BellOff } from 'lucide-react';
+import { ChevronDown, ChevronRight, Hash, Megaphone, Volume2, Mic, MicOff, Video, MonitorUp, Headphones, HeadphoneOff, Settings, X, LogOut, Radio, PanelLeftClose, ArrowUpDown, FileText, Heart, Plus, Check, Pencil, Trash2, Copy, BellOff, MoreHorizontal } from 'lucide-react';
 import { StatusPicker } from '@/components/StatusPicker';
 import { AccountSwitcher } from '@/components/AccountSwitcher';
 import { ConnectionActivityPill } from '@/components/ConnectionActivityPill';
@@ -392,7 +392,7 @@ export const ChannelRail: React.FC<ChannelRailProps> = ({
   return (
     <div 
         className={`
-            w-[224px] glass-realistic flex flex-col h-full transition-transform duration-300 ease-in-out
+            w-full min-w-[224px] glass-realistic flex flex-col h-full transition-transform duration-300 ease-in-out
             ${collapsed ? '-translate-x-full' : 'translate-x-0'}
             ${isHome ? 'border-r border-white/5' : ''}
         `}
@@ -401,23 +401,24 @@ export const ChannelRail: React.FC<ChannelRailProps> = ({
     >
       {/* Collapsed Handle (Visible when collapsed) */}
       {collapsed && (
-          <button 
-            className="absolute right-[-10px] top-0 bottom-0 w-[10px] bg-bg-1 flex items-center justify-center hover:bg-bg-2 cursor-pointer transition-colors border-r border-white/5" 
+          <button
+            className="touch-target absolute right-[-44px] top-2 z-20 flex w-11 items-center justify-center rounded-r-xl border border-l-0 border-white/10 bg-bg-1 text-white/55 shadow-lg transition-colors hover:bg-bg-2 hover:text-primary focus-ring"
             onClick={onToggleCollapse}
             aria-label="Expand Channel List"
+            title="Expand channel list"
           >
-               <div className="w-1 h-6 bg-white/20 rounded-full"></div>
+               <ChevronRight size={18} />
           </button>
       )}
 
       {/* Header */}
-      <div className="h-[52px] px-5 flex items-center justify-between border-b theme-border">
+      <div className="h-[52px] shrink-0 px-3 flex items-center justify-between border-b theme-border">
         <div className="flex items-center gap-2 overflow-hidden min-w-0">
           <div className={`w-2 h-2 rounded-full flex-shrink-0 ${statusColorClass(connectionState.status)}`}></div>
           {!isHome && server ? (
             <button
               onClick={showServerHeaderMenu}
-              className="min-w-0 flex items-center gap-1.5 group/title text-left hover:text-primary transition-colors focus-ring rounded"
+              className="compact-touch-target min-w-0 flex flex-1 items-center gap-1.5 group/title text-left hover:text-primary transition-colors focus-ring rounded"
               aria-label="Space menu"
               title="Space menu"
             >
@@ -436,20 +437,20 @@ export const ChannelRail: React.FC<ChannelRailProps> = ({
         </div>
         <div className="flex items-center gap-1">
           {!isHome && onOpenServerSettings && (
-            <button onClick={onOpenServerSettings} className="theme-text-dim hover:text-primary transition-colors" aria-label="Space Settings" title="Space Settings">
+            <button onClick={onOpenServerSettings} className="compact-touch-target flex items-center justify-center theme-text-dim hover:text-primary transition-colors" aria-label="Space Settings" title="Space Settings">
               <Settings size={14} />
             </button>
           )}
-          <button onClick={onToggleCollapse} className="theme-text-dim hover:text-primary transition-colors" aria-label="Collapse Channel List">
+          <button onClick={onToggleCollapse} className="compact-touch-target flex items-center justify-center theme-text-dim hover:text-primary transition-colors" aria-label="Collapse Channel List">
               <PanelLeftClose size={16} />
           </button>
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto px-3 py-5 space-y-6 no-scrollbar">
+      <div className="flex-1 min-h-0 overflow-y-auto px-3 py-5 space-y-6 no-scrollbar">
         {isHome ? (
             <section>
-                <button onClick={onShowFriends} className="micro-label theme-text-dim mb-3 px-2 hover:text-primary transition-colors cursor-pointer w-full text-left flex items-center justify-between" aria-label={friendRequestBadge > 0 ? `Friends, ${friendRequestBadge} pending request${friendRequestBadge === 1 ? '' : 's'}` : 'Friends'}>
+                <button onClick={onShowFriends} className="compact-touch-target micro-label theme-text-dim mb-3 px-2 hover:text-primary transition-colors cursor-pointer w-full text-left flex items-center justify-between" aria-label={friendRequestBadge > 0 ? `Friends, ${friendRequestBadge} pending request${friendRequestBadge === 1 ? '' : 's'}` : 'Friends'}>
                   <span>Direct Communications</span>
                   {friendRequestBadge > 0 && <span className="min-w-4 h-4 px-1 rounded-full bg-accent-danger text-[9px] leading-4 text-white text-center font-bold" aria-label={`${friendRequestBadge} pending friend request${friendRequestBadge === 1 ? '' : 's'}`}>{friendRequestBadge > 99 ? '99+' : friendRequestBadge}</span>}
                 </button>
@@ -463,7 +464,7 @@ export const ChannelRail: React.FC<ChannelRailProps> = ({
                                 disabled={!connectivityEnabled}
                                 onClick={() => onSelectChannel(dm.id)}
                                 title={!connectivityEnabled ? connectionState.detail : user.username}
-                                className={`w-full flex items-center gap-2.5 p-1.5 rounded-r2 border transition-all cursor-pointer btn-press disabled:opacity-40 disabled:cursor-not-allowed ${active ? 'bg-primary/10 border-primary/20 text-primary shadow-[inset_0_0_10px_rgba(19,221,236,0.1)]' : 'bg-transparent border-transparent theme-text-secondary hover:bg-white/5 hover:theme-text'}`}>
+                                className={`w-full min-h-[44px] flex items-center gap-2.5 p-1.5 rounded-r2 border transition-all cursor-pointer btn-press disabled:opacity-40 disabled:cursor-not-allowed ${active ? 'bg-primary/10 border-primary/20 text-primary shadow-[inset_0_0_10px_rgba(19,221,236,0.1)]' : 'bg-transparent border-transparent theme-text-secondary hover:bg-white/5 hover:theme-text'}`}>
                                 <div className="w-7 h-7 rounded-full overflow-hidden border theme-border">
                                     <img src={resolveAvatarSrc(user.avatar, user.username)} className="w-full h-full object-cover" alt={user.username} />
                                 </div>
@@ -484,7 +485,7 @@ export const ChannelRail: React.FC<ChannelRailProps> = ({
                     <div onContextMenu={e => showCategoryContextMenu(e, cat.id)} className="flex items-center justify-between micro-label theme-text-dim mb-2.5 px-2 group/cat">
                         <button
                           onClick={() => toggleCategoryCollapsed(cat.id)}
-                          className="flex items-center gap-1 min-w-0 flex-1 text-left hover:text-primary transition-colors focus-ring rounded"
+                          className="compact-touch-target flex items-center gap-1 min-w-0 flex-1 text-left hover:text-primary transition-colors focus-ring rounded"
                           aria-expanded={!isCollapsed}
                           aria-label={`${isCollapsed ? 'Expand' : 'Collapse'} ${cat.name}`}
                         >
@@ -498,13 +499,22 @@ export const ChannelRail: React.FC<ChannelRailProps> = ({
                                match the rail's quiet-until-engaged design language. */
                             <button
                               onClick={() => openNewChannel(cat.id)}
-                              className="opacity-50 hover:opacity-100 focus-visible:opacity-100 group-hover/cat:opacity-80 transition-opacity p-0.5 hover:text-primary rounded focus-ring"
+                              className="compact-touch-target flex items-center justify-center opacity-50 hover:opacity-100 focus-visible:opacity-100 group-hover/cat:opacity-80 transition-opacity hover:text-primary rounded focus-ring"
                               aria-label="Add channel"
                               title="Add channel"
                             >
                               <Plus size={11} />
                             </button>
                           )}
+                          <button
+                            type="button"
+                            onClick={(event) => showCategoryContextMenu(event, cat.id)}
+                            className="compact-touch-target flex items-center justify-center rounded text-white/45 transition-colors hover:bg-white/5 hover:text-primary focus-ring"
+                            aria-label="Category actions"
+                            title={`${cat.name} actions`}
+                          >
+                            <MoreHorizontal size={14} />
+                          </button>
                         </div>
                     </div>
                     <div className={`space-y-0.5 ${isCollapsed ? 'hidden' : ''}`}>
@@ -514,16 +524,27 @@ export const ChannelRail: React.FC<ChannelRailProps> = ({
                             const active = activeChannelId === ch.id && !isVoice;
                             return (
                                 <div key={ch.id}>
+                                  <div className="flex min-w-0 items-center gap-0.5">
                                     <button
                                         disabled={isVoice ? false : !connectivityEnabled}
                                          onClick={() => isVoice ? onJoinVoice(ch.id) : onSelectChannel(ch.id)}
                                         onContextMenu={e => showChannelContextMenu(e, ch, cat.id)}
                                         title={!connectivityEnabled && !isVoice ? connectionState.detail : ch.name}
-                                        className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-r2 border transition-all cursor-pointer group btn-press disabled:opacity-40 disabled:cursor-not-allowed ${active ? 'bg-primary/10 border-primary/20 text-primary shadow-inner' : 'bg-transparent border-transparent theme-text-secondary hover:bg-white/5 hover:theme-text'} ${isConnected ? 'bg-accent-success/10 border-accent-success/20 text-accent-success' : ''}`}>
+                                        className={`min-w-0 flex-1 min-h-[44px] flex items-center gap-2.5 px-3 py-2 rounded-r2 border transition-all cursor-pointer group btn-press disabled:opacity-40 disabled:cursor-not-allowed ${active ? 'bg-primary/10 border-primary/20 text-primary shadow-inner' : 'bg-transparent border-transparent theme-text-secondary hover:bg-white/5 hover:theme-text'} ${isConnected ? 'bg-accent-success/10 border-accent-success/20 text-accent-success' : ''}`}>
                                          {isVoice ? <Volume2 size={14} /> : <Hash size={14} />}
-                                         <span className="text-xs font-medium tracking-tight flex-1 text-left">{ch.name}</span>
+                                         <span className="text-xs font-medium tracking-tight flex-1 min-w-0 truncate text-left">{ch.name}</span>
                                          {ch.unreadCount && !active && <div className="w-1.5 h-1.5 rounded-full bg-white shadow-[0_0_8px_white]"></div>}
                                     </button>
+                                    <button
+                                      type="button"
+                                      onClick={(event) => showChannelContextMenu(event, ch, cat.id)}
+                                      className="compact-touch-target flex shrink-0 items-center justify-center rounded-full text-white/45 transition-colors hover:bg-white/5 hover:text-primary focus-ring"
+                                      aria-label="Channel actions"
+                                      title={`${ch.name} actions`}
+                                    >
+                                      <MoreHorizontal size={14} />
+                                    </button>
+                                  </div>
                                     {isVoice && ch.activeUsers && ch.activeUsers.length > 0 && (
                                         <div className="ml-7 mt-1.5 space-y-1 pb-1.5">
                                             {ch.activeUsers.map(u => (
@@ -541,7 +562,7 @@ export const ChannelRail: React.FC<ChannelRailProps> = ({
                                                 <button
                                                     type="button"
                                                     onClick={() => (onWatchVoice ?? onJoinVoice)(ch.id)}
-                                                    className="ml-1.5 mt-1 flex items-center gap-1.5 text-[10px] font-semibold text-primary hover:text-white transition-colors focus-ring rounded"
+                                                    className="compact-touch-target ml-1.5 mt-1 flex items-center gap-1.5 px-2 text-[10px] font-semibold text-primary hover:text-white transition-colors focus-ring rounded"
                                                     aria-label={`Watch stream in ${ch.name}`}
                                                 >
                                                     <Video size={11} /> Watch stream
@@ -561,7 +582,7 @@ export const ChannelRail: React.FC<ChannelRailProps> = ({
                                   type="button"
                                   onClick={() => setNewChannel(c => c ? { ...c, voice: false, announcement: false } : c)}
                                   aria-pressed={!newChannel.voice && !newChannel.announcement}
-                                  className={`flex-1 flex items-center justify-center gap-1 py-1 rounded text-[10px] font-bold transition-all ${!newChannel.voice && !newChannel.announcement ? 'bg-primary/15 text-primary' : 'text-white/40 hover:bg-white/5'}`}
+                                  className={`compact-touch-target flex-1 flex items-center justify-center gap-1 px-1 rounded text-[10px] font-bold transition-all ${!newChannel.voice && !newChannel.announcement ? 'bg-primary/15 text-primary' : 'text-white/40 hover:bg-white/5'}`}
                                 >
                                   <Hash size={10} /> Text
                                 </button>
@@ -569,7 +590,7 @@ export const ChannelRail: React.FC<ChannelRailProps> = ({
                                   type="button"
                                   onClick={() => setNewChannel(c => c ? { ...c, voice: true, announcement: false } : c)}
                                   aria-pressed={newChannel.voice}
-                                  className={`flex-1 flex items-center justify-center gap-1 py-1 rounded text-[10px] font-bold transition-all ${newChannel.voice ? 'bg-primary/15 text-primary' : 'text-white/40 hover:bg-white/5'}`}
+                                  className={`compact-touch-target flex-1 flex items-center justify-center gap-1 px-1 rounded text-[10px] font-bold transition-all ${newChannel.voice ? 'bg-primary/15 text-primary' : 'text-white/40 hover:bg-white/5'}`}
                                 >
                                   <Volume2 size={10} /> Voice
                                 </button>
@@ -578,7 +599,7 @@ export const ChannelRail: React.FC<ChannelRailProps> = ({
                                     type="button"
                                     onClick={() => setNewChannel(c => c ? { ...c, voice: false, announcement: true } : c)}
                                     aria-pressed={!newChannel.voice && newChannel.announcement}
-                                    className={`flex-1 flex items-center justify-center gap-1 py-1 rounded text-[10px] font-bold transition-all ${!newChannel.voice && newChannel.announcement ? 'bg-primary/15 text-primary' : 'text-white/40 hover:bg-white/5'}`}
+                                    className={`compact-touch-target flex-1 flex items-center justify-center gap-1 px-1 rounded text-[10px] font-bold transition-all ${!newChannel.voice && newChannel.announcement ? 'bg-primary/15 text-primary' : 'text-white/40 hover:bg-white/5'}`}
                                   >
                                     <Megaphone size={10} /> Announce
                                   </button>
@@ -593,21 +614,22 @@ export const ChannelRail: React.FC<ChannelRailProps> = ({
                                   if (e.key === 'Escape') setNewChannel(null);
                                 }}
                                 placeholder="channel-name"
-                                className="w-full bg-white/5 border border-white/10 rounded px-2 py-1 text-xs text-white placeholder-white/25 focus:outline-none focus:border-primary/40"
+                                className="w-full min-h-[44px] bg-white/5 border border-white/10 rounded px-2 py-1 text-xs text-white placeholder-white/25 focus:outline-none focus:border-primary/40"
                               />
                               <div className="flex gap-1">
                                 <button
                                   type="button"
                                   onClick={() => void submitNewChannel()}
                                   disabled={!newChannel.name.trim() || createChannelMutation.isPending}
-                                  className="flex-1 flex items-center justify-center gap-1 py-1 bg-primary/20 hover:bg-primary/30 text-primary rounded text-[10px] font-bold disabled:opacity-40 transition-colors"
+                                  className="compact-touch-target flex-1 flex items-center justify-center gap-1 px-2 bg-primary/20 hover:bg-primary/30 text-primary rounded text-[10px] font-bold disabled:opacity-40 transition-colors"
                                 >
                                   <Check size={10} /> Create
                                 </button>
                                 <button
                                   type="button"
                                   onClick={() => setNewChannel(null)}
-                                  className="p-1 text-white/30 hover:text-white/70 rounded transition-colors"
+                                  className="compact-touch-target flex items-center justify-center text-white/30 hover:text-white/70 rounded transition-colors"
+                                  aria-label="Cancel channel creation"
                                 >
                                   <X size={12} />
                                 </button>
@@ -672,7 +694,7 @@ export const ChannelRail: React.FC<ChannelRailProps> = ({
             <div className="micro-label text-accent-success flex items-center gap-1.5"><Radio size={9} className="animate-pulse" /> Linked</div>
             <div className="text-[9px] text-white/50">ENC // VOICE NODE 04</div>
           </div>
-          <button onClick={() => onJoinVoice('')} aria-label="Disconnect Voice" className="p-1.5 hover:bg-accent-danger/20 text-accent-danger rounded-full transition-colors"><LogOut size={14} /></button>
+          <button onClick={() => onJoinVoice('')} aria-label="Disconnect Voice" className="compact-touch-target flex items-center justify-center hover:bg-accent-danger/20 text-accent-danger rounded-full transition-colors"><LogOut size={14} /></button>
         </div>
       ) : null}
 
@@ -825,8 +847,8 @@ const UserFooter: React.FC<{
         />
       )}
       <ConnectionActivityPill />
-      <div className="flex items-center gap-2.5 w-full">
-      <button className="relative group cursor-pointer" onClick={() => setShowStatusPicker(!showStatusPicker)} aria-label="Set Status">
+      <div className="compact-footer-row flex items-center gap-2.5 w-full">
+      <button className="compact-touch-target relative group flex items-center justify-center cursor-pointer" onClick={() => setShowStatusPicker(!showStatusPicker)} aria-label="Set Status">
         <img src={resolveAvatarSrc(currentUser.avatar, hasIdentity ? activeDisplayName : 'Guest')} className="w-8 h-8 rounded-full border border-white/10 group-hover:border-primary transition-colors" alt="My Avatar" />
         <div className={`absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full border-2 border-bg-0 ${hasIdentity ? statusColors[userStatus] : 'bg-white/20'}`} />
       </button>
@@ -852,7 +874,7 @@ const UserFooter: React.FC<{
           </div>
         )}
       </div>
-      <div className="flex gap-0.5">
+      <div className="compact-control-wrap flex gap-0.5">
         {hasIdentity && (
           <button
             onClick={() => {
@@ -864,11 +886,11 @@ const UserFooter: React.FC<{
             }}
             aria-label="Copy my ID to share"
             title="Copy my ID — share it so a friend can add you"
-            className="p-1 text-white/40 hover:text-primary transition-colors btn-press"
+            className="compact-touch-target flex items-center justify-center text-white/40 hover:text-primary transition-colors btn-press"
           ><Copy size={14} /></button>
         )}
         {hasAccountSwitching && (
-          <button onClick={openAccountSwitcher} aria-label="Switch Account" className="p-1 text-white/40 hover:text-primary transition-colors"><ArrowUpDown size={14} /></button>
+          <button onClick={openAccountSwitcher} aria-label="Switch Account" className="compact-touch-target flex items-center justify-center text-white/40 hover:text-primary transition-colors"><ArrowUpDown size={14} /></button>
         )}
         {!voiceControlState?.receiveOnly && (
           <button
@@ -877,7 +899,7 @@ const UserFooter: React.FC<{
             title={voiceActionTitle ?? `${voiceControlState?.muted ? 'Unmute Microphone' : 'Mute Microphone'} (Ctrl+M)`}
             aria-keyshortcuts="Control+M"
             aria-label={voiceControlState?.muted ? 'Unmute Microphone' : 'Mute Microphone'}
-            className={`p-1 transition-colors btn-press disabled:opacity-40 disabled:cursor-not-allowed ${voiceControlState?.muted ? 'text-accent-danger hover:text-accent-danger' : 'text-white/40 hover:text-primary'}`}
+            className={`compact-touch-target flex items-center justify-center transition-colors btn-press disabled:opacity-40 disabled:cursor-not-allowed ${voiceControlState?.muted ? 'text-accent-danger hover:text-accent-danger' : 'text-white/40 hover:text-primary'}`}
           >{voiceControlState?.muted ? <MicOff size={14} /> : <Mic size={14} />}</button>
         )}
         <button
@@ -886,9 +908,9 @@ const UserFooter: React.FC<{
           title={voiceActionTitle ?? `${voiceControlState?.deafened ? 'Undeafen Audio' : 'Deafen Audio'} (Ctrl+D)`}
           aria-keyshortcuts="Control+D"
           aria-label={voiceControlState?.deafened ? 'Undeafen Audio' : 'Deafen Audio'}
-          className={`p-1 transition-colors btn-press disabled:opacity-40 disabled:cursor-not-allowed ${voiceControlState?.deafened ? 'text-accent-danger hover:text-accent-danger' : 'text-white/40 hover:text-primary'}`}
+          className={`compact-touch-target flex items-center justify-center transition-colors btn-press disabled:opacity-40 disabled:cursor-not-allowed ${voiceControlState?.deafened ? 'text-accent-danger hover:text-accent-danger' : 'text-white/40 hover:text-primary'}`}
         >{voiceControlState?.deafened ? <HeadphoneOff size={14} /> : <Headphones size={14} />}</button>
-        <button onClick={onOpenSettings} aria-label="Open Settings" className="p-1 text-white/40 hover:text-primary transition-colors btn-press"><Settings size={14} /></button>
+        <button onClick={onOpenSettings} aria-label="Open Settings" className="compact-touch-target flex items-center justify-center text-white/40 hover:text-primary transition-colors btn-press"><Settings size={14} /></button>
       </div>
       </div>
     </div>

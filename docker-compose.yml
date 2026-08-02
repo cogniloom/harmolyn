@@ -1,24 +1,28 @@
-name: harmolyn-web
+name: harmolyn
 
 services:
-  harmolyn-web:
+  harmolyn-app:
     build:
       context: .
+      dockerfile: Dockerfile
       args:
-        # VITE_* vars are baked at build time — override via env file or shell
+        # VITE_* values are compiled into the browser bundle.
         VITE_XOREIN_CONTROL_ENDPOINT: ${VITE_XOREIN_CONTROL_ENDPOINT:-https://node.xorein.com}
         VITE_SOURCE_URL: ${VITE_SOURCE_URL:-https://github.com/cogniloom/harmolyn}
-    container_name: harmolyn-web
-    hostname: harmolyn-web
+    container_name: harmolyn-app
+    hostname: harmolyn-app
     restart: unless-stopped
-    ports:
-      - 8909:8080
-#    expose:
-#      - "8080"
-#
-#    networks:
-#      - lama-lan_backend
-#
-#networks:
-#  lama-lan_backend:
-#    external: true
+
+  harmolyn-webpage:
+    build:
+      context: ./website
+      dockerfile: Dockerfile
+      args:
+        # This URL is opened by the landing-page CTA in the visitor's browser.
+        VITE_HARMOLYN_APP_URL: ${VITE_HARMOLYN_APP_URL:-http://localhost:8909}
+        VITE_SOURCE_URL: ${VITE_SOURCE_URL:-https://github.com/cogniloom/harmolyn}
+        VITE_XOREIN_URL: ${VITE_XOREIN_URL:-https://xorein.com}
+        VITE_APP_VERSION: ${VITE_APP_VERSION:-1.0.0-rc.1}
+    container_name: harmolyn-webpage
+    hostname: harmolyn-webpage
+    restart: unless-stopped

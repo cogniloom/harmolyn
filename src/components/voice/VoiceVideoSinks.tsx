@@ -32,7 +32,7 @@ function VideoTile({ tile }: { tile: Tile }) {
 
   return (
     <div
-      className={`relative group/tile rounded-xl overflow-hidden border border-white/10 bg-black shadow-2xl ${isScreen ? 'w-[340px] h-[191px]' : 'w-[140px] h-[105px]'}`}
+      className={`group/tile relative max-w-full shrink-0 overflow-hidden rounded-xl border border-white/10 bg-black shadow-2xl ${isScreen ? 'aspect-video w-[min(340px,100%)]' : 'aspect-[4/3] w-[140px]'}`}
     >
       <video ref={ref} autoPlay playsInline muted={tile.self} className="w-full h-full object-contain bg-black" />
       <div className="absolute bottom-0 inset-x-0 px-2 py-1 bg-gradient-to-t from-black/80 to-transparent flex items-center gap-1.5">
@@ -44,7 +44,7 @@ function VideoTile({ tile }: { tile: Tile }) {
           type="button"
           onClick={goFullscreen}
           aria-label="Fullscreen"
-          className="absolute top-1.5 right-1.5 p-1.5 rounded-lg bg-black/50 text-white/80 opacity-0 group-hover/tile:opacity-100 hover:bg-black/70 transition-all"
+          className="compact-touch-target absolute right-1.5 top-1.5 flex items-center justify-center rounded-lg bg-black/60 p-1.5 text-white/90 opacity-80 transition-all hover:bg-black/80 hover:opacity-100 focus-visible:opacity-100"
         >
           <Maximize2 size={13} />
         </button>
@@ -114,7 +114,7 @@ export function VoiceVideoSinks({ channelId }: { channelId?: string | null }) {
   if (tiles.length === 0) return null;
 
   return (
-    <div className="fixed bottom-24 right-4 z-[120] flex flex-col items-end gap-2 max-h-[70vh] overflow-y-auto pointer-events-auto">
+    <div className="no-scrollbar pointer-events-auto fixed bottom-[calc(6rem+env(safe-area-inset-bottom))] left-[max(0.75rem,env(safe-area-inset-left))] right-[max(0.75rem,env(safe-area-inset-right))] z-[120] flex max-h-[calc(100dvh-7rem-env(safe-area-inset-top)-env(safe-area-inset-bottom))] min-h-0 flex-col items-end gap-2 overflow-y-auto overscroll-contain">
       {tiles.map((tile) => (
         <React.Fragment key={tile.key}><VideoTile tile={tile} /></React.Fragment>
       ))}

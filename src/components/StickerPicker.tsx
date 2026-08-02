@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Clock } from 'lucide-react';
+import { Clock, X } from 'lucide-react';
 import { safeStorageGet, safeStorageSet } from '@/lib/browserStorage';
 
 interface StickerCategory {
@@ -23,7 +23,7 @@ interface StickerPickerProps {
   onClose: () => void;
 }
 
-export const StickerPicker: React.FC<StickerPickerProps> = ({ onSelect }) => {
+export const StickerPicker: React.FC<StickerPickerProps> = ({ onSelect, onClose }) => {
   const [recent, setRecent] = useState<string[]>(() => {
     try {
       const parsed = JSON.parse(safeStorageGet(() => window.localStorage, RECENT_STORAGE_KEY) || "[]") as unknown;
@@ -51,9 +51,23 @@ export const StickerPicker: React.FC<StickerPickerProps> = ({ onSelect }) => {
   }, [recent]);
 
   return (
-    <div className="absolute bottom-14 right-0 w-[272px] h-[336px] bg-bg-0 border border-white/10 rounded-r2 shadow-[0_0_50px_rgba(0,0,0,0.8)] glass-card flex flex-col animate-in slide-in-from-bottom-2 z-50 overflow-hidden">
-      <div className="px-3 py-2.5 border-b border-white/5 micro-label text-white/40 tracking-widest text-[9px]">STICKERS</div>
-      <div className="flex-1 overflow-y-auto no-scrollbar px-2 py-2">
+    <div
+      role="dialog"
+      aria-label="Sticker picker"
+      className="responsive-composer-picker absolute bottom-[calc(3.5rem+env(safe-area-inset-bottom))] right-[max(0px,env(safe-area-inset-right))] z-50 flex h-[336px] max-h-[calc(100dvh-5rem-env(safe-area-inset-top)-env(safe-area-inset-bottom))] w-[320px] max-w-[calc(100vw-1rem-env(safe-area-inset-left)-env(safe-area-inset-right))] min-h-0 flex-col overflow-hidden rounded-r2 border border-white/10 bg-bg-0 shadow-[0_0_50px_rgba(0,0,0,0.8)] glass-card animate-in slide-in-from-bottom-2"
+    >
+      <div className="flex shrink-0 items-center justify-between border-b border-white/5 py-1.5 pl-3 pr-1.5">
+        <span className="micro-label text-[9px] tracking-widest text-white/40">STICKERS</span>
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="Close sticker picker"
+          className="compact-touch-target flex items-center justify-center rounded-full text-white/40 transition-colors hover:bg-white/5 hover:text-white focus-ring"
+        >
+          <X size={14} />
+        </button>
+      </div>
+      <div className="no-scrollbar min-h-0 flex-1 overflow-y-auto overscroll-contain px-2 py-2">
         {sections.map((category) => (
           <div key={category.id}>
             <div className="micro-label text-white/25 tracking-widest px-1 py-1 text-[8px] flex items-center gap-1">
@@ -66,7 +80,7 @@ export const StickerPicker: React.FC<StickerPickerProps> = ({ onSelect }) => {
                   key={`${category.id}-${index}`}
                   type="button"
                   onClick={() => handleSelect(sticker)}
-                  className="aspect-square text-4xl flex items-center justify-center hover:bg-white/10 rounded-r1 transition-colors"
+                  className="compact-touch-target flex aspect-square min-h-11 items-center justify-center rounded-r1 text-4xl transition-colors hover:bg-white/10 focus-ring"
                   aria-label={`Send ${sticker} sticker`}
                 >
                   {sticker}
