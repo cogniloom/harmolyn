@@ -3,6 +3,7 @@ dist
 .git
 .generated
 src-tauri/target
+website
 *.local
 .env.local
 .env.*.local

@@ -47,10 +47,29 @@ npm run dev
 ```
 
 Vite listens on `0.0.0.0:8080`. The production web container listens on host
-port `8909` by default:
+port `8909` by default. The public webpage lives in `website/` and listens on
+host port `8910` by default:
 
 ```bash
 docker compose up --build
+```
+
+This starts two independent containers:
+
+| Container | Purpose | Default URL |
+|---|---|---|
+| `harmolyn-app` | Browser client for Xorein | `http://localhost:8909` |
+| `harmolyn-webpage` | Public Harmolyn website | `http://localhost:8910` |
+
+Override `HARMOLYN_APP_PORT` or `HARMOLYN_WEBPAGE_PORT` to change host ports.
+Set `VITE_HARMOLYN_APP_URL` to the public client URL before building a deployed
+webpage; its **Open app** links use that value.
+
+For webpage-only development:
+
+```bash
+npm --prefix website ci
+npm run dev:website
 ```
 
 The JavaScript still runs in the user's browser when the site is served from a

@@ -52,7 +52,16 @@ function resolveChromeExecutable() {
 }
 
 async function waitForIceGathering(page) {
-  await page.waitForFunction(() => window.__voiceE2E?.pc?.iceGatheringState === 'complete', null, { timeout: 20_000 });
+  // A multi-homed Chromium instance can keep gathering while unusable DNS/interface
+  // paths time out even after TURN has already produced a relay candidate. The smoke
+  // is relay-only, so one relay candidate embedded in the current SDP is the useful
+  // readiness signal; waiting for every unrelated path to finish makes a healthy
+  // public TURN service look broken.
+  await page.waitForFunction(() => {
+    const pc = window.__voiceE2E?.pc;
+    return pc?.iceGatheringState === 'complete'
+      || /\styp\srelay(?:\s|$)/m.test(pc?.localDescription?.sdp ?? '');
+  }, null, { timeout: 20_000 });
 }
 
 async function initialisePeer(page, credentialUrl, initiator) {
@@ -87,6 +96,7 @@ async function initialisePeer(page, credentialUrl, initiator) {
     const state = {
       pc,
       localCandidateTypes: [],
+      iceErrors: [],
       remoteAudioTracks: 0,
       received: [],
       dataChannel: null,
@@ -96,6 +106,13 @@ async function initialisePeer(page, credentialUrl, initiator) {
       if (!event.candidate) return;
       const match = event.candidate.candidate.match(/\styp\s(\w+)/);
       state.localCandidateTypes.push(event.candidate.type || match?.[1] || 'unknown');
+    };
+    pc.onicecandidateerror = event => {
+      state.iceErrors.push({
+        code: event.errorCode,
+        text: event.errorText,
+        url: event.url,
+      });
     };
     pc.ontrack = event => {
       if (event.track.kind === 'audio') state.remoteAudioTracks += 1;
@@ -125,6 +142,30 @@ async function selectedCandidateType(page) {
     }
     return 'unknown';
   });
+}
+
+async function inboundAudioStats(page) {
+  return page.evaluate(async () => {
+    const stats = await window.__voiceE2E.pc.getStats();
+    let packetsReceived = 0;
+    let bytesReceived = 0;
+    for (const report of stats.values()) {
+      if (report.type !== 'inbound-rtp' || (report.kind ?? report.mediaType) !== 'audio') continue;
+      packetsReceived += Number(report.packetsReceived ?? 0);
+      bytesReceived += Number(report.bytesReceived ?? 0);
+    }
+    return { packetsReceived, bytesReceived };
+  });
+}
+
+async function waitForInboundAudio(page) {
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
+    const stats = await inboundAudioStats(page);
+    if (stats.packetsReceived > 0 && stats.bytesReceived > 0) return stats;
+    await page.waitForTimeout(100);
+  }
+  throw new Error('Timed out waiting for inbound audio RTP packets');
 }
 
 async function closePeer(page) {
@@ -210,6 +251,7 @@ try {
       return state.pc.connectionState === 'connected' && state.dataChannel?.readyState === 'open' && state.remoteAudioTracks > 0;
     }, null, { timeout: 30_000 }),
   ]);
+  const [audioA, audioB] = await Promise.all([waitForInboundAudio(pageA), waitForInboundAudio(pageB)]);
 
   const marker = `turn-e2e-${Date.now()}`;
   await pageA.evaluate(value => window.__voiceE2E.dataChannel.send(value), marker);
@@ -228,12 +270,26 @@ try {
     throw new Error(`selected ICE pair was not TURN-relayed: A=${selectedA} B=${selectedB}`);
   }
   report.push(`PASS relay ICE: selected A=${selectedA}, B=${selectedB}`);
-  report.push(`PASS media: remote audio tracks A=${stateA.remoteAudioTracks}, B=${stateB.remoteAudioTracks}`);
+  report.push(`PASS media: remote audio tracks A=${stateA.remoteAudioTracks}, B=${stateB.remoteAudioTracks}; inbound RTP A=${audioA.packetsReceived} packets/${audioA.bytesReceived} bytes, B=${audioB.packetsReceived} packets/${audioB.bytesReceived} bytes`);
   report.push('PASS data: isolated browser B received browser A marker');
   report.push('RESULT: PASS');
 } catch (error) {
   exitCode = 1;
   const detail = error instanceof Error ? (error.stack || error.message) : String(error);
+  const iceDebug = await Promise.all([pageA, pageB].map(async page => {
+    if (!page) return null;
+    return page.evaluate(() => {
+      const state = window.__voiceE2E;
+      return state ? {
+        connectionState: state.pc.connectionState,
+        iceConnectionState: state.pc.iceConnectionState,
+        iceGatheringState: state.pc.iceGatheringState,
+        candidateTypes: state.localCandidateTypes,
+        iceErrors: state.iceErrors,
+      } : null;
+    }).catch(() => null);
+  }));
+  report.push(`ICE DEBUG: ${JSON.stringify(iceDebug)}`);
   report.push(`RESULT: FAIL\n${detail}`);
 } finally {
   if (pageA) await closePeer(pageA);

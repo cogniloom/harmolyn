@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Compass, Search, Users, Shield, Zap, TrendingUp, ArrowRight, Link as LinkIcon } from 'lucide-react';
+import { Compass, Search, Users, Shield, Zap, TrendingUp, ArrowRight, Link as LinkIcon, X } from 'lucide-react';
 import type { Server, XoreinRuntimeSnapshot } from '@/types';
 import { resolveAvatarSrc } from '@/lib/avatar';
 import { useRuntimeMutations, type XoreinServerPreview } from '@/hooks/runtime/useRuntimeMutations';
@@ -62,38 +62,51 @@ export const ServerExplorer: React.FC<ServerExplorerProps> = ({ servers, onSelec
     const discoveredAlreadyJoined = discoveredServer ? trackedServers.some((server) => server.id === discoveredServer.manifest.server_id) : false;
 
     return (
-        <div className="flex-1 bg-bg-0 overflow-y-auto h-full animate-in fade-in duration-500 no-scrollbar relative">
-            <div className="relative h-[320px] flex items-center justify-center overflow-hidden border-b border-white/5">
+        <div className="relative h-full min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-y-contain bg-bg-0 animate-in fade-in duration-500 no-scrollbar">
+            <div className="pointer-events-none sticky top-0 z-30 -mb-[68px] flex justify-end p-3">
+                <button
+                    type="button"
+                    onClick={() => onSelectServer('home')}
+                    aria-label="Close Space Explorer"
+                    className="touch-target pointer-events-auto flex items-center justify-center rounded-full border border-white/10 bg-bg-0/85 text-white/60 shadow-xl backdrop-blur-md transition-colors hover:border-primary/40 hover:text-primary focus-ring"
+                >
+                    <X size={18} />
+                </button>
+            </div>
+
+            <div className="relative flex min-h-[320px] shrink-0 items-center justify-center overflow-hidden border-b border-white/5 py-16 min-[480px]:py-12 min-[1100px]:h-[320px] min-[1100px]:py-0">
                 <div className="absolute inset-0 bg-gradient-to-b from-primary/10 to-bg-0 z-0"></div>
                 <div className="absolute inset-0 bg-gradient-to-br from-primary/10 via-transparent to-accent/10 opacity-70 mix-blend-screen scale-110"></div>
                 <div className="absolute inset-0 grid-overlay opacity-20"></div>
 
-                <div className="relative z-10 text-center max-w-2xl px-5">
+                <div className="relative z-10 max-w-2xl px-4 text-center sm:px-5">
                     <div className="inline-flex items-center gap-1.5 micro-label text-primary bg-primary/10 px-3 py-1 rounded-full mb-5 border border-primary/20 shadow-glow">
                         <TrendingUp size={12} /> Global Stream Explorer
                     </div>
                     <h1 className="text-3xl md:text-4xl font-bold text-white mb-5 font-display text-glow leading-[1.1]">Join the Underground Network.</h1>
                     <p className="text-white/40 mb-8 text-base font-light tracking-tight">Paste a signed `xorein://join/...` or `xorein://invite/...` invite to inspect a Space before joining, or browse the Spaces already tracked by your local runtime.</p>
 
-                    <div className="relative max-w-2xl mx-auto group">
+                    <div className="relative mx-auto max-w-2xl group">
                         <div className="absolute inset-0 bg-primary/20 rounded-full blur-xl group-focus-within:bg-primary/30 transition-all opacity-0 group-focus-within:opacity-100"></div>
-                        <div className="relative glass-panel rounded-full p-1 border border-white/10 flex items-center focus-within:border-primary/50 transition-all">
-                            <div className="pl-5 pr-2.5 text-white/30"><Search size={18} /></div>
-                            <input
-                                type="text"
-                                value={query}
-                                onChange={(event) => setQuery(event.target.value)}
-                                placeholder="xorein://join/space-id?invite=..."
-                                className="w-full bg-transparent py-2.5 text-white focus:outline-none text-base font-light placeholder-white/20"
-                            />
-                            <button onClick={() => onOpenJoin(query.trim())} className="bg-primary text-bg-0 px-6 py-2.5 rounded-full font-bold micro-label tracking-tight hover:shadow-glow hover:scale-[1.02] transition-all ml-1.5 disabled:opacity-50" disabled={!query.trim()}>
+                        <div className="relative flex flex-col items-stretch gap-1 rounded-r2 border border-white/10 p-1 glass-panel transition-all focus-within:border-primary/50 min-[480px]:flex-row min-[480px]:items-center min-[480px]:rounded-full">
+                            <div className="flex min-w-0 flex-1 items-center">
+                                <div className="pl-4 pr-2.5 text-white/30 min-[480px]:pl-5"><Search size={18} /></div>
+                                <input
+                                    type="text"
+                                    value={query}
+                                    onChange={(event) => setQuery(event.target.value)}
+                                    placeholder="xorein://join/space-id?invite=..."
+                                    className="h-11 min-w-0 flex-1 bg-transparent pr-3 text-base font-light text-white placeholder-white/20 focus:outline-none"
+                                />
+                            </div>
+                            <button onClick={() => onOpenJoin(query.trim())} className="touch-target w-full rounded-r1 bg-primary px-6 font-bold text-bg-0 micro-label tracking-tight transition-all hover:scale-[1.02] hover:shadow-glow disabled:opacity-50 min-[480px]:w-auto min-[480px]:rounded-full" disabled={!query.trim()}>
                                 Join Invite
                             </button>
                         </div>
                     </div>
 
-                    <div className="mt-5 flex items-center justify-center gap-3 text-[10px] text-white/35 tracking-[0.18em]">
-                        <button onClick={() => onOpenJoin()} className="hover:text-primary transition-colors inline-flex items-center gap-2">
+                    <div className="mt-5 flex flex-wrap items-center justify-center gap-x-3 gap-y-1 text-[10px] text-white/35 tracking-[0.18em]">
+                        <button onClick={() => onOpenJoin()} className="compact-touch-target inline-flex min-h-8 items-center gap-2 px-2 transition-colors hover:text-primary">
                             <LinkIcon size={12} /> OPEN JOIN MODAL
                         </button>
                         <span>•</span>
@@ -102,14 +115,14 @@ export const ServerExplorer: React.FC<ServerExplorerProps> = ({ servers, onSelec
                 </div>
             </div>
 
-            <div className="max-w-6xl mx-auto px-6 py-12 space-y-10">
+            <div className="mx-auto max-w-6xl space-y-10 px-4 py-8 sm:px-6 sm:py-12">
                 <section>
                     <div className="flex items-center justify-between mb-6 gap-4 flex-wrap">
                         <h2 className="micro-label text-white tracking-[0.2em] flex items-center gap-2.5">
                             <div className="w-1.5 h-1.5 rounded-full bg-primary shadow-glow"></div>
                             Invite Discovery
                         </h2>
-                        <div className="flex gap-1.5">
+                        <div className="flex flex-wrap justify-end gap-1.5">
                             {['SIGNED', 'XOREIN', 'LOCAL CONTROL'].map(tag => (
                                 <div key={tag} className="px-3 py-1 rounded-full glass-panel border border-white/10 micro-label text-[7px] text-white/40">
                                     {tag}
@@ -234,7 +247,7 @@ export const ServerExplorer: React.FC<ServerExplorerProps> = ({ servers, onSelec
                                                         <span className="font-mono">{server.categories.flatMap(category => category.channels).length}</span>
                                                     </div>
                                                 </div>
-                                                <button onClick={() => onSelectServer(server.id)} className="h-8 px-3 rounded-full glass-panel flex items-center justify-center text-white/40 group-hover:text-primary group-hover:border-primary transition-all border border-white/5 text-[10px] font-bold tracking-[0.18em]">
+                                                <button onClick={() => onSelectServer(server.id)} className="compact-touch-target h-8 rounded-full border border-white/5 px-3 text-[10px] font-bold tracking-[0.18em] text-white/40 glass-panel transition-all group-hover:border-primary group-hover:text-primary">
                                                     OPEN
                                                 </button>
                                             </div>

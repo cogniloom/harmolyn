@@ -1,14 +1,11 @@
 import path from 'path';
 import { readFileSync } from 'fs';
-import { defineConfig, loadEnv } from 'vite';
+import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
-import { componentTagger } from 'lovable-tagger';
 
 const pkg = JSON.parse(readFileSync(path.resolve(__dirname, 'package.json'), 'utf-8')) as { version: string };
 
-export default defineConfig(({ mode }) => {
-    const env = loadEnv(mode, '.', '');
-    return {
+export default defineConfig({
       base: process.env.TAURI_ENV_PLATFORM ? './' : '/',
       // Real app version, sourced from package.json at build time (shown in Settings
       // → About, and useful in bug reports). Not a secret.
@@ -25,10 +22,7 @@ export default defineConfig(({ mode }) => {
           'Permissions-Policy': 'camera=(self), microphone=(self), geolocation=(), payment=(), usb=()'
         },
       },
-      plugins: [
-        react(),
-        mode === 'development' && componentTagger(),
-      ].filter(Boolean),
+      plugins: [react()],
       // SECURITY: Never inject secret API keys into client bundles via define.
       // Use edge functions / backend proxies for any external API calls.
       build: {
@@ -63,5 +57,4 @@ export default defineConfig(({ mode }) => {
           '@': path.resolve(__dirname, './src'),
         }
       }
-    };
 });

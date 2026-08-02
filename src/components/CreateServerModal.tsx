@@ -49,13 +49,13 @@ export const CreateServerModal: React.FC<CreateServerModalProps> = ({ onClose, o
     };
 
     return (
-        <div className="fixed inset-0 z-[120] flex items-center justify-center p-3 md:p-6 animate-in fade-in duration-300">
+        <div className="responsive-overlay-scroll fixed inset-0 z-[120] flex items-center justify-center animate-in fade-in duration-300">
             <div className="absolute inset-0 bg-bg-0/90 backdrop-blur-md" onClick={onClose}></div>
             
-            <div role="dialog" aria-modal="true" aria-labelledby="create-server-title" className="w-full max-w-[420px] glass-panel rounded-[52px] overflow-hidden relative shadow-[0_0_80px_rgba(0,0,0,0.8)] border border-white/10 animate-in zoom-in-95 slide-in-from-bottom-10 duration-500">
-                <button onClick={onClose} aria-label="Close" className="absolute top-5 right-5 text-white/20 hover:text-white transition-colors z-10 focus-ring rounded-full"><X size={20} /></button>
+            <div role="dialog" aria-modal="true" aria-labelledby="create-server-title" className="relative flex max-h-full w-full max-w-[420px] flex-col overflow-hidden rounded-[40px] border border-white/10 glass-panel shadow-[0_0_80px_rgba(0,0,0,0.8)] animate-in zoom-in-95 slide-in-from-bottom-10 duration-500 sm:rounded-[52px]">
+                <button onClick={onClose} aria-label="Close" className="touch-target absolute right-2.5 top-2.5 z-10 flex items-center justify-center rounded-full text-white/20 transition-colors hover:text-white focus-ring sm:right-4 sm:top-4"><X size={20} /></button>
                 
-                <div className="p-8 pt-10">
+                <div className="min-h-0 overflow-y-auto overscroll-contain p-5 pt-10 sm:p-8 sm:pt-10">
                     <header className="text-center mb-8">
                         <div className="inline-block p-3 rounded-2xl bg-primary/10 border border-primary/20 text-primary mb-5 shadow-glow">
                             <Globe size={32} />
@@ -127,9 +127,9 @@ export const CreateServerModal: React.FC<CreateServerModalProps> = ({ onClose, o
                     </button>
                 </div>
                 
-                <div className="bg-white/5 px-8 py-5 flex justify-between items-center border-t border-white/5 backdrop-blur-xl">
-                    <button onClick={onClose} disabled={submitting} className="text-white/40 hover:text-white micro-label transition-all disabled:opacity-60">Cancel</button>
-                    <button onClick={() => void handleCreate()} disabled={submitting || !canCreate} className="bg-primary hover:bg-primary/90 text-bg-0 font-bold py-2.5 px-8 rounded-full micro-label tracking-tight shadow-glow hover:scale-105 transition-all btn-press disabled:opacity-60 disabled:hover:scale-100 disabled:cursor-not-allowed flex items-center gap-2">
+                <div className="flex shrink-0 items-center justify-between border-t border-white/5 bg-white/5 px-5 py-3 backdrop-blur-xl sm:px-8 sm:py-5">
+                    <button onClick={onClose} disabled={submitting} className="touch-target px-2 text-white/40 hover:text-white micro-label transition-all disabled:opacity-60">Cancel</button>
+                    <button onClick={() => void handleCreate()} disabled={submitting || !canCreate} className="touch-target bg-primary hover:bg-primary/90 text-bg-0 font-bold py-2.5 px-6 sm:px-8 rounded-full micro-label tracking-tight shadow-glow hover:scale-105 transition-all btn-press disabled:opacity-60 disabled:hover:scale-100 disabled:cursor-not-allowed flex items-center justify-center gap-2">
                         {submitting ? <Loader2 size={14} className="animate-spin" /> : null}
                         Create Space
                     </button>

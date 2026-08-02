@@ -42,12 +42,13 @@ export const UnlockScreen: React.FC = () => {
   };
 
   return (
-    <div className="fixed inset-0 z-[210] bg-bg-0 flex items-center justify-center overflow-hidden">
+    <div className="responsive-overlay-scroll fixed inset-0 z-[210] bg-bg-0">
       <div className="absolute inset-0 bg-gradient-to-b from-bg-0 via-bg-2 to-bg-0" />
       <div className="absolute inset-0" style={{ background: 'radial-gradient(circle at 50% 0%, rgba(19,221,236,0.08) 0%, transparent 60%)' }} />
       <div className="absolute inset-0 grid-overlay opacity-30" />
-      <div className="relative z-10 w-full max-w-[440px] mx-6">
-        <div className="text-center mb-10">
+      <div className="relative z-10 flex min-h-full w-full">
+       <div className="m-auto w-full max-w-[440px]">
+        <div className="text-center mb-6 sm:mb-10">
           <div className="inline-flex items-center justify-center w-16 h-16 rounded-r2 bg-primary/10 border border-primary/20 mb-5 shadow-glow">
             <Shield size={28} className="text-primary" />
           </div>
@@ -55,7 +56,7 @@ export const UnlockScreen: React.FC = () => {
           <p className="text-body text-text-secondary mt-2">Private messaging that's yours.</p>
         </div>
 
-        <form noValidate onSubmit={handleSubmit} className="glass-card rounded-r3 p-8 border border-stroke space-y-5">
+        <form noValidate onSubmit={handleSubmit} className="glass-card rounded-r3 border border-stroke p-5 space-y-5 sm:p-8">
             <div className="text-center mb-2">
               <div className="inline-flex items-center justify-center w-12 h-12 rounded-full bg-primary/10 border border-primary/20 mb-3">
                 <Lock size={20} className="text-primary" />
@@ -90,7 +91,7 @@ export const UnlockScreen: React.FC = () => {
                   disabled={busy}
                   aria-label={showPassword ? 'Hide password' : 'Show password'}
                   aria-pressed={showPassword}
-                  className="focus-ring absolute right-2 top-1/2 -translate-y-1/2 w-10 h-10 flex items-center justify-center rounded-full text-text-tertiary hover:text-text-primary transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                  className="touch-target focus-ring absolute right-1 top-1/2 -translate-y-1/2 flex items-center justify-center rounded-full text-text-tertiary hover:text-text-primary transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                 >
                   {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
                 </button>
@@ -147,18 +148,18 @@ export const UnlockScreen: React.FC = () => {
                     </p>
                   </div>
                 </div>
-                <div className="flex justify-end gap-2 mt-4">
+                <div className="mt-4 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
                   <button
                     type="button"
                     onClick={() => setConfirmReset(false)}
-                    className="focus-ring px-4 py-2 text-caption text-text-secondary hover:text-text-primary transition-colors rounded-full border border-stroke-subtle hover:bg-bg-2"
+                    className="touch-target focus-ring w-full px-4 py-2 text-caption text-text-secondary hover:text-text-primary transition-colors rounded-full border border-stroke-subtle hover:bg-bg-2 sm:w-auto"
                   >
                     Cancel
                   </button>
                   <button
                     type="button"
                     onClick={handleReset}
-                    className="focus-ring px-5 py-2 bg-accent-danger text-white rounded-full text-caption font-bold shadow-glow-sm hover:brightness-110 transition-all"
+                    className="touch-target focus-ring w-full px-5 py-2 bg-accent-danger text-white rounded-full text-caption font-bold shadow-glow-sm hover:brightness-110 transition-all sm:w-auto"
                   >
                     Delete keys and start over
                   </button>
@@ -169,13 +170,14 @@ export const UnlockScreen: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => setConfirmReset(true)}
-                  className="focus-ring rounded-full px-1 text-text-tertiary hover:text-accent-danger font-semibold"
+                  className="touch-target focus-ring inline-flex items-center justify-center rounded-full px-2 text-text-tertiary hover:text-accent-danger font-semibold"
                 >
                   Forgot password? Start over
                 </button>
               </p>
             )}
         </form>
+       </div>
       </div>
     </div>
   );

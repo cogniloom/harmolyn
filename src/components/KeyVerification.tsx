@@ -47,19 +47,18 @@ export const KeyVerification: React.FC<KeyVerificationProps> = ({
   }, [safetyNumber]);
 
   return (
-    <div className="fixed inset-0 z-[200] flex items-center justify-center" onClick={onClose}>
+    <div className="responsive-overlay-scroll fixed inset-0 z-[200] flex items-center justify-center" onClick={onClose}>
       <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" />
       <div
         role="dialog"
         aria-modal="true"
         aria-label={`Verify safety number with ${peerName}`}
-        className="relative w-full max-w-[420px] mx-4 glass-card bg-bg-0 border border-white/10 rounded-r2 shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-200"
+        className="relative flex max-h-full w-full max-w-[420px] flex-col overflow-hidden rounded-r2 border border-white/10 bg-bg-0 shadow-2xl glass-card animate-in fade-in zoom-in-95 duration-200"
         onClick={e => e.stopPropagation()}
       >
-        <div className="p-6">
-          <div className="flex items-start justify-between mb-4">
-            <div className="flex items-center gap-3">
-              <div className={`w-10 h-10 rounded-full flex items-center justify-center ${
+        <div className="flex flex-shrink-0 items-start justify-between gap-3 border-b border-white/5 p-4 sm:p-6">
+          <div className="flex min-w-0 items-center gap-3">
+              <div className={`flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full ${
                 changed ? 'bg-accent-danger/15' : verified ? 'bg-accent-success/15' : 'bg-white/5'
               }`}>
                 {changed
@@ -68,15 +67,17 @@ export const KeyVerification: React.FC<KeyVerificationProps> = ({
                     ? <ShieldCheck size={20} className="text-accent-success" />
                     : <Shield size={20} className="text-white/60" />}
               </div>
-              <div>
-                <h2 className="text-sm font-bold text-white font-display">Verify {peerName}</h2>
+              <div className="min-w-0">
+                <h2 className="truncate text-sm font-bold text-white font-display">Verify {peerName}</h2>
                 <span className="text-[11px] text-white/40">Safety number</span>
               </div>
-            </div>
-            <button onClick={onClose} aria-label="Close" className="focus-ring rounded-full p-1 text-white/40 hover:text-white hover:bg-white/5">
-              <X size={16} />
-            </button>
           </div>
+          <button onClick={onClose} aria-label="Close" className="touch-target flex flex-shrink-0 items-center justify-center rounded-full text-white/40 hover:bg-white/5 hover:text-white focus-ring">
+            <X size={16} />
+          </button>
+        </div>
+
+        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-4 sm:p-6">
 
           {changed && (
             <div className="mb-4 p-3 rounded-r1 bg-accent-danger/10 border border-accent-danger/30">
@@ -105,16 +106,6 @@ export const KeyVerification: React.FC<KeyVerificationProps> = ({
                   {formatSafetyNumber(safetyNumber)}
                 </code>
               </div>
-              <button
-                onClick={() => onSetVerified(!verified)}
-                className={`focus-ring w-full px-5 py-2.5 rounded-full text-xs font-bold transition-all ${
-                  verified
-                    ? 'border border-white/10 text-white/60 hover:bg-white/5'
-                    : 'bg-accent-success text-black hover:brightness-110'
-                }`}
-              >
-                {verified ? 'Mark as unverified' : 'Mark as verified'}
-              </button>
             </>
           ) : (
             <p className="text-xs text-white/50">
@@ -123,6 +114,21 @@ export const KeyVerification: React.FC<KeyVerificationProps> = ({
             </p>
           )}
         </div>
+
+        {safetyNumber && (
+          <div className="flex-shrink-0 border-t border-white/5 p-4 sm:px-6">
+            <button
+              onClick={() => onSetVerified(!verified)}
+              className={`touch-target w-full rounded-full px-5 text-xs font-bold transition-all focus-ring ${
+                verified
+                  ? 'border border-white/10 text-white/60 hover:bg-white/5'
+                  : 'bg-accent-success text-black hover:brightness-110'
+              }`}
+            >
+              {verified ? 'Mark as unverified' : 'Mark as verified'}
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );

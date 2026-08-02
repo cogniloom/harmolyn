@@ -275,11 +275,11 @@ export const MemberSidebar: React.FC<MemberSidebarProps> = ({ members, currentUs
   };
 
   return (
-    <div className={`w-[224px] glass-realistic flex flex-col h-full ${isOverlay ? 'shadow-2xl' : ''}`}>
+    <div className={`w-full min-w-[224px] glass-realistic flex flex-col h-full ${isOverlay ? 'shadow-2xl' : ''}`} role="complementary" aria-label="Member List">
       {timeoutTarget && <TimeoutModal user={timeoutTarget} onClose={() => setTimeoutTarget(null)} onApply={(duration, reason) => handleTimeoutApply(timeoutTarget, duration, reason)} />}
       <div className="h-[52px] px-5 flex items-center justify-between border-b theme-border">
         <span className="micro-label theme-text-dim">Entities</span>
-        <button onClick={onToggleCollapse} className="theme-text-dim hover:text-primary"><PanelRightClose size={16} /></button>
+        <button onClick={onToggleCollapse} aria-label="Close member list" className="compact-touch-target flex items-center justify-center theme-text-dim hover:text-primary"><PanelRightClose size={16} /></button>
       </div>
       {feedback && (
         <div className={`mx-4 mt-4 rounded-r2 border px-3 py-2 text-[10px] ${feedback.tone === 'error' ? 'border-accent-danger/30 bg-accent-danger/10 text-accent-danger' : feedback.tone === 'success' ? 'border-accent-success/30 bg-accent-success/10 text-accent-success' : 'border-primary/30 bg-primary/10 text-primary'}`}>
@@ -326,11 +326,11 @@ export const MemberSidebar: React.FC<MemberSidebarProps> = ({ members, currentUs
                     </div>
                   </div>
                   {/* Contextual action buttons (DM + Timeout) */}
-                  <div className="absolute right-1 top-1/2 -translate-y-1/2 flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                  <div className="absolute right-1 top-1/2 -translate-y-1/2 flex items-center gap-0.5 opacity-100 transition-opacity">
                     {onOpenDM && u.id !== normalizedCurrentUser.id && (
                       <button
                         onClick={(e) => { e.stopPropagation(); onOpenDM(u.id); }}
-                        className="p-1 rounded-full hover:bg-primary/10 text-white/20 hover:text-primary transition-all"
+                        className="touch-target flex items-center justify-center rounded-full hover:bg-primary/10 text-white/50 md:text-white/20 hover:text-primary transition-all"
                         title={`Send DM to ${u.username}`}
                         aria-label={`Send DM to ${u.username}`}
                       >
@@ -347,7 +347,7 @@ export const MemberSidebar: React.FC<MemberSidebarProps> = ({ members, currentUs
                             handleTimeoutRequest(u);
                           }
                         }}
-                        className="p-1 rounded-full hover:bg-accent-warning/10 text-white/20 hover:text-accent-warning transition-all"
+                        className="touch-target flex items-center justify-center rounded-full hover:bg-accent-warning/10 text-white/50 md:text-white/20 hover:text-accent-warning transition-all"
                         title={timedOutUsers[u.id] ? 'Timeout already applied' : 'Timeout user'}
                       >
                         <Clock size={12} />

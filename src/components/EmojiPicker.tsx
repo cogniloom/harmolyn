@@ -191,21 +191,25 @@ export const EmojiPicker: React.FC<EmojiPickerProps> = ({ onSelect, onClose }) =
   }, []);
 
   return (
-    <div className="absolute bottom-14 right-0 w-[272px] h-[336px] bg-bg-0 border border-white/10 rounded-r2 shadow-[0_0_50px_rgba(0,0,0,0.8)] glass-card flex flex-col animate-in slide-in-from-bottom-2 z-50 overflow-hidden">
+    <div
+      role="dialog"
+      aria-label="Emoji picker"
+      className="responsive-composer-picker absolute bottom-[calc(3.5rem+env(safe-area-inset-bottom))] right-[max(0px,env(safe-area-inset-right))] z-50 flex h-[336px] max-h-[calc(100dvh-5rem-env(safe-area-inset-top)-env(safe-area-inset-bottom))] w-[368px] max-w-[calc(100vw-1rem-env(safe-area-inset-left)-env(safe-area-inset-right))] min-h-0 flex-col overflow-hidden rounded-r2 border border-white/10 bg-bg-0 shadow-[0_0_50px_rgba(0,0,0,0.8)] glass-card animate-in slide-in-from-bottom-2"
+    >
       {/* Search */}
-      <div className="p-2.5 border-b border-white/5 flex items-center gap-2">
-        <div className="relative flex-1">
+      <div className="flex shrink-0 items-center gap-1.5 border-b border-white/5 p-2.5">
+        <div className="relative min-w-0 flex-1">
           <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-white/20" />
           <input
             type="text"
             value={search}
             onChange={e => setSearch(e.target.value)}
             placeholder="Search emojis..."
-            className="w-full bg-white/5 border border-white/5 rounded-full pl-7 pr-2.5 py-1.5 text-[10px] font-mono text-white placeholder-white/30 focus:outline-none focus:border-primary/40 focus-ring"
+            className="compact-touch-target w-full rounded-full border border-white/5 bg-white/5 py-1.5 pl-7 pr-11 text-[10px] font-mono text-white placeholder-white/30 focus:border-primary/40 focus:outline-none focus-ring"
             autoFocus
           />
           {search && (
-            <button onClick={() => setSearch('')} aria-label="Clear search" className="absolute right-2.5 top-1/2 -translate-y-1/2 text-white/30 hover:text-white focus-ring rounded-full">
+            <button type="button" onClick={() => setSearch('')} aria-label="Clear search" className="compact-touch-target absolute right-0 top-1/2 flex -translate-y-1/2 items-center justify-center rounded-full text-white/30 hover:text-white focus-ring">
               <X size={10} />
             </button>
           )}
@@ -220,11 +224,11 @@ export const EmojiPicker: React.FC<EmojiPickerProps> = ({ onSelect, onClose }) =
             aria-haspopup="true"
             aria-expanded={toneMenuOpen}
             title="Default skin tone"
-            className="w-6 h-6 rounded-full border border-white/15 hover:border-white/30 transition-all focus-ring"
+            className="compact-touch-target h-6 w-6 rounded-full border border-white/15 transition-all hover:border-white/30 focus-ring"
             style={{ backgroundColor: SKIN_TONE_SWATCHES[skinTone] }}
           />
           {toneMenuOpen && (
-            <div className="absolute right-0 top-7 z-20 flex items-center gap-1 p-1 rounded-full bg-bg-0 border border-white/10 shadow-[0_0_30px_rgba(0,0,0,0.6)]">
+            <div className="absolute right-0 top-full z-20 mt-1 grid grid-cols-3 items-center gap-1 rounded-r2 border border-white/10 bg-bg-0 p-1 shadow-[0_0_30px_rgba(0,0,0,0.6)]">
               {SKIN_TONES.map((_, i) => (
                 <button
                   key={i}
@@ -232,22 +236,32 @@ export const EmojiPicker: React.FC<EmojiPickerProps> = ({ onSelect, onClose }) =
                   onClick={() => { setSkinTone(i); setToneMenuOpen(false); }}
                   aria-label={SKIN_TONE_LABELS[i]}
                   title={SKIN_TONE_LABELS[i]}
-                  className={`w-5 h-5 rounded-full transition-all focus-ring ${skinTone === i ? 'ring-2 ring-primary' : 'hover:scale-110'}`}
+                  className={`compact-touch-target h-5 w-5 rounded-full transition-all focus-ring ${skinTone === i ? 'ring-2 ring-primary' : 'hover:scale-110'}`}
                   style={{ backgroundColor: SKIN_TONE_SWATCHES[i] }}
                 />
               ))}
             </div>
           )}
         </div>
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="Close emoji picker"
+          className="compact-touch-target flex shrink-0 items-center justify-center rounded-full text-white/40 transition-colors hover:bg-white/5 hover:text-white focus-ring"
+        >
+          <X size={14} />
+        </button>
       </div>
 
       {/* Category tabs */}
       {!search && (
-        <div className="flex items-center gap-0.5 px-1.5 py-1 border-b border-white/5">
+        <div className="no-scrollbar flex shrink-0 items-center gap-0.5 overflow-x-auto overscroll-x-contain border-b border-white/5 px-1.5 py-1">
           {recentEmojis.length > 0 && (
             <button
+              type="button"
               onClick={() => scrollToCategory('recent')}
-              className={`p-1.5 rounded-md transition-all ${activeCategory === 'recent' ? 'bg-primary/15 text-primary' : 'text-white/30 hover:text-white/60 hover:bg-white/5'}`}
+              aria-label="Recently Used"
+              className={`compact-touch-target flex shrink-0 items-center justify-center rounded-md p-1.5 transition-all ${activeCategory === 'recent' ? 'bg-primary/15 text-primary' : 'text-white/30 hover:text-white/60 hover:bg-white/5'}`}
               title="Recently Used"
             >
               <Clock size={12} />
@@ -256,8 +270,10 @@ export const EmojiPicker: React.FC<EmojiPickerProps> = ({ onSelect, onClose }) =
           {CATEGORIES.map(cat => (
             <button
               key={cat.id}
+              type="button"
               onClick={() => scrollToCategory(cat.id)}
-              className={`p-1.5 rounded-md transition-all ${activeCategory === cat.id ? 'bg-primary/15 text-primary' : 'text-white/30 hover:text-white/60 hover:bg-white/5'}`}
+              aria-label={cat.name}
+              className={`compact-touch-target flex shrink-0 items-center justify-center rounded-md p-1.5 transition-all ${activeCategory === cat.id ? 'bg-primary/15 text-primary' : 'text-white/30 hover:text-white/60 hover:bg-white/5'}`}
               title={cat.name}
             >
               {cat.icon}
@@ -267,14 +283,14 @@ export const EmojiPicker: React.FC<EmojiPickerProps> = ({ onSelect, onClose }) =
       )}
 
       {/* Emoji grid */}
-      <div ref={contentRef} className="flex-1 overflow-y-auto no-scrollbar px-1.5 py-1.5">
+      <div ref={contentRef} className="no-scrollbar min-h-0 flex-1 overflow-y-auto overscroll-contain px-1.5 py-1.5">
         {/* Recent */}
         {!search && recentEmojis.length > 0 && (
           <div ref={el => { categoryRefs.current['recent'] = el; }}>
             <div className="micro-label text-white/25 tracking-widest px-1 py-1 text-[8px]">RECENTLY USED</div>
-            <div className="grid grid-cols-8 gap-0.5">
+            <div className="grid grid-cols-[repeat(auto-fill,minmax(44px,1fr))] gap-0.5">
               {recentEmojis.map((e, i) => (
-                <button key={`r-${i}`} onClick={() => handleSelect(e)} className="text-lg p-1 hover:bg-white/10 rounded-md transition-colors text-center">
+                <button type="button" key={`r-${i}`} onClick={() => handleSelect(e)} aria-label={e} className="compact-touch-target rounded-md p-1 text-center text-lg transition-colors hover:bg-white/10 focus-ring">
                   {e}
                 </button>
               ))}
@@ -285,11 +301,11 @@ export const EmojiPicker: React.FC<EmojiPickerProps> = ({ onSelect, onClose }) =
         {filteredCategories.map(cat => (
           <div key={cat.id} ref={el => { categoryRefs.current[cat.id] = el; }}>
             <div className="micro-label text-white/25 tracking-widest px-1 py-1 text-[8px] sticky top-0 bg-bg-0/90 backdrop-blur-sm z-10">{cat.name}</div>
-            <div className="grid grid-cols-8 gap-0.5">
+            <div className="grid grid-cols-[repeat(auto-fill,minmax(44px,1fr))] gap-0.5">
               {cat.emojis.map((e, i) => {
                 const display = applySkinTone(e, skinTone);
                 return (
-                  <button key={`${cat.id}-${i}`} onClick={() => handleSelect(e)} aria-label={display} className="text-lg p-1 hover:bg-white/10 rounded-md transition-colors text-center focus-ring">
+                  <button type="button" key={`${cat.id}-${i}`} onClick={() => handleSelect(e)} aria-label={display} className="compact-touch-target rounded-md p-1 text-center text-lg transition-colors hover:bg-white/10 focus-ring">
                     {display}
                   </button>
                 );

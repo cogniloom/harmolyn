@@ -48,7 +48,7 @@ export const NotificationToast: React.FC<NotificationToastProps> = ({ toasts, on
       : normalizedToasts;
 
   return (
-    <div className="fixed top-4 right-4 z-[200] flex flex-col gap-2.5 max-w-[340px] pointer-events-none">
+    <div className="no-scrollbar pointer-events-none fixed left-[max(0.75rem,env(safe-area-inset-left))] right-[max(0.75rem,env(safe-area-inset-right))] top-[max(0.75rem,env(safe-area-inset-top))] z-[200] flex max-h-[calc(100dvh-1.5rem-env(safe-area-inset-top)-env(safe-area-inset-bottom))] flex-col gap-2.5 overflow-y-auto overscroll-contain sm:left-auto sm:w-[340px] sm:max-w-[340px]">
       {visibleToasts.map(toast => (
         <ToastItem key={toast.id} toast={toast} onDismiss={onDismiss} />
       ))}
@@ -102,7 +102,7 @@ const ToastItem: React.FC<{ toast: Toast; onDismiss: (id: string) => void }> = (
       aria-live={isError ? 'assertive' : 'polite'}
       aria-atomic="true"
       className={`
-        pointer-events-auto glass-card rounded-r2 border border-white/10 p-3.5 flex items-start gap-3
+        pointer-events-auto relative min-w-0 shrink-0 glass-card rounded-r2 border border-white/10 p-3.5 flex items-start gap-3
         shadow-[0_8px_32px_rgba(0,0,0,0.5)] backdrop-blur-xl
         transition-all duration-300
         ${exiting ? 'opacity-0 translate-x-8' : 'opacity-100 translate-x-0 animate-in slide-in-from-right fade-in duration-300'}
@@ -120,8 +120,9 @@ const ToastItem: React.FC<{ toast: Toast; onDismiss: (id: string) => void }> = (
         <div className="flex items-center justify-between gap-2">
           <span className="text-xs font-bold text-white truncate">{toast.title}</span>
           <button
+            type="button"
             onClick={() => onDismiss(toast.id)}
-            className="focus-ring rounded-r1 p-0.5 text-white/20 hover:text-white/60 transition-colors flex-shrink-0"
+            className="compact-touch-target -my-2 -mr-2 flex flex-shrink-0 items-center justify-center rounded-r1 text-white/30 transition-colors hover:bg-white/5 hover:text-white/70 focus-ring"
             aria-label="Dismiss"
           >
             <X size={12} />
