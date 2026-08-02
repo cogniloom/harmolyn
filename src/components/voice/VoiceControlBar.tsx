@@ -87,6 +87,8 @@ export interface VoiceControlState {
   deafened: boolean;
   videoOn: boolean;
   screenSharing: boolean;
+  /** A watcher receives media only and must never expose capture controls. */
+  receiveOnly: boolean;
   canInteract: boolean;
   pendingAction: string | null;
   error: string | null;
@@ -115,7 +117,8 @@ export const VoiceControlBar: React.FC<VoiceControlBarProps> = ({
   onToggleScreenShare,
   onOpenVoiceSettings,
 }) => {
-  const controlsUnavailable = !onToggleMute || !onToggleDeafen || !onToggleVideo;
+  const controlsUnavailable = !onToggleDeafen
+    || (!state.receiveOnly && (!onToggleMute || !onToggleVideo));
   const effectiveState = controlsUnavailable && state.canInteract
     ? {
         ...state,
@@ -141,7 +144,7 @@ export const VoiceControlBar: React.FC<VoiceControlBarProps> = ({
         if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || target.isContentEditable) return;
       }
       const key = event.key.toLowerCase();
-      if (key === 'm' && onToggleMute) {
+      if (key === 'm' && !effectiveState.receiveOnly && onToggleMute) {
         event.preventDefault();
         onToggleMute();
       } else if (key === 'd' && onToggleDeafen) {
@@ -151,7 +154,7 @@ export const VoiceControlBar: React.FC<VoiceControlBarProps> = ({
     };
     document.addEventListener('keydown', handler);
     return () => document.removeEventListener('keydown', handler);
-  }, [actionsLocked, onToggleMute, onToggleDeafen]);
+  }, [actionsLocked, effectiveState.receiveOnly, onToggleMute, onToggleDeafen]);
 
   return (
     <div className="p-3 border-t border-white/5 bg-bg-0/80 backdrop-blur-sm">
@@ -186,15 +189,17 @@ export const VoiceControlBar: React.FC<VoiceControlBarProps> = ({
       {/* Controls */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-1">
-          <ControlButton
-            active={!effectiveState.muted && !effectiveState.deafened}
-            danger={effectiveState.muted || effectiveState.deafened}
-            icon={effectiveState.muted || effectiveState.deafened ? <MicOff size={16} /> : <Mic size={16} />}
-            label={effectiveState.muted || effectiveState.deafened ? 'Unmute' : 'Mute'}
-            title={`${effectiveState.muted || effectiveState.deafened ? 'Unmute' : 'Mute'} (Ctrl+M)`}
-            onClick={onToggleMute}
-            disabled={actionsLocked || !onToggleMute}
-          />
+          {!effectiveState.receiveOnly && (
+            <ControlButton
+              active={!effectiveState.muted && !effectiveState.deafened}
+              danger={effectiveState.muted || effectiveState.deafened}
+              icon={effectiveState.muted || effectiveState.deafened ? <MicOff size={16} /> : <Mic size={16} />}
+              label={effectiveState.muted || effectiveState.deafened ? 'Unmute' : 'Mute'}
+              title={`${effectiveState.muted || effectiveState.deafened ? 'Unmute' : 'Mute'} (Ctrl+M)`}
+              onClick={onToggleMute}
+              disabled={actionsLocked || !onToggleMute}
+            />
+          )}
           <ControlButton
             active={!effectiveState.deafened}
             danger={effectiveState.deafened}
@@ -204,14 +209,16 @@ export const VoiceControlBar: React.FC<VoiceControlBarProps> = ({
             onClick={onToggleDeafen}
             disabled={actionsLocked || !onToggleDeafen}
           />
-          <ControlButton
-            active={effectiveState.videoOn}
-            icon={<Video size={16} />}
-            label="Video"
-            onClick={onToggleVideo}
-            disabled={actionsLocked || !onToggleVideo}
-          />
-          {onToggleScreenShare && (
+          {!effectiveState.receiveOnly && (
+            <ControlButton
+              active={effectiveState.videoOn}
+              icon={<Video size={16} />}
+              label="Video"
+              onClick={onToggleVideo}
+              disabled={actionsLocked || !onToggleVideo}
+            />
+          )}
+          {!effectiveState.receiveOnly && onToggleScreenShare && (
             <ControlButton
               active={effectiveState.screenSharing}
               icon={<MonitorUp size={16} />}

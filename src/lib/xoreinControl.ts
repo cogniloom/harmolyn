@@ -20,6 +20,7 @@ import type {
   XoreinRuntimeVoiceParticipant,
   XoreinRuntimeVoiceSession,
   XoreinSessionSnapshot,
+  ServerRole,
 } from '@/types';
 
 const CONTROL_GLOBAL_KEYS = [
@@ -155,6 +156,21 @@ function parseControlEndpoint(endpoint: string): URL | null {
 
 function parseTrustedControlEndpoint(endpoint: string): URL | null {
   return parseControlEndpoint(endpoint);
+}
+
+function selectAdvertisedControlEndpoint(advertised: unknown, fallback: string): string {
+  const fallbackUrl = parseTrustedControlEndpoint(fallback);
+  const advertisedValue = normalizeRuntimeEndpoint(advertised);
+  const advertisedUrl = advertisedValue ? parseTrustedControlEndpoint(advertisedValue) : null;
+  if (!advertisedUrl) {
+    return fallbackUrl?.origin || fallback;
+  }
+  // TLS may terminate at a reverse proxy, causing the upstream gateway to
+  // report its internal HTTP scheme. Never downgrade a public HTTPS session.
+  if (fallbackUrl?.protocol === 'https:' && advertisedUrl.protocol !== 'https:') {
+    return fallbackUrl.origin;
+  }
+  return advertisedUrl.origin;
 }
 
 function isLocalControlOrigin(endpointUrl: URL): boolean {
@@ -435,8 +451,10 @@ export async function refreshRuntimeSnapshot(
   const fetched = normalizeRuntimeSnapshot(rawSnapshot);
   // Preserve the control_endpoint from the current snapshot when the fresh API
   // response omits it (the public hosted node doesn't echo it back).
-  const endpoint = normalizeRuntimeEndpoint(fetched.control_endpoint)
-    || normalizeRuntimeEndpoint(runtimeSnapshot?.control_endpoint);
+  const currentEndpoint = normalizeRuntimeEndpoint(runtimeSnapshot?.control_endpoint) || '';
+  const endpoint = currentEndpoint
+    ? selectAdvertisedControlEndpoint(fetched.control_endpoint, currentEndpoint)
+    : normalizeRuntimeEndpoint(fetched.control_endpoint);
   const snapshot: XoreinRuntimeSnapshot = {
     ...fetched,
     ...(endpoint ? { control_endpoint: endpoint } : {}),
@@ -463,7 +481,7 @@ export async function connectToControlEndpoint(endpoint: string): Promise<Xorein
     const fetched = normalizeRuntimeSnapshot(rawState);
     const snapshot: XoreinRuntimeSnapshot = {
       ...fetched,
-      control_endpoint: normalizeRuntimeEndpoint(fetched.control_endpoint) || normalizedEndpoint,
+      control_endpoint: selectAdvertisedControlEndpoint(fetched.control_endpoint, normalizedEndpoint),
     };
     publishSnapshot(snapshot, undefined);
     return snapshot;
@@ -654,7 +672,7 @@ export async function connectToDefaultRuntime(): Promise<XoreinRuntimeSnapshot |
     const fetched = normalizeRuntimeSnapshot(rawState);
     const snapshot: XoreinRuntimeSnapshot = {
       ...fetched,
-      control_endpoint: normalizeRuntimeEndpoint(fetched.control_endpoint) || endpoint,
+      control_endpoint: selectAdvertisedControlEndpoint(fetched.control_endpoint, endpoint),
     };
     publishSnapshot(snapshot, undefined);
     return snapshot;
@@ -1734,6 +1752,8 @@ function normalizeServer(
   const createdAt = optionalString(server.created_at);
   const updatedAt = optionalString(server.updated_at);
   const invite = optionalString(server.invite);
+  const roles = normalizeRuntimeServerRoles(server.roles);
+  const memberRoles = normalizeRuntimeServerMemberRoles(server.member_roles, members, roles ?? []);
 
   return {
     id,
@@ -1746,7 +1766,72 @@ function normalizeServer(
     channels,
     ...(manifest ? { manifest } : {}),
     ...(invite ? { invite } : {}),
+    ...(roles ? { roles } : {}),
+    ...(memberRoles ? { member_roles: memberRoles } : {}),
   };
+}
+
+const SAFE_RUNTIME_ROLE_COLOR = /^#(?:[\da-f]{3}|[\da-f]{6}|[\da-f]{8})$/i;
+
+function normalizeRuntimeServerRoles(value: unknown): ServerRole[] | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!Array.isArray(value)) {
+    throw new XoreinControlError('invalid_response', 'xorein runtime state roles were malformed.', 502);
+  }
+  const roles: ServerRole[] = [];
+  const seenIds = new Set<string>();
+  for (const entry of value) {
+    if (!isRecord(entry)) {
+      throw new XoreinControlError('invalid_response', 'xorein runtime state roles were malformed.', 502);
+    }
+    const id = optionalString(entry.id);
+    const name = optionalString(entry.name);
+    const permissions = entry.permissions;
+    if (!id || !name || !Array.isArray(permissions) || permissions.some((permission) => !optionalString(permission))) {
+      throw new XoreinControlError('invalid_response', 'xorein runtime state roles were malformed.', 502);
+    }
+    if (seenIds.has(id)) continue;
+    seenIds.add(id);
+    const rawColor = optionalString(entry.color);
+    if (rawColor && !SAFE_RUNTIME_ROLE_COLOR.test(rawColor)) {
+      throw new XoreinControlError('invalid_response', 'xorein runtime state role colour was malformed.', 502);
+    }
+    roles.push({
+      id,
+      name,
+      permissions: uniqueStrings(permissions.map((permission) => optionalString(permission))),
+      ...(rawColor ? { color: rawColor } : {}),
+      ...(entry.protected === true ? { protected: true } : {}),
+    });
+  }
+  return roles;
+}
+
+function normalizeRuntimeServerMemberRoles(
+  value: unknown,
+  members: readonly string[],
+  roles: readonly ServerRole[],
+): Record<string, string[]> | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!isRecord(value)) {
+    throw new XoreinControlError('invalid_response', 'xorein runtime state member roles were malformed.', 502);
+  }
+  const memberIds = new Set(members);
+  const knownRoleIds = new Set(roles.map((role) => role.id));
+  const assignments: Record<string, string[]> = {};
+  for (const [peerId, rawRoleIds] of Object.entries(value)) {
+    if (!memberIds.has(peerId) || !Array.isArray(rawRoleIds)
+      || rawRoleIds.some((roleId) => !optionalString(roleId) || !knownRoleIds.has(optionalString(roleId)!))) {
+      throw new XoreinControlError('invalid_response', 'xorein runtime state member roles were malformed.', 502);
+    }
+    const roleIds = uniqueStrings(rawRoleIds.map((roleId) => optionalString(roleId)));
+    if (roleIds.length > 0) assignments[peerId] = roleIds;
+  }
+  return assignments;
 }
 
 function normalizeRuntimeChannelRecord(value: unknown): XoreinRuntimeChannel {
@@ -1887,6 +1972,14 @@ function normalizeVoiceSession(session: ControlStateVoiceSession): XoreinRuntime
   return {
     channel_id: channelId,
     participants,
+    ...(session.security_mode === 'seal' || session.security_mode === 'crowd' || session.security_mode === 'tree' || session.security_mode === 'clear'
+      ? { security_mode: session.security_mode }
+      : {}),
+    ...(session.connection_state === 'connecting' || session.connection_state === 'connected' || session.connection_state === 'failed' || session.connection_state === 'closed'
+      ? { connection_state: session.connection_state }
+      : {}),
+    ...(typeof session.self_muted === 'boolean' ? { self_muted: session.self_muted } : {}),
+    ...(typeof session.turn_unavailable === 'boolean' ? { turn_unavailable: session.turn_unavailable } : {}),
   };
 }
 
@@ -1928,10 +2021,19 @@ function normalizeVoiceParticipants(
     const muted = value.muted;
     const joinedAt = optionalString(value.joined_at);
     const lastFrameAt = optionalString(value.last_frame_at);
+    const video = value.video;
+    const screenSharing = value.screen_sharing;
+    const speaking = value.speaking;
+    const connectionState = optionalString(value.connection_state);
     if (participantPeerId !== normalizedPeerId) {
       throw new XoreinControlError('invalid_response', 'xorein runtime state voice participants were inconsistent.', 502);
     }
     if (muted !== undefined && typeof muted !== 'boolean') {
+      throw new XoreinControlError('invalid_response', 'xorein runtime state was incomplete.', 502);
+    }
+    if (video !== undefined && typeof video !== 'boolean'
+      || screenSharing !== undefined && typeof screenSharing !== 'boolean'
+      || speaking !== undefined && typeof speaking !== 'boolean') {
       throw new XoreinControlError('invalid_response', 'xorein runtime state was incomplete.', 502);
     }
     return [
@@ -1941,6 +2043,10 @@ function normalizeVoiceParticipants(
         ...(muted !== undefined ? { muted } : {}),
         ...(joinedAt ? { joined_at: joinedAt } : {}),
         ...(lastFrameAt ? { last_frame_at: lastFrameAt } : {}),
+        ...(video !== undefined ? { video } : {}),
+        ...(screenSharing !== undefined ? { screen_sharing: screenSharing } : {}),
+        ...(speaking !== undefined ? { speaking } : {}),
+        ...(connectionState ? { connection_state: connectionState } : {}),
       },
     ] as const;
   });
@@ -2135,6 +2241,7 @@ function normalizeFriendRecord(value: unknown): XoreinFriendRecord {
   const toPeerAddr = optionalString(value.to_peer_addr);
   const status = optionalString(value.status);
   const createdAt = optionalString(value.created_at);
+  const expiresAt = optionalString(value.expires_at);
   if (!id || !fromPeerId || !status) {
     throw new XoreinControlError('invalid_response', 'xorein control response was incomplete.', 502);
   }
@@ -2148,6 +2255,7 @@ function normalizeFriendRecord(value: unknown): XoreinFriendRecord {
     ...(toPeerId ? { to_peer_id: toPeerId } : {}),
     ...(toPeerAddr ? { to_peer_addr: toPeerAddr } : {}),
     ...(createdAt ? { created_at: createdAt } : {}),
+    ...(expiresAt ? { expires_at: expiresAt } : {}),
   };
 }
 

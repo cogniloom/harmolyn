@@ -23,6 +23,7 @@ import {
   nativeAddRelay, nativeRemoveRelay as nativeRemoveRelayMutation,
   nativeUpdatePresence,
   nativeAddFriendRequest, nativeAcceptFriend, nativeDeclineFriend,
+  nativeActOnFriendRequest, nativeRetryFriendRequest,
   nativeJoinServer,
   nativeEnsureDirectMessage,
   nativeCreateRole, nativeUpdateRole, nativeDeleteRole, nativeAssignRole, nativeCastPollVote,
@@ -57,6 +58,10 @@ import {
 export type { XoreinServerPreview } from '@/lib/xoreinControl';
 
 type Snapshot = XoreinRuntimeSnapshot | null | undefined;
+export interface VoiceJoinOptions {
+  /** Join only to receive a live stream; never request microphone access. */
+  receiveOnly?: boolean;
+}
 
 /**
  * Channel edit patch accepted by the facade: the native ChannelEditPatch plus the
@@ -208,9 +213,11 @@ export function useRuntimeMutations() {
 
         // Voice — real WebRTC media when voiceMediaTransport flag is on; store-only
         // state update (today's behaviour) when the flag is off.
-        joinVoiceChannel: (channelId: string) =>
+        joinVoiceChannel: (channelId: string, options: VoiceJoinOptions = {}) =>
           resolveFeatureFlag('voiceMediaTransport') && engine
-            ? engine.joinVoice(channelId)
+            ? engine.joinVoice(channelId, options)
+            : options.receiveOnly
+              ? Promise.reject(new Error('Watch mode requires the native media transport and an unlocked identity.'))
             : Promise.resolve(nativeJoinVoice(channelId)),
         leaveVoiceChannel: (channelId: string) =>
           resolveFeatureFlag('voiceMediaTransport') && engine
@@ -223,6 +230,7 @@ export function useRuntimeMutations() {
 
         // Friend request — native
         addFriendRequest: (peerAddr: string) => Promise.resolve(nativeAddFriendRequest(peerAddr)),
+        retryFriendRequest: (requestId: string) => Promise.resolve(nativeRetryFriendRequest(requestId)),
 
         // Open/create a 1:1 DM thread for a peer and return its id — native.
         ensureDirectMessage: (peerId: string) => nativeEnsureDirectMessage(peerId),
@@ -285,16 +293,14 @@ export function useRuntimeMutations() {
           engine ? engine.stopVoiceScreenShare(channelId) : Promise.resolve(),
         isVoiceScreenSharing: (channelId: string) =>
           engine ? engine.isVoiceScreenSharing(channelId) : false,
-        // Friends — native P2P: request / accept / decline travel peer-to-peer over
-        // PROTOCOLS.friends so they reach the other peer (the HTTP support node
-        // can't deliver to another peer). removeFriend/block stay HTTP for now.
+        // Friends — native P2P lifecycle operations are authenticated to the
+        // remote peer and correlated to the original request id. The HTTP
+        // support node is never used when nativeEngine is enabled.
         sendFriendRequest: (peerAddr: string) => Promise.resolve(nativeAddFriendRequest(peerAddr)),
         acceptFriend: (requestId: string) => Promise.resolve(nativeAcceptFriend(requestId)),
         declineFriend: (requestId: string) => Promise.resolve(nativeDeclineFriend(requestId)),
         actOnFriendRequest: (requestId: string, action: 'accept' | 'decline' | 'cancel' | 'block') =>
-          action === 'accept'
-            ? Promise.resolve(nativeAcceptFriend(requestId))
-            : Promise.resolve(nativeDeclineFriend(requestId)),
+          Promise.resolve(nativeActOnFriendRequest(requestId, action)),
         removeFriend: (friendId: string) => removeFriend(snap, friendId),
         // Notifications — native/local. Read-state (which scopes you read, and
         // when) is identity metadata: on the native path it is recorded in the
@@ -359,11 +365,17 @@ export function useRuntimeMutations() {
       resolveReport: (reportId: string, resolved?: boolean) => Promise.resolve(nativeResolveReport(reportId, resolved)),
       updatePresence: (opts: { status: string; status_text?: string; typing_in_scope?: string }) =>
         updatePresence(snap, opts),
-      joinVoiceChannel: (channelId: string) => joinVoiceChannel(snap, channelId),
+      joinVoiceChannel: (channelId: string, options: VoiceJoinOptions = {}) => {
+        if (options.receiveOnly) {
+          return Promise.reject(new Error('Watch mode requires the native media transport and an unlocked identity.'));
+        }
+        return joinVoiceChannel(snap, channelId);
+      },
       leaveVoiceChannel: (channelId: string) => leaveVoiceChannel(snap, channelId),
       registerRelay: (multiaddr: string) => registerRelay(snap, multiaddr),
       removeRelay: (multiaddr: string) => removeRelay(snap, multiaddr),
       addFriendRequest: (peerAddr: string) => sendFriendRequest(snap, peerAddr),
+      retryFriendRequest: (_requestId: string) => Promise.reject(new Error('Retrying a friend request requires the native P2P engine.')),
       ensureDirectMessage: (peerId: string) => nativeEnsureDirectMessage(peerId),
       joinServerByInvite: (deeplink: string) => joinServerByInvite(snap, deeplink),
       loadOlderHistory: (_serverId: string, _channelId: string) => Promise.resolve({ added: 0, hasMore: false }),

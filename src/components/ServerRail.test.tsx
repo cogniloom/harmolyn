@@ -71,4 +71,19 @@ describe("ServerRail", () => {
     expect(screen.getByText("2")).toBeInTheDocument();
     expect(screen.queryByText("11")).toBeNull();
   });
+
+  it("caps the visible pending-friend badge while retaining the full accessible count", () => {
+    render(
+      <ServerRail
+        servers={[]}
+        activeServerId="home"
+        connectionState={connectionState}
+        onSelectServer={() => {}}
+        onCreateServer={() => {}}
+        homeBadge={1_000_000}
+      />,
+    );
+
+    expect(screen.getByLabelText("1000000 pending friend requests")).toHaveTextContent("99+");
+  });
 });

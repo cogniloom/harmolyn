@@ -326,6 +326,50 @@ describe('ChannelRail status picker', () => {
     const listWhenCollapsed = screen.getByText('lobby').closest('div.space-y-0\\.5');
     expect(listWhenCollapsed).toHaveClass('hidden');
   });
+
+  it('offers a receive-only watch action when a member is streaming video', async () => {
+    const user = userEvent.setup();
+    const onWatchVoice = vi.fn();
+    const server: Server = {
+      id: 'srv',
+      name: 'Test Server',
+      icon: '',
+      ownerId: 'neo',
+      members: [currentUser],
+      categories: [{
+        id: 'voice',
+        name: 'VOICE CHANNELS',
+        channels: [{
+          id: 'voice-lounge',
+          name: 'Lounge',
+          type: 'voice',
+          categoryId: 'voice',
+          activeUsers: [{ id: 'streamer', username: 'Streamer', avatar: '', status: 'online', screenSharing: true }],
+        }],
+      }],
+    };
+
+    renderRail(
+      <ChannelRail
+        server={server}
+        activeChannelId=""
+        currentUser={currentUser}
+        users={[currentUser]}
+        directMessages={[]}
+        connectionState={connectionState}
+        connectedVoiceChannelId={null}
+        collapsed={false}
+        onToggleCollapse={() => {}}
+        onSelectChannel={() => {}}
+        onJoinVoice={() => {}}
+        onWatchVoice={onWatchVoice}
+        onOpenSettings={() => {}}
+      />,
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Watch stream in Lounge' }));
+    expect(onWatchVoice).toHaveBeenCalledWith('voice-lounge');
+  });
 });
 
 describe('ChannelRail channel creation (owner)', () => {

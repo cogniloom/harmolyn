@@ -60,7 +60,12 @@ import { safeLocationSearch } from '@/lib/browserLocation';
 import { safeViewportSize } from '@/lib/browserViewport';
 import { normalizeLayoutUsers, normalizeRuntimePeerId, normalizeRuntimeVoiceSession, resolveLayoutDirectMessageUser } from './layoutRuntime';
 import { useRuntimeBootstrapState } from '@/lib/xoreinRuntimeContext';
-import { readNotificationPreferences } from './NotificationSettings';
+import {
+  FRIEND_REQUEST_BADGE_PREFERENCE_EVENT,
+  readFriendRequestBadgeEnabled,
+  readNotificationPreferences,
+  type FriendRequestBadgePreferenceDetail,
+} from './NotificationSettings';
 import { useOnlineStatus } from '@/hooks/useOnlineStatus';
 import { useNodeHealth } from '@/hooks/useNodeHealth';
 import { NODE_OFFLINE_BANNER_TITLE, NODE_OFFLINE_BANNER_DETAIL } from '@/lib/nodeHealth';
@@ -109,6 +114,7 @@ export const Layout: React.FC = () => {
   const [showTour, setShowTour] = useState(false);
   const hasProductTour = useFeature('communityOnboarding');
   const [showFriends, setShowFriends] = useState(initialUtilityScreen === 'friends');
+  const [friendRequestBadgeEnabled, setFriendRequestBadgeEnabled] = useState(readFriendRequestBadgeEnabled);
   const [authScreen, setAuthScreen] = useState<'welcome' | 'login' | 'register' | null>(initialUtilityScreen === 'login' || initialUtilityScreen === 'register' ? initialUtilityScreen : null);
   const [showQuickSwitcher, setShowQuickSwitcher] = useState(false);
   const [showJoinServer, setShowJoinServer] = useState(false);
@@ -135,6 +141,24 @@ export const Layout: React.FC = () => {
   // Incoming friend requests waiting on us (used for the rail/Friends badge).
   const incomingFriendRequests = (shellData.runtimeSnapshot?.friend_requests ?? [])
     .filter((r) => r.status === 'pending' && r.from_peer_id && r.from_peer_id !== currentPeerId).length;
+
+  // The badge is deliberately opt-out: it is a durable indication that an incoming
+  // request still needs action, unlike the transient toast. Keep it synchronised
+  // in this tab and across other tabs/settings windows without polling storage.
+  useEffect(() => {
+    const sync = (event?: Event) => {
+      const detail = (event as CustomEvent<FriendRequestBadgePreferenceDetail> | undefined)?.detail;
+      setFriendRequestBadgeEnabled(typeof detail?.enabled === 'boolean'
+        ? detail.enabled
+        : readFriendRequestBadgeEnabled());
+    };
+    window.addEventListener(FRIEND_REQUEST_BADGE_PREFERENCE_EVENT, sync);
+    window.addEventListener('storage', sync);
+    return () => {
+      window.removeEventListener(FRIEND_REQUEST_BADGE_PREFERENCE_EVENT, sync);
+      window.removeEventListener('storage', sync);
+    };
+  }, []);
 
   const desktopNotifications = useFeature('desktopNotifications');
   const isOnline = useOnlineStatus();
@@ -325,6 +349,9 @@ export const Layout: React.FC = () => {
     preDeafenMuted: null as boolean | null,
     videoOn: false,
     screenSharing: false,
+    // Kept against a channel ID rather than inferred from mute state: a regular
+    // user may be muted, but only an explicit Watch session is receive-only.
+    receiveOnlyChannelId: null as string | null,
   });
   const [voiceActionStatus, setVoiceActionStatus] = useState<{ pending: string | null; error: string | null }>({
     pending: null,
@@ -349,6 +376,9 @@ export const Layout: React.FC = () => {
       preDeafenMuted: null,
       videoOn: false,
       screenSharing: false,
+      receiveOnlyChannelId: prev.receiveOnlyChannelId === state.connectedVoiceChannelId
+        ? prev.receiveOnlyChannelId
+        : null,
     }));
     setVoiceActionStatus({ pending: null, error: null });
     setShowScreenSharePanel(false);
@@ -759,7 +789,11 @@ export const Layout: React.FC = () => {
     connectedVoiceChannelName: connectedVoiceChannel?.name ?? 'Voice',
     connectedVoiceSession,
     localMuted: connectedVoiceSession?.participants[currentPeerId]?.muted ?? false,
-    voiceUi,
+    voiceUi: {
+      ...voiceUi,
+      receiveOnly: Boolean(state.connectedVoiceChannelId)
+        && voiceUi.receiveOnlyChannelId === state.connectedVoiceChannelId,
+    },
     voiceActionStatus,
   });
 
@@ -769,7 +803,7 @@ export const Layout: React.FC = () => {
     return message;
   };
 
-  const handleJoinVoice = async (id: string) => {
+  const handleJoinVoice = async (id: string, options: { receiveOnly?: boolean } = {}) => {
     const nextChannel = id.trim();
     if (!nextChannel) {
       await handleLeaveVoice();
@@ -779,11 +813,10 @@ export const Layout: React.FC = () => {
       setAuthScreen('register');
       return;
     }
+    const alreadyConnectedToTarget = state.connectedVoiceChannelId === nextChannel;
 
-    // Voice is a local-first P2P mesh: joining captures the mic and immediately
-    // shows you in the channel, then connects to peers best-effort. The mic prompt
-    // is raised once, inside the session (no separate pre-probe → no double prompt),
-    // and a denied mic no longer blocks the join — you join muted, like Discord.
+    // Voice is a local-first P2P mesh. A regular join captures the mic once inside
+    // the session; an explicit Watch joins receive-only and never prompts for it.
     setVoiceActionStatus({ pending: 'join', error: null });
     try {
       if (state.connectedVoiceChannelId && state.connectedVoiceChannelId !== nextChannel) {
@@ -791,25 +824,40 @@ export const Layout: React.FC = () => {
       }
       // Optimistically reflect the join so the control bar appears instantly even
       // while the mesh connects.
-      setState((prev) => ({ ...prev, connectedVoiceChannelId: nextChannel }));
-      await runtimeMutations.joinVoiceChannel(nextChannel);
+      if (!alreadyConnectedToTarget) {
+        setVoiceUi((prev) => ({
+          ...prev,
+          receiveOnlyChannelId: options.receiveOnly ? nextChannel : null,
+        }));
+        setState((prev) => ({ ...prev, connectedVoiceChannelId: nextChannel }));
+      }
+      await runtimeMutations.joinVoiceChannel(nextChannel, options);
       setVoiceActionStatus({ pending: null, error: null });
     } catch (error) {
-      // A hard failure (engine missing) — roll back the optimistic join.
-      setState((prev) => ({ ...prev, connectedVoiceChannelId: prev.connectedVoiceChannelId === nextChannel ? null : prev.connectedVoiceChannelId }));
+      // Only roll back an optimistic channel change. A same-channel request may
+      // be rejected because it would cross the Watch/capture privacy boundary;
+      // its existing live session must remain visible and leaveable.
+      if (!alreadyConnectedToTarget) {
+        setState((prev) => ({ ...prev, connectedVoiceChannelId: prev.connectedVoiceChannelId === nextChannel ? null : prev.connectedVoiceChannelId }));
+        setVoiceUi((prev) => prev.receiveOnlyChannelId === nextChannel
+          ? { ...prev, receiveOnlyChannelId: null }
+          : prev);
+      }
       voiceActionError(error);
     }
+  };
+
+  const handleWatchVoice = async (id: string) => {
+    await handleJoinVoice(id, { receiveOnly: true });
   };
 
   const handleLeaveVoice = async () => {
     if (!state.connectedVoiceChannelId) {
       return;
     }
-    if (!connectionState.canUseConnectivityActions) {
-      voiceActionError(new Error(connectionState.detail));
-      return;
-    }
 
+    // Leaving is a privacy-sensitive local action: always release the mic,
+    // camera, screen and peer connections even while the relay is unavailable.
     setVoiceActionStatus({ pending: 'leave', error: null });
     try {
       await runtimeMutations.leaveVoiceChannel(state.connectedVoiceChannelId);
@@ -823,6 +871,10 @@ export const Layout: React.FC = () => {
   const handleToggleVoiceMute = async () => {
     // Mute is a local microphone-track toggle — it must work even when the relay
     // is offline. Only require an active voice session.
+    if (voiceControlState.receiveOnly) {
+      voiceActionError(new Error('Watch mode does not permit microphone capture.'));
+      return;
+    }
     if (!state.connectedVoiceChannelId || !connectedVoiceSession) {
       voiceActionError(new Error('Join a voice channel first.'));
       return;
@@ -849,6 +901,18 @@ export const Layout: React.FC = () => {
     }
 
     const nextDeafened = !voiceUi.deafened;
+    // A watcher has no microphone and must remain receive-only. Deafen only
+    // controls the local audio sinks here; calling setVoiceMuted(false) while
+    // undeafening would violate that invariant if a stale snapshot said muted.
+    if (voiceControlState.receiveOnly) {
+      setVoiceUi((prev) => ({
+        ...prev,
+        deafened: nextDeafened,
+        preDeafenMuted: null,
+      }));
+      setVoiceActionStatus({ pending: null, error: null });
+      return;
+    }
     const currentMuted = connectedVoiceSession.participants[currentPeerId]?.muted ?? false;
     const nextMuted = nextDeafened ? true : (voiceUi.preDeafenMuted ?? currentMuted);
     setVoiceActionStatus({ pending: 'deafen', error: null });
@@ -868,6 +932,10 @@ export const Layout: React.FC = () => {
   const handleToggleVoiceVideo = async () => {
     // Camera is a local mesh track — only the live voice session is required
     // (works peer-to-peer even when the relay is flaky).
+    if (voiceControlState.receiveOnly) {
+      voiceActionError(new Error('Watch mode does not permit camera capture.'));
+      return;
+    }
     if (!state.connectedVoiceChannelId) {
       voiceActionError(new Error(voiceControlState.statusDetail));
       return;
@@ -890,6 +958,10 @@ export const Layout: React.FC = () => {
   };
 
   const handleToggleVoiceScreenShare = async () => {
+    if (voiceControlState.receiveOnly) {
+      voiceActionError(new Error('Watch mode does not permit screen sharing.'));
+      return;
+    }
     if (!state.connectedVoiceChannelId) {
       voiceActionError(new Error(voiceControlState.statusDetail));
       return;
@@ -911,6 +983,9 @@ export const Layout: React.FC = () => {
   };
 
   const handleStartScreenShare = async (type: 'screen' | 'window' | 'tab', quality: string) => {
+    if (voiceControlState.receiveOnly) {
+      throw new Error('Watch mode does not permit screen sharing.');
+    }
     if (!state.connectedVoiceChannelId) {
       throw new Error(voiceControlState.statusDetail);
     }
@@ -1125,7 +1200,7 @@ export const Layout: React.FC = () => {
             onSelectServer={handleServerSelect}
             onCreateServer={() => hasIdentity && connectionState.canUseConnectivityActions && setState((s) => ({ ...s, showCreateServer: true }))}
             showExplore={hasServerDiscovery}
-            homeBadge={incomingFriendRequests}
+            homeBadge={friendRequestBadgeEnabled ? incomingFriendRequests : 0}
           />
         </div>
       )}
@@ -1175,6 +1250,7 @@ export const Layout: React.FC = () => {
                   setShowFriends(false);
                 }}
                 onJoinVoice={handleJoinVoice}
+                onWatchVoice={handleWatchVoice}
                 onOpenSettings={() => setState((s) => ({ ...s, showSettings: true }))}
                 onOpenNodeLaunch={openNodeLaunch}
                 onOpenAuth={() => setAuthScreen('login')}
@@ -1190,6 +1266,7 @@ export const Layout: React.FC = () => {
                 onToggleVoiceScreenShare={hasScreenShare ? handleToggleVoiceScreenShare : undefined}
                 isHome={isHome}
                 onShowFriends={isHome ? () => setShowFriends(true) : undefined}
+                friendRequestBadge={friendRequestBadgeEnabled ? incomingFriendRequests : 0}
               />
             </div>
           </>
@@ -1444,6 +1521,7 @@ function buildVoiceControlState(input: {
     preDeafenMuted: boolean | null;
     videoOn: boolean;
     screenSharing: boolean;
+    receiveOnly: boolean;
   };
   voiceActionStatus: { pending: string | null; error: string | null };
 }): VoiceControlState {
@@ -1466,9 +1544,11 @@ function buildVoiceControlState(input: {
       statusLabel = 'VOICE SESSION MISSING';
       statusDetail = `No live voice session is reported for ${input.connectedVoiceChannelName}.`;
     } else {
-      const liveState = input.voiceUi.screenSharing
-        ? 'SCREEN SHARING'
-        : input.voiceUi.videoOn
+      const liveState = input.voiceUi.receiveOnly
+        ? input.voiceUi.deafened ? 'WATCHING · DEAFENED' : 'WATCHING'
+        : input.voiceUi.screenSharing
+          ? 'SCREEN SHARING'
+          : input.voiceUi.videoOn
             ? 'VIDEO ON'
             : input.voiceUi.deafened
               ? 'DEAFENED'
@@ -1476,10 +1556,18 @@ function buildVoiceControlState(input: {
                 ? 'MUTED'
                 : 'VOICE LIVE';
       statusLabel = liveState;
-      const offlineNote = input.connectionState.canUseConnectivityActions ? '' : ' · relay offline (others may not hear you)';
-      const detailSuffix = input.voiceUi.screenSharing
-        ? 'Sharing your screen.'
-        : input.voiceUi.videoOn
+      const offlineNote = input.connectionState.canUseConnectivityActions
+        ? ''
+        : input.voiceUi.receiveOnly
+          ? ' · relay offline (stream may be interrupted)'
+          : ' · relay offline (others may not hear you)';
+      const detailSuffix = input.voiceUi.receiveOnly
+        ? input.voiceUi.deafened
+          ? 'Watching live media; audio is deafened.'
+          : 'Watching live media; microphone, camera and screen sharing are disabled.'
+        : input.voiceUi.screenSharing
+          ? 'Sharing your screen.'
+          : input.voiceUi.videoOn
             ? 'Camera on.'
             : input.voiceUi.deafened
               ? 'Deafened.'
@@ -1499,10 +1587,11 @@ function buildVoiceControlState(input: {
     statusLabel,
     statusDetail,
     participantCount,
-    muted: input.localMuted,
+    muted: input.voiceUi.receiveOnly || input.localMuted,
     deafened: input.voiceUi.deafened,
-    videoOn: input.voiceUi.videoOn,
-    screenSharing: input.voiceUi.screenSharing,
+    videoOn: input.voiceUi.receiveOnly ? false : input.voiceUi.videoOn,
+    screenSharing: input.voiceUi.receiveOnly ? false : input.voiceUi.screenSharing,
+    receiveOnly: input.voiceUi.receiveOnly,
     canInteract,
     pendingAction: input.voiceActionStatus.pending,
     error: input.voiceActionStatus.error,

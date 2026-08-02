@@ -2,8 +2,8 @@
 // security mode (voice_sessions[].security_mode). Previously the mode was tracked
 // in the store but no component rendered it, so the channel header could claim
 // CROWD E2EE while the actual call media was DTLS-only.
-import { render, screen } from '@testing-library/react';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { fireEvent, render, screen } from '@testing-library/react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { VoiceControlBar, type VoiceControlState } from './VoiceControlBar';
 import { initStore, joinVoice, setVoiceSecurityMode } from '@/native/state/store';
 
@@ -18,6 +18,7 @@ function makeState(channelId: string | null = CHAN): VoiceControlState {
     deafened: false,
     videoOn: false,
     screenSharing: false,
+    receiveOnly: false,
     canInteract: true,
     pendingAction: null,
     error: null,
@@ -64,5 +65,39 @@ describe('VoiceControlBar — honest per-call security badge', () => {
   it('renders no security badge when there is no live session mode for the channel', () => {
     renderBar('some-other-channel');
     expect(screen.queryByTestId('voice-security-mode')).toBeNull();
+  });
+
+  it('shows a watcher state without outbound media controls or Ctrl+M', () => {
+    const onToggleMute = vi.fn();
+    const onToggleDeafen = vi.fn();
+    const onToggleVideo = vi.fn();
+    render(
+      <VoiceControlBar
+        channelName="Voice"
+        state={{
+          ...makeState(),
+          statusLabel: 'WATCHING',
+          statusDetail: 'Watching live media; microphone, camera and screen sharing are disabled.',
+          muted: true,
+          receiveOnly: true,
+        }}
+        onDisconnect={() => {}}
+        onToggleMute={onToggleMute}
+        onToggleDeafen={onToggleDeafen}
+        onToggleVideo={onToggleVideo}
+        onToggleScreenShare={() => {}}
+      />,
+    );
+
+    expect(screen.getByText('WATCHING')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Unmute' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Video' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Deafen' })).toBeEnabled();
+
+    fireEvent.keyDown(document, { key: 'm', ctrlKey: true });
+    expect(onToggleMute).not.toHaveBeenCalled();
+    fireEvent.keyDown(document, { key: 'd', ctrlKey: true });
+    expect(onToggleDeafen).toHaveBeenCalledTimes(1);
+    expect(onToggleVideo).not.toHaveBeenCalled();
   });
 });

@@ -1,7 +1,5 @@
-// A remote peer drives acceptFriendByPeer by sending a friends.accept frame. It may
-// only settle a request the LOCAL user actually sent — otherwise a peer can send us
-// a request and immediately "accept" it themselves, landing in our friends list with
-// no consent from us.
+// A peer-only acceptance is intentionally fail-closed. The inbound wire path must
+// supply the original request id, otherwise an old accept could settle a newer retry.
 import { describe, it, expect, beforeEach } from 'vitest';
 import {
   initStore, getState, setNativeIdentity, addFriendRequest, acceptFriendByPeer,
@@ -11,7 +9,7 @@ const ME = 'me';
 const MALLORY = 'mallory';
 const BOB = 'bob';
 
-describe('acceptFriendByPeer consent gating', () => {
+describe('acceptFriendByPeer legacy compatibility', () => {
   beforeEach(() => {
     localStorage.clear();
     initStore();
@@ -34,7 +32,7 @@ describe('acceptFriendByPeer consent gating', () => {
     expect(s.friend_requests.map(r => r.id)).toContain('req-in');
   });
 
-  it('settles a request the local user sent when that peer accepts', () => {
+  it('does not settle even an outgoing request without its exact request id', () => {
     addFriendRequest({
       id: 'req-out',
       from_peer_id: ME,
@@ -46,8 +44,8 @@ describe('acceptFriendByPeer consent gating', () => {
     acceptFriendByPeer(BOB);
 
     const s = getState();
-    expect(s.friends.map(f => f.id)).toContain('req-out');
-    expect(s.friend_requests.map(r => r.id)).not.toContain('req-out');
+    expect(s.friends.map(f => f.id)).not.toContain('req-out');
+    expect(s.friend_requests.map(r => r.id)).toContain('req-out');
   });
 
   it('does not settle an unrelated peer request', () => {

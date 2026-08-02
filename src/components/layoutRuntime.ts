@@ -31,6 +31,10 @@ export function normalizeRuntimeVoiceSession(value: unknown): XoreinRuntimeVoice
       ...(typeof record.muted === "boolean" ? { muted: record.muted } : {}),
       ...(typeof record.joined_at === "string" && record.joined_at.trim() ? { joined_at: record.joined_at.trim() } : {}),
       ...(typeof record.last_frame_at === "string" && record.last_frame_at.trim() ? { last_frame_at: record.last_frame_at.trim() } : {}),
+      ...(typeof record.video === "boolean" ? { video: record.video } : {}),
+      ...(typeof record.screen_sharing === "boolean" ? { screen_sharing: record.screen_sharing } : {}),
+      ...(typeof record.speaking === "boolean" ? { speaking: record.speaking } : {}),
+      ...(typeof record.connection_state === "string" && record.connection_state.trim() ? { connection_state: record.connection_state.trim() } : {}),
     };
     return acc;
   }, {});
@@ -39,6 +43,14 @@ export function normalizeRuntimeVoiceSession(value: unknown): XoreinRuntimeVoice
     ? {
         channel_id: value.channel_id.trim(),
         participants,
+        ...(value.security_mode === "seal" || value.security_mode === "crowd" || value.security_mode === "tree" || value.security_mode === "clear"
+          ? { security_mode: value.security_mode }
+          : {}),
+        ...(value.connection_state === "connecting" || value.connection_state === "connected" || value.connection_state === "failed" || value.connection_state === "closed"
+          ? { connection_state: value.connection_state }
+          : {}),
+        ...(typeof value.self_muted === "boolean" ? { self_muted: value.self_muted } : {}),
+        ...(typeof value.turn_unavailable === "boolean" ? { turn_unavailable: value.turn_unavailable } : {}),
       }
     : null;
 }
@@ -84,6 +96,7 @@ function normalizeLayoutUser(value: unknown, fallbackId: string): User {
     avatar,
     status,
     ...(typeof value.role === "string" && value.role.trim() ? { role: value.role.trim() } : {}),
+    ...(typeof value.roleColor === "string" && value.roleColor.trim() ? { roleColor: value.roleColor.trim() } : {}),
     ...(typeof value.color === "string" && value.color.trim() ? { color: value.color.trim() } : {}),
     ...(typeof value.bio === "string" && value.bio.trim() ? { bio: value.bio.trim() } : {}),
   };

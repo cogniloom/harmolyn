@@ -1693,6 +1693,23 @@ describe("connectToDefaultRuntime", () => {
     expect(String(fetchMock.mock.calls[0]?.[0] ?? "")).toContain("https://node.xorein.com/v1/state");
   });
 
+  it("does not downgrade the hosted HTTPS endpoint advertised behind a TLS proxy", async () => {
+    const fetchMock = vi.fn(async (..._args: unknown[]) =>
+      jsonResponse({
+        peer_id: "peer-native",
+        control_endpoint: "http://node.xorein.com",
+        settings: {},
+        servers: [],
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await connectToDefaultRuntime();
+
+    expect(result?.control_endpoint).toBe("https://node.xorein.com");
+    expect(String(fetchMock.mock.calls[0]?.[0] ?? "")).toContain("https://node.xorein.com/v1/state");
+  });
+
   it("honors a valid top-level endpoint over the resolved autoconnect endpoint", async () => {
     storePreferredControlEndpoint("127.0.0.1:7711");
     const fetchMock = vi.fn(async (..._args: unknown[]) =>

@@ -232,4 +232,34 @@ describe("MemberSidebar moderation", () => {
     // Whitespace-only status text is trimmed away — the row renders without it.
     expect(screen.getByText("Grace")).toBeInTheDocument();
   });
+
+  it("marks the current member and exposes color-coded role markers", () => {
+    render(
+      <MemberSidebar
+        members={[
+          { id: "peer-local", username: "Ada", avatar: "/avatar.png", status: "online", role: "Admin", roleColor: "#F5B942" },
+          { id: "peer-moderator", username: "Grace", avatar: "/avatar2.png", status: "online", role: "Moderator", roleColor: "#13DDEC" },
+          { id: "peer-member", username: "Lin", avatar: "/avatar3.png", status: "online" },
+        ]}
+        currentUser={{ id: "peer-local", username: "Ada", avatar: "/avatar.png", status: "online", role: "Admin", roleColor: "#F5B942" }}
+        serverOwnerId="peer-local"
+        serverId="server-1"
+        collapsed={false}
+        onToggleCollapse={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("ONLINE // 3")).toBeInTheDocument();
+    expect(screen.getByText("You")).toBeInTheDocument();
+    expect(document.querySelector('[data-member-id="peer-local"]')).toHaveAttribute("aria-current", "true");
+
+    const adminMarker = screen.getByRole("img", { name: "Admin role" });
+    expect(adminMarker).toHaveTextContent("@");
+    expect(adminMarker).toHaveStyle({ color: "#F5B942" });
+
+    const moderatorMarker = screen.getByRole("img", { name: "Moderator role" });
+    expect(moderatorMarker).toHaveTextContent("+");
+    expect(moderatorMarker).toHaveStyle({ color: "#13DDEC" });
+    expect(screen.queryByRole("img", { name: "Member role" })).toBeNull();
+  });
 });

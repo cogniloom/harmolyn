@@ -38,6 +38,16 @@ function normalizeSidebarDonationTier(value: unknown): User['donationTier'] {
   return value === 'coffee' || value === 'supporter' || value === 'champion' ? value : undefined;
 }
 
+const SAFE_ROLE_COLOR = /^#(?:[\da-f]{3}|[\da-f]{6}|[\da-f]{8})$/i;
+
+function normalizeSidebarRoleColor(value: unknown): string | undefined {
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+  const color = value.trim();
+  return SAFE_ROLE_COLOR.test(color) ? color : undefined;
+}
+
 function normalizeSidebarUser(value: unknown, fallbackId: string): User {
   if (!isSidebarRecord(value)) {
     return {
@@ -52,6 +62,7 @@ function normalizeSidebarUser(value: unknown, fallbackId: string): User {
   const username = normalizeSidebarText(value.username, id);
   const avatar = typeof value.avatar === 'string' ? value.avatar : '';
   const role = normalizeSidebarText(value.role, '');
+  const roleColor = normalizeSidebarRoleColor(value.roleColor);
   const color = normalizeSidebarText(value.color, '');
   const bio = normalizeSidebarText(value.bio, '');
   const joinedAt = normalizeSidebarText(value.joinedAt, '');
@@ -64,6 +75,7 @@ function normalizeSidebarUser(value: unknown, fallbackId: string): User {
     avatar,
     status: normalizeSidebarStatus(value.status),
     ...(role ? { role } : {}),
+    ...(roleColor ? { roleColor } : {}),
     ...(color ? { color } : {}),
     ...(bio ? { bio } : {}),
     ...(joinedAt ? { joinedAt } : {}),
@@ -71,6 +83,25 @@ function normalizeSidebarUser(value: unknown, fallbackId: string): User {
     ...(donationTier ? { donationTier } : {}),
   };
 }
+
+const RoleMarker: React.FC<{ role?: string; color?: string }> = ({ role, color }) => {
+  if (!role || role.toLowerCase() === 'member') {
+    return null;
+  }
+
+  const isAdmin = role.toLowerCase() === 'admin';
+  return (
+    <span
+      className="inline-flex h-3.5 min-w-3.5 shrink-0 items-center justify-center font-mono text-[11px] font-black leading-none"
+      style={{ color: color ?? '#F5B942' }}
+      role="img"
+      aria-label={`${role} role`}
+      title={role}
+    >
+      {isAdmin ? '@' : '+'}
+    </span>
+  );
+};
 
 function normalizeSidebarUsers(value: unknown): User[] {
   if (!Array.isArray(value)) {
@@ -184,7 +215,7 @@ export const MemberSidebar: React.FC<MemberSidebarProps> = ({ members, currentUs
   }, [feedback]);
 
   const groups = {
-    'OPERATORS': normalizedMembers.filter(m => m.status === 'online' || m.status === 'dnd'),
+    'ONLINE': normalizedMembers.filter(m => m.status === 'online' || m.status === 'dnd'),
     'IDLE': normalizedMembers.filter(m => m.status === 'idle'),
     'OFFLINE': normalizedMembers.filter(m => m.status === 'offline'),
   };
@@ -260,14 +291,18 @@ export const MemberSidebar: React.FC<MemberSidebarProps> = ({ members, currentUs
           <div key={name}>
             <h3 className="micro-label theme-text-dim mb-3 px-2">{name} // {users.length}</h3>
             <div className="space-y-0.5">
-              {users.map((u, i) => (
-                <motion.div 
-                  key={u.id}
-                  initial={{ opacity: 0, x: 12 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  transition={{ delay: i * 0.03, duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
-                  className={`flex items-center gap-2.5 px-2.5 py-2.5 rounded-r1 hover:bg-white/5 active:bg-white/8 transition-all group cursor-pointer relative min-h-[48px] ${timedOutUsers[u.id] ? 'opacity-80' : ''}`}
-                >
+              {users.map((u, i) => {
+                const isCurrentUser = u.id === normalizedCurrentUser.id;
+                return (
+                  <motion.div
+                    key={u.id}
+                    initial={{ opacity: 0, x: 12 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    transition={{ delay: i * 0.03, duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
+                    className={`flex items-center gap-2.5 px-2.5 py-2.5 rounded-r1 hover:bg-white/5 active:bg-white/8 transition-all group cursor-pointer relative min-h-[48px] ${isCurrentUser ? 'bg-primary/[0.06] ring-1 ring-inset ring-primary/25' : ''} ${timedOutUsers[u.id] ? 'opacity-80' : ''}`}
+                    data-member-id={u.id}
+                    aria-current={isCurrentUser ? 'true' : undefined}
+                  >
                   <div className="relative">
                     <img src={resolveAvatarSrc(u.avatar, u.username)} className="w-[26px] h-[26px] rounded-r1 border theme-border grayscale-[0.3] group-hover:grayscale-0 transition-all" />
                     <div className={`absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-bg-1 ${getStatusColor(u.status)}`}></div>
@@ -275,7 +310,9 @@ export const MemberSidebar: React.FC<MemberSidebarProps> = ({ members, currentUs
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-1 min-w-0">
+                        <RoleMarker role={u.role} color={u.roleColor} />
                         <div className="text-xs font-bold theme-text-secondary group-hover:theme-text truncate" style={u.status !== 'offline' ? {color: u.color} : {}}>{u.username}</div>
+                        {isCurrentUser && <span className="text-[7px] font-bold uppercase tracking-wider text-primary/75">You</span>}
                         {u.donationTier && <DonorBadge tier={u.donationTier} compact />}
                         {timedOutUsers[u.id] && <span className="text-[8px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-full border border-accent-warning/20 bg-accent-warning/10 text-accent-warning">timeout</span>}
                       </div>
@@ -285,7 +322,7 @@ export const MemberSidebar: React.FC<MemberSidebarProps> = ({ members, currentUs
                       <span className="text-[8px] uppercase font-bold tracking-wider opacity-50" style={{ color: u.status === 'online' ? '#05FFA1' : u.status === 'dnd' ? '#FF2A6D' : u.status === 'idle' ? '#FFB020' : 'rgba(255,255,255,0.3)' }}>{u.status}</span>
                       {statusTextFor(u.id) && <span className="text-[9px] text-primary/70 font-mono truncate">{statusTextFor(u.id)}</span>}
                       {timedOutUsers[u.id] && <span className="text-[8px] uppercase font-bold tracking-wider text-accent-warning">{timedOutUsers[u.id].duration}s hold</span>}
-                      <div className="text-[9px] theme-text-dim font-mono truncate hidden group-hover:block transition-all"> // {u.bio?.substring(0, 15)}</div>
+                      {u.bio && <div className="text-[9px] theme-text-dim font-mono truncate hidden group-hover:block transition-all"> // {u.bio.substring(0, 15)}</div>}
                     </div>
                   </div>
                   {/* Contextual action buttons (DM + Timeout) */}
@@ -317,8 +354,9 @@ export const MemberSidebar: React.FC<MemberSidebarProps> = ({ members, currentUs
                       </button>
                     )}
                   </div>
-                </motion.div>
-              ))}
+                  </motion.div>
+                );
+              })}
             </div>
           </div>
         ))}
