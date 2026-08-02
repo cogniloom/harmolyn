@@ -7,8 +7,13 @@
 //     plaintext (no downgrade path), and
 //   • a genuinely Crowd-encrypted message is stored carrying the real mode so the
 //     UI badge reflects encryption that actually happened.
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { initStore, getState, setNativeIdentity, addServer, updateServer, addFriendRequest, ensureDm } from '../state/store.js';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import {
+  initStore, getState, setNativeIdentity, addServer, updateServer, addFriendRequest,
+  acceptFriend, ensureDm, isFriendRequestTombstoned, pruneExpiredFriendRequests,
+  FRIEND_REQUEST_TTL_MS, FRIEND_REQUEST_MAX_FUTURE_SKEW_MS,
+  MAX_PENDING_INCOMING_FRIEND_REQUESTS,
+} from '../state/store.js';
 import { ChannelCrypto } from '../crowd/channel.js';
 import { SealSessions } from '../seal/session.js';
 import { generateSigningIdentity } from '../crypto/hybrid.js';
@@ -16,7 +21,7 @@ import { generateIdentity, type XoreinIdentity } from '../identity/identity.js';
 import { registerScopeCrypto, resetScopeCrypto, encryptChannelEnvelope, encryptDmEnvelope, applyCrowdRoot } from './secureEnvelope.js';
 import { signChannelMessageVersion } from './signedHistory.js';
 import { signServerRecord } from './signedServer.js';
-import { ingestMailboxChat, classifyChannelNotification, dispatchAuthenticatedOperation, handleSyncRequest, reconcileFriendAcceptFromPresence } from './inbound.js';
+import { ingestMailboxChat, classifyChannelNotification, dispatchAuthenticatedOperation, handleSyncRequest, reconcileFriendAcceptFromPresence, ingestFriendOperation } from './inbound.js';
 import type { ChannelSecurityMode } from '../security/channelMode.js';
 import type { XoreinRuntimeMessage } from '../../types.js';
 import type { PeerSync } from './peersync.js';
@@ -511,7 +516,7 @@ describe('inbound DM — scope cross-labeling (both participants must belong to 
   });
 });
 
-describe('reconcileFriendAcceptFromPresence (lost friends.accept recovery)', () => {
+describe('presence cannot settle friend requests without an exact request id', () => {
   beforeEach(() => {
     localStorage.clear();
     initStore();
@@ -526,17 +531,16 @@ describe('reconcileFriendAcceptFromPresence (lost friends.accept recovery)', () 
     created_at: new Date().toISOString(),
   });
 
-  it('flips an outgoing pending request to accepted when presence arrives from a non-co-member', () => {
-    // A peer only broadcasts presence to co-members and ACCEPTED friends. We share no
-    // server with ALICE, so her presence proves she accepted our request even if the
-    // friends.accept itself was lost.
+  it('does NOT flip an outgoing request when presence arrives from a non-co-member', () => {
+    // A presence packet cannot name the original request. It must not settle an
+    // outgoing record, because it could have been emitted after an older request
+    // while a newer retry is pending.
     outgoingRequest();
 
-    expect(reconcileFriendAcceptFromPresence(ALICE)).toBe(true);
+    expect(reconcileFriendAcceptFromPresence(ALICE)).toBe(false);
 
-    expect(getState().friend_requests.length).toBe(0);
-    const friend = getState().friends.find(f => f.id === 'out-1');
-    expect(friend?.status).toBe('accepted');
+    expect(getState().friend_requests.find(r => r.id === 'out-1')?.status).toBe('pending');
+    expect(getState().friends).toHaveLength(0);
   });
 
   it('does NOT flip when we share a server with the peer (presence proves nothing)', () => {
@@ -568,5 +572,174 @@ describe('reconcileFriendAcceptFromPresence (lost friends.accept recovery)', () 
     expect(reconcileFriendAcceptFromPresence(ALICE)).toBe(false);
     expect(reconcileFriendAcceptFromPresence(ME)).toBe(false);
     expect(getState().friends.length).toBe(0);
+  });
+});
+
+describe('authenticated friend lifecycle actions', () => {
+  beforeEach(() => {
+    localStorage.clear();
+    initStore();
+    setNativeIdentity({ id: ME, peer_id: ME });
+  });
+
+  it('accepts only the exact outgoing request id, never a delayed acceptance for another id', () => {
+    addFriendRequest({
+      id: 'retry-current',
+      from_peer_id: ME,
+      to_peer_id: ALICE,
+      status: 'pending',
+      created_at: new Date().toISOString(),
+    });
+
+    ingestFriendOperation({
+      kind: 'accept', action: 'accept', id: 'old-request', request_id: 'old-request', from_peer_id: ALICE,
+    }, ALICE);
+    expect(getState().friend_requests.map(r => r.id)).toContain('retry-current');
+    expect(getState().friends).toHaveLength(0);
+
+    ingestFriendOperation({
+      kind: 'accept', action: 'accept', id: 'retry-current', request_id: 'retry-current', from_peer_id: ALICE,
+    }, ALICE);
+    expect(getState().friend_requests).toHaveLength(0);
+    expect(getState().friends.map(r => r.id)).toContain('retry-current');
+  });
+
+  it('honors a sender cancellation only for the matching incoming request and suppresses its delayed replay', () => {
+    const request = {
+      kind: 'request', id: 'incoming-1', request_id: 'incoming-1', from_peer_id: ALICE,
+    };
+    ingestFriendOperation(request, ALICE);
+    expect(getState().friend_requests.map(r => r.id)).toContain('incoming-1');
+
+    ingestFriendOperation({
+      kind: 'cancel', action: 'cancel', id: 'incoming-1', request_id: 'incoming-1', from_peer_id: ALICE,
+    }, ALICE);
+    expect(getState().friend_requests).toHaveLength(0);
+
+    ingestFriendOperation(request, ALICE);
+    expect(getState().friend_requests).toHaveLength(0);
+  });
+
+  it('tombstones a cancellation that arrives before its original request', () => {
+    const request = {
+      kind: 'request', id: 'cancel-first', request_id: 'cancel-first', from_peer_id: ALICE,
+    };
+    ingestFriendOperation({
+      kind: 'cancel', action: 'cancel', id: 'cancel-first', request_id: 'cancel-first', from_peer_id: ALICE,
+    }, ALICE);
+
+    expect(isFriendRequestTombstoned(ALICE, 'cancel-first')).toBe(true);
+    ingestFriendOperation(request, ALICE);
+    expect(getState().friend_requests).toHaveLength(0);
+  });
+
+  it('does not let an inbound request overwrite a globally colliding pending or accepted id', () => {
+    addFriendRequest({
+      id: 'pending-collision', from_peer_id: 'bob', to_peer_id: ME, status: 'pending', created_at: new Date().toISOString(),
+    });
+    ingestFriendOperation({
+      kind: 'request', id: 'pending-collision', request_id: 'pending-collision', from_peer_id: ALICE,
+    }, ALICE);
+    expect(getState().friend_requests).toEqual([
+      expect.objectContaining({ id: 'pending-collision', from_peer_id: 'bob' }),
+    ]);
+
+    addFriendRequest({
+      id: 'accepted-collision', from_peer_id: ME, to_peer_id: 'bob', status: 'pending', created_at: new Date().toISOString(),
+    });
+    acceptFriend('accepted-collision');
+    ingestFriendOperation({
+      kind: 'request', id: 'accepted-collision', request_id: 'accepted-collision', from_peer_id: ALICE,
+    }, ALICE);
+    expect(getState().friends).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'accepted-collision', from_peer_id: ME }),
+    ]));
+    expect(getState().friend_requests.some(request => request.id === 'accepted-collision')).toBe(false);
+  });
+
+  it('recognizes an accepted legacy multiaddr record as an existing friend', () => {
+    addFriendRequest({
+      id: 'legacy-friend',
+      from_peer_id: ME,
+      to_peer_addr: '/dns4/node.xorein.com/tcp/443/wss/p2p/alice',
+      status: 'pending',
+      created_at: new Date().toISOString(),
+    });
+    acceptFriend('legacy-friend');
+
+    ingestFriendOperation({
+      kind: 'request', id: 'new-request', request_id: 'new-request', from_peer_id: ALICE,
+    }, ALICE);
+
+    expect(getState().friend_requests).toHaveLength(0);
+  });
+
+  it('honors the advertised expiry and rejects an unreasonably future expiry', () => {
+    const expiresAt = new Date(Date.now() + 1_000).toISOString();
+    ingestFriendOperation({
+      kind: 'request', id: 'short-lived', request_id: 'short-lived', from_peer_id: ALICE, expires_at: expiresAt,
+    }, ALICE);
+    expect(getState().friend_requests).toEqual([
+      expect.objectContaining({ id: 'short-lived', expires_at: expiresAt }),
+    ]);
+
+    expect(pruneExpiredFriendRequests(Date.parse(expiresAt) + 1)).toEqual(['short-lived']);
+    expect(getState().friend_requests).toHaveLength(0);
+
+    const tooFar = new Date(Date.now()
+      + FRIEND_REQUEST_TTL_MS + FRIEND_REQUEST_MAX_FUTURE_SKEW_MS + 60_000).toISOString();
+    ingestFriendOperation({
+      kind: 'request', id: 'too-far', request_id: 'too-far', from_peer_id: ALICE, expires_at: tooFar,
+    }, ALICE);
+    expect(getState().friend_requests).toHaveLength(0);
+  });
+
+  it('caps inbound pending requests and honors the quiet friend-request preference', () => {
+    localStorage.setItem('harmolyn:settings:notifications', JSON.stringify({ friendRequestBadgeEnabled: false }));
+    const notify = vi.fn();
+    window.addEventListener('harmolyn:notify', notify);
+    try {
+      ingestFriendOperation({
+        kind: 'request', id: 'quiet-request', request_id: 'quiet-request', from_peer_id: 'quiet-peer',
+      }, 'quiet-peer');
+      expect(notify).not.toHaveBeenCalled();
+
+      for (let index = 0; index < MAX_PENDING_INCOMING_FRIEND_REQUESTS; index += 1) {
+        const peerId = `peer-${index}`;
+        ingestFriendOperation({
+          kind: 'request', id: `request-${index}`, request_id: `request-${index}`, from_peer_id: peerId,
+        }, peerId);
+      }
+      // The quiet request consumes one slot, so only cap-minus-one looped
+      // requests can remain; the next one is discarded without tombstoning.
+      expect(getState().friend_requests).toHaveLength(MAX_PENDING_INCOMING_FRIEND_REQUESTS);
+      ingestFriendOperation({
+        kind: 'request', id: 'overflow-request', request_id: 'overflow-request', from_peer_id: 'overflow-peer',
+      }, 'overflow-peer');
+      expect(getState().friend_requests).toHaveLength(MAX_PENDING_INCOMING_FRIEND_REQUESTS);
+      expect(isFriendRequestTombstoned('overflow-peer', 'overflow-request')).toBe(false);
+    } finally {
+      window.removeEventListener('harmolyn:notify', notify);
+    }
+  });
+
+  it('honors a decline only from the recipient and only for the original outgoing id', () => {
+    addFriendRequest({
+      id: 'outgoing-1',
+      from_peer_id: ME,
+      to_peer_id: ALICE,
+      status: 'pending',
+      created_at: new Date().toISOString(),
+    });
+
+    ingestFriendOperation({
+      kind: 'decline', action: 'decline', id: 'wrong-id', request_id: 'wrong-id', from_peer_id: ALICE,
+    }, ALICE);
+    expect(getState().friend_requests.map(r => r.id)).toContain('outgoing-1');
+
+    ingestFriendOperation({
+      kind: 'decline', action: 'decline', id: 'outgoing-1', request_id: 'outgoing-1', from_peer_id: ALICE,
+    }, ALICE);
+    expect(getState().friend_requests).toHaveLength(0);
   });
 });

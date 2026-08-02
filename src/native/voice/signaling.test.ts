@@ -4,9 +4,10 @@
 // public server discloses call participation + timing to a third party. The
 // public fallback exists ONLY behind an explicit, default-off opt-in.
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { fetchTurnCredentials, PUBLIC_STUN_OPT_IN_KEY } from './signaling.js';
+import { fetchTurnCredentials, PUBLIC_STUN_OPT_IN_KEY, TURN_CREDENTIALS_TIMEOUT_MS } from './signaling.js';
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.unstubAllGlobals();
   localStorage.removeItem(PUBLIC_STUN_OPT_IN_KEY);
 });
@@ -49,5 +50,23 @@ describe('fetchTurnCredentials — no third-party STUN by default', () => {
     const optedIn = urlsOf(await fetchTurnCredentials());
     expect(optedIn.some(u => u.includes('stun.l.google.com'))).toBe(true);
     expect(optedIn[0]).toMatch(/^stun:.+:3478$/); // the node's STUN still leads
+  });
+
+  it('bounds a hung TURN credential fetch and returns the private STUN fallback', async () => {
+    vi.useFakeTimers();
+    let requestSignal: AbortSignal | undefined;
+    vi.stubGlobal('fetch', vi.fn((_url: string, init?: RequestInit) => {
+      requestSignal = init?.signal ?? undefined;
+      // Deliberately ignore abort() to cover fetch implementations that leave a
+      // promise pending: Promise.race must still let a watcher begin signaling.
+      return new Promise<Response>(() => {});
+    }));
+
+    const pending = fetchTurnCredentials();
+    await vi.advanceTimersByTimeAsync(TURN_CREDENTIALS_TIMEOUT_MS);
+
+    const servers = await pending;
+    expect(requestSignal?.aborted).toBe(true);
+    expect(urlsOf(servers)).toEqual([expect.stringMatching(/^stun:.+:3478$/)]);
   });
 });

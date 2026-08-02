@@ -7,7 +7,17 @@ import {
   type InboundFamilyStream, type PeerStreamRequest,
 } from '../families/peerstream.js';
 import { PROTOCOLS, RECOVERY_OPS } from '../families/families.js';
-import { addMessage, editMessage as storeEditMessage, deleteMessage as storeDeleteMessage, updateMessageVersion, pinMessage as storePinMessage, updatePresenceEntry, addReaction, removeReaction, getState, updateServer, upsertPeer, addFriendRequest, acceptFriendByPeer, ensureDm, bumpUnread, getActiveScope, removeServerMembership, removeServerMember, addPollVote, memberHasPermission, isScopeMember, addReport } from '../state/store.js';
+import {
+  addMessage, editMessage as storeEditMessage, deleteMessage as storeDeleteMessage,
+  updateMessageVersion, pinMessage as storePinMessage, updatePresenceEntry,
+  addReaction, removeReaction, getState, updateServer, upsertPeer,
+  admitIncomingFriendRequest, acceptFriendByRequestId,
+  terminalizeFriendRequest, rememberFriendRequestTombstone,
+  isFriendRequestTombstoned, pruneExpiredFriendRequests,
+  friendRequestCounterparty, FRIEND_REQUEST_TTL_MS, FRIEND_REQUEST_MAX_FUTURE_SKEW_MS,
+  ensureDm, bumpUnread, getActiveScope, removeServerMembership, removeServerMember,
+  addPollVote, memberHasPermission, isScopeMember, addReport,
+} from '../state/store.js';
 import {
   nativeAnnouncePresence,
   broadcastPortableAdmission,
@@ -214,6 +224,24 @@ function emitNotify(detail: { kind: string; title: string; body: string; scopeId
       window.dispatchEvent(new CustomEvent('harmolyn:notify', { detail }));
     }
   } catch { /* non-DOM environment (tests / workers) */ }
+}
+
+/**
+ * A person who disables the durable friend-request badge is opting out of the
+ * high-volume alert surface as well. Requests still arrive (up to the bounded
+ * local quota), but do not create a toast/desktop-notification flood.
+ */
+function shouldNotifyIncomingFriendRequest(): boolean {
+  try {
+    if (typeof localStorage === 'undefined') return true;
+    const raw = localStorage.getItem('harmolyn:settings:notifications');
+    if (!raw) return true;
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return true;
+    return (parsed as { friendRequestBadgeEnabled?: unknown }).friendRequestBadgeEnabled !== false;
+  } catch {
+    return true;
+  }
 }
 
 /**
@@ -594,34 +622,13 @@ function circuitAddrsFromPayload(payload: Record<string, unknown>, expectedPeerI
 }
 
 /**
- * Reconcile a LOST friends.accept from presence: a peer only broadcasts presence
- * to its server co-members and ACCEPTED friends. So when presence arrives from a
- * peer we hold an outgoing pending request to, and we share NO server with them,
- * the only way we can be in their presence-target set is that they accepted our
- * request — flip our outgoing pending to an accepted friend. This converges the
- * requester even if the one-shot friends.accept (and all its outbox retries)
- * never landed. Exported for tests.
+ * @deprecated Presence has no request id and therefore cannot safely settle a
+ * friend request: an old presence packet could accept a newer retry. Kept as a
+ * no-op export for compatibility; only a friends.accept action may transition
+ * an outgoing request, via `acceptFriendByRequestId`.
  */
-export function reconcileFriendAcceptFromPresence(peerId: string): boolean {
-  const state = getState();
-  const me = state.identity?.peer_id ?? '';
-  if (!me || !peerId || peerId === me) return false;
-  const outgoing = state.friend_requests.find(r =>
-    r.status === 'pending'
-    && r.from_peer_id === me
-    && (r.to_peer_id ?? r.to_peer_addr) === peerId,
-  );
-  if (!outgoing) return false;
-  // Shared server membership is the other legitimate reason they'd send us
-  // presence — in that case their broadcast proves nothing about the request.
-  const sharesServer = Object.values(state.servers).some(s => {
-    const members = s.members ?? [];
-    return members.includes(me) && members.includes(peerId);
-  });
-  if (sharesServer) return false;
-  acceptFriendByPeer(peerId);
-  emitNotify({ kind: 'friend', title: 'Friend request accepted', body: `${peerDisplayName(peerId)} accepted your friend request` });
-  return true;
+export function reconcileFriendAcceptFromPresence(_peerId: string): false {
+  return false;
 }
 
 function handlePresenceUpdate(payload: Record<string, unknown>, remotePeerId: string, _operation?: string): void {
@@ -659,9 +666,6 @@ function handlePresenceUpdate(payload: Record<string, unknown>, remotePeerId: st
       last_seen_at: new Date().toISOString(),
     });
   }
-  // Presence from a peer we friend-requested (and share no server with) implies
-  // they accepted — recover from a lost friends.accept so the requester converges.
-  reconcileFriendAcceptFromPresence(peerId);
   schedulePublishNativeSnapshot();
 }
 
@@ -1217,6 +1221,15 @@ export function ingestNotifyPush(payload: Record<string, unknown>, fromPeerId: s
   handleNotifyPush(payload, fromPeerId);
 }
 
+/**
+ * Apply a friend-family payload received from an authenticated peer. Exported
+ * for focused lifecycle tests and for durable-inbox recovery; callers must bind
+ * `fromPeerId` to the authenticated transport/session identity.
+ */
+export function ingestFriendOperation(payload: Record<string, unknown>, fromPeerId: string): void {
+  handleFriendOp(payload, fromPeerId);
+}
+
 // ── Seal prekey-bundle service ───────────────────────────────────────────────
 
 /**
@@ -1232,57 +1245,150 @@ function handleSealBundle(): Record<string, unknown> {
 
 // ── Friend requests (P2P social graph) ───────────────────────────────────────
 
+type FriendAction = 'accept' | 'decline' | 'cancel' | 'block';
+
+function friendRequestIdFromPayload(payload: Record<string, unknown>): string | null {
+  const requestId = boundedPayloadString(payload.request_id, 256);
+  const legacyId = boundedPayloadString(payload.id, 256);
+  // If both are present, they must designate the same original intent. Never
+  // let a packet use one id for display/deduplication and another for settlement.
+  if (requestId && legacyId && requestId !== legacyId) return null;
+  return requestId ?? legacyId;
+}
+
+function friendActionFromPayload(payload: Record<string, unknown>): FriendAction | null {
+  const explicit = payload.action;
+  if (explicit !== undefined) {
+    return explicit === 'accept' || explicit === 'decline'
+      || explicit === 'cancel' || explicit === 'block'
+      ? explicit
+      : null;
+  }
+  const legacyKind = payload.kind;
+  return legacyKind === 'accept' || legacyKind === 'decline'
+    || legacyKind === 'cancel' || legacyKind === 'block'
+    ? legacyKind
+    : null;
+}
+
 /**
- * Handle an inbound friend op from `remotePeerId`:
- *  - `request`: record an incoming pending request so it shows in the Pending tab.
- *  - `accept` : the peer accepted a request we sent — flip our outgoing pending to
- *    an accepted friend (matched by counterparty, since each side holds its own id).
- * The `kind` is carried in the payload because the void handler family doesn't pass
- * the wire operation through.
+ * Handle a friend operation from `remotePeerId`, which is bound by the
+ * authenticated transport. Every lifecycle action is correlated to the exact
+ * original request id; presence packets never settle a relationship.
  */
 function handleFriendOp(payload: Record<string, unknown>, remotePeerId: string, _operation?: string): void {
+  const pruned = pruneExpiredFriendRequests();
+  if (pruned.length) schedulePublishNativeSnapshot();
   const me = getState().identity?.peer_id ?? '';
-  if (!remotePeerId || remotePeerId === me) return;
-  const kind = String(payload.kind ?? '');
+  if (!me || !remotePeerId || remotePeerId === me) return;
+  const claimedSender = boundedPayloadString(payload.from_peer_id, 256);
+  // The connection identity is authoritative. A conflicting self-asserted id
+  // is malformed and must not mutate state under a different peer binding.
+  if (claimedSender && claimedSender !== remotePeerId) return;
+  const kind = payload.kind;
 
   if (kind === 'request') {
+    const requestId = friendRequestIdFromPayload(payload);
+    if (!requestId || isFriendRequestTombstoned(remotePeerId, requestId)) return;
     const state = getState();
-    // Idempotent: ignore if we're already friends or already hold a request for them.
-    const friendPeerIds = state.friends.flatMap(f => [f.from_peer_id, f.to_peer_id, f.to_peer_addr]);
-    if (friendPeerIds.includes(remotePeerId)) return;
-    if (state.friend_requests.some(r => r.from_peer_id === remotePeerId || r.to_peer_id === remotePeerId)) return;
-    const id = typeof payload.id === 'string' && payload.id ? payload.id : `fr-${remotePeerId}`;
-    const reqName = typeof payload.display_name === 'string' && payload.display_name.trim() ? payload.display_name.trim() : peerDisplayName(remotePeerId);
-    // Learn the requester's display name now so the Pending tab shows a real name,
-    // not a raw peer id, before they ever come online.
-    if (typeof payload.display_name === 'string' && payload.display_name.trim()) {
-      upsertPeer({ peer_id: remotePeerId, role: 'peer', display_name: payload.display_name.trim(), last_seen_at: new Date().toISOString() });
+    // Idempotent: ignore if we're already friends, have this request, or hold a
+    // still-live request involving the same peer. Once the old record is
+    // declined/cancelled/expired a new id is accepted normally.
+    if (state.friends.some(friend => friendRequestCounterparty(friend, me) === remotePeerId)) return;
+    // Correlation ids are global, not namespaced by sender. This preliminary
+    // check avoids work; `admitIncomingFriendRequest` repeats it atomically.
+    if (state.friend_requests.some(request => request.id === requestId)
+      || state.friends.some(friend => friend.id === requestId)) return;
+    if (state.friend_requests.some(request => request.status === 'pending'
+      && friendRequestCounterparty(request, me) === remotePeerId)) return;
+    const advertisedExpiry = boundedPayloadString(payload.expires_at, 96, true);
+    const now = Date.now();
+    let expiresAt: string | undefined;
+    if (advertisedExpiry !== null && advertisedExpiry !== '') {
+      const expiryMs = Date.parse(advertisedExpiry);
+      // Current peers advertise their seven-day expiry. Reject a stale packet;
+      // old peers without the field receive the same local seven-day TTL. A
+      // wildly future expiry is not accepted as a remotely controlled pin.
+      if (!Number.isFinite(expiryMs) || expiryMs <= now
+        || expiryMs > now + FRIEND_REQUEST_TTL_MS + FRIEND_REQUEST_MAX_FUTURE_SKEW_MS) return;
+      expiresAt = new Date(expiryMs).toISOString();
     }
-    addFriendRequest({
-      id,
+    const admitted = admitIncomingFriendRequest({
+      id: requestId,
       from_peer_id: remotePeerId,
       to_peer_id: me,
       status: 'pending',
-      created_at: new Date().toISOString(),
-    });
-    emitNotify({ kind: 'friend', title: 'Friend request', body: `${reqName} wants to be friends` });
+      created_at: new Date(now).toISOString(),
+      ...(expiresAt ? { expires_at: expiresAt } : {}),
+    }, me);
+    if (admitted !== 'added') return;
+    const displayName = boundedPayloadString(payload.display_name, 128, true)?.trim();
+    const reqName = displayName || peerDisplayName(remotePeerId);
+    // Learn the requester's display name now so the Pending tab shows a real name,
+    // not a raw peer id, before they ever come online.
+    if (displayName) {
+      upsertPeer({ peer_id: remotePeerId, role: 'peer', display_name: displayName, last_seen_at: new Date().toISOString() });
+    }
+    if (shouldNotifyIncomingFriendRequest()) {
+      emitNotify({ kind: 'friend', title: 'Friend request', body: `${reqName} wants to be friends` });
+    }
     schedulePublishNativeSnapshot();
     return;
   }
 
-  if (kind === 'accept') {
+  const requestId = friendRequestIdFromPayload(payload);
+  const action = friendActionFromPayload(payload);
+  if (!requestId || !action) return;
+
+  if (action === 'accept') {
     // Learn the accepter's display name from the accept payload so the requester's
     // friends list / DM header shows a real name immediately (not a raw peer id
     // until the next presence heartbeat).
-    if (typeof payload.display_name === 'string' && payload.display_name.trim()) {
-      upsertPeer({ peer_id: remotePeerId, role: 'peer', display_name: payload.display_name.trim(), last_seen_at: new Date().toISOString() });
+    const displayName = boundedPayloadString(payload.display_name, 128, true)?.trim();
+    if (displayName) {
+      upsertPeer({ peer_id: remotePeerId, role: 'peer', display_name: displayName, last_seen_at: new Date().toISOString() });
     }
-    acceptFriendByPeer(remotePeerId);
+    if (!acceptFriendByRequestId(requestId, me, remotePeerId)) return;
     emitNotify({ kind: 'friend', title: 'Friend request accepted', body: `${peerDisplayName(remotePeerId)} accepted your friend request` });
     schedulePublishNativeSnapshot();
     // Announce online to the just-confirmed friend so each side sees the other
     // online right away (presenceTargets now includes them).
     nativeAnnouncePresence();
+    return;
+  }
+
+  if (action === 'decline') {
+    // Only the recipient can decline a request we sent. A delayed decline for a
+    // previous id cannot erase a newer retry.
+    const removed = terminalizeFriendRequest(requestId, me, remotePeerId, 'outgoing', 'decline');
+    if (!removed) return;
+    emitNotify({ kind: 'friend', title: 'Friend request declined', body: `${peerDisplayName(remotePeerId)} declined your friend request` });
+    schedulePublishNativeSnapshot();
+    return;
+  }
+
+  if (action === 'cancel') {
+    // Only the original sender can cancel the request they sent us.
+    const removed = terminalizeFriendRequest(requestId, me, remotePeerId, 'incoming', 'cancel');
+    if (removed) {
+      schedulePublishNativeSnapshot();
+      return;
+    }
+    // A durable cancel may arrive before its original request. Tombstone that
+    // exact authenticated pair, but never let it suppress an existing record
+    // of the opposite direction in a legacy/corrupt state.
+    const hasSameIdRecord = getState().friend_requests.some(record => record.id === requestId)
+      || getState().friends.some(friend => friend.id === requestId);
+    if (!hasSameIdRecord) rememberFriendRequestTombstone(remotePeerId, requestId, 'cancel');
+    return;
+  }
+
+  // A compliant blocker never transmits this action (it would reveal the block),
+  // but if an older peer does, it has the same authority as a decline over the
+  // request we sent. Do not allow it to remove a request the remote peer sent us.
+  const removed = terminalizeFriendRequest(requestId, me, remotePeerId, 'outgoing', 'block');
+  if (removed) {
+    schedulePublishNativeSnapshot();
   }
 }
 

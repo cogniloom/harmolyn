@@ -366,10 +366,12 @@ const UserPopup = ({ user, children, onDirectLink, onMoreOptions }: { user: User
                           </div>
                         )}
                         <p className="micro-label text-primary/60 tracking-widest mb-3">OP // {user.id.toUpperCase()}</p>
-                        <div className="bg-white/5 rounded-r1 p-3 border border-white/5 mb-3">
-                            <div className="micro-label text-white/40 mb-1.5">BIO // DECRYPTED</div>
-                            <p className="text-[10px] text-white/80 italic leading-relaxed">{user.bio}</p>
-                        </div>
+                        {user.bio && (
+                          <div className="bg-white/5 rounded-r1 p-3 border border-white/5 mb-3">
+                              <div className="micro-label text-white/40 mb-1.5">BIO // DECRYPTED</div>
+                              <p className="text-[10px] text-white/80 italic leading-relaxed">{user.bio}</p>
+                          </div>
+                        )}
                         {(onDirectLink || onMoreOptions) && (
                           <div className="flex gap-1.5">
                             {onDirectLink && <button onClick={onDirectLink} className="flex-1 bg-primary text-bg-0 font-bold py-2 rounded-full micro-label tracking-tight hover:shadow-glow transition-all text-[10px]">Direct Link</button>}
@@ -550,6 +552,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   const hasInbox = useFeature('inbox');
   const hasMentionAutocomplete = useFeature('mentionAutocomplete');
   const hasFileUploads = useFeature('fileUploads');
+  const hasStickers = useFeature('stickers');
 
   // Notification read-state/search go through the mutation facade: on the native
   // path they are handled locally and never reach the support node (which channel
@@ -2117,15 +2120,17 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                     onKeyDown={handleKeyDown}
                 />
                 <div className="flex items-center gap-2.5 px-1.5">
-                    <div className="relative">
-                        <button onClick={() => { setShowStickerPicker(prev => !prev); setShowEmojiPicker(false); }} className={`p-2 transition-all ${showStickerPicker ? 'text-primary' : 'text-white/40 hover:text-primary'}`} aria-label="Stickers"><Sticker size={18} /></button>
-                        {showStickerPicker && (
-                          <StickerPicker
-                            onSelect={handleSendSticker}
-                            onClose={() => setShowStickerPicker(false)}
-                          />
-                        )}
-                    </div>
+                    {hasStickers && (
+                      <div className="relative">
+                          <button onClick={() => { setShowStickerPicker(prev => !prev); setShowEmojiPicker(false); }} className={`p-2 transition-all ${showStickerPicker ? 'text-primary' : 'text-white/40 hover:text-primary'}`} aria-label="Stickers"><Sticker size={18} /></button>
+                          {showStickerPicker && (
+                            <StickerPicker
+                              onSelect={handleSendSticker}
+                              onClose={() => setShowStickerPicker(false)}
+                            />
+                          )}
+                      </div>
+                    )}
                     <div className="relative">
                         <button onClick={() => { setShowEmojiPicker(prev => !prev); setShowStickerPicker(false); }} className={`p-2 transition-all ${showEmojiPicker ? 'text-primary' : 'text-white/40 hover:text-primary'}`} aria-label="Emoji Picker"><Smile size={18} /></button>
                         {showEmojiPicker && (

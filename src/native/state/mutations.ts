@@ -18,13 +18,17 @@ import {
   updateServer, removeServerMembership, removeServerMember,
   setActiveScope as storeSetActiveScope, clearUnread as storeClearUnread,
   ensureDm,
-  addFriendRequest, acceptFriend, removeFriendRequest,
+  addFriendRequest, acceptFriend,
   joinVoice, leaveVoice,
   addRelay, removeRelay,
   updatePresenceEntry,
   addServerRole, updateServerRole, removeServerRole, setMemberRoles, addPollVote,
   memberHasPermission, setPeerVerified, addReport, setReportDelivery, setReportResolved,
   enqueueOutbox, removeOutbox, getOutbox, setFriendRequestDeliveryStatus,
+  terminalizeFriendRequest, isPendingOutgoingFriendRequest,
+  removeFriendRequestOutboxEntries, pruneExpiredFriendRequests,
+  FRIEND_REQUEST_TTL_MS, FRIEND_REQUEST_MAX_FUTURE_SKEW_MS,
+  friendPeerIdFromAddress, friendRequestCounterparty,
   updateMessageVersion,
 } from './store.js';
 import type { XoreinReport } from '../../types.js';
@@ -1105,11 +1109,28 @@ export function nativeDrainOutbox(): Promise<void> {
 }
 
 async function drainOutboxOnce(): Promise<void> {
+  const expiredFriendRequests = pruneExpiredFriendRequests();
   const sync = getPeerSync();
-  if (!sync) return;
+  if (!sync) {
+    if (expiredFriendRequests.length) publishNativeSnapshot();
+    return;
+  }
   const entries = [...getOutbox()];
+  const me = localPeerId();
   for (const entry of entries) {
     try {
+      // The original request can be cancelled while it is queued or while a
+      // previous drain is awaiting a delivery. Never replay a request once its
+      // stable id is no longer an outgoing pending record. Lifecycle-action
+      // packets intentionally carry no friend_request_id and therefore remain
+      // deliverable after the original record is terminalized.
+      if (entry.friend_request_id) {
+        const target = entry.targets.length === 1 ? entry.targets[0] : undefined;
+        if (!me || !isPendingOutgoingFriendRequest(entry.friend_request_id, me, target)) {
+          removeOutbox(entry.id);
+          continue;
+        }
+      }
       let allHandled = true;
       let channelReached = false;
       const channelEnvelope = entry.protocol === PROTOCOLS.chat
@@ -1171,9 +1192,17 @@ async function drainOutboxOnce(): Promise<void> {
         const reportId = reportKind ? (entry.payload as { report_id?: string }).report_id : undefined;
         const createdMs = Date.parse(entry.created_at);
         const ageMs = Number.isFinite(createdMs) ? Date.now() - createdMs : 0;
+        // Friend lifecycle packets are the proof that removes a remote pending
+        // row. Retaining them only for 50 rapid reconnect attempts could strand
+        // the recipient with a stale request for days, so give them the same
+        // seven-day time-based retention as the request/tombstone itself.
+        const friendLifecycleAction = entry.protocol === PROTOCOLS.friends
+          && entry.operation === 'friends.accept';
         const expired = reportKind
           ? ageMs >= REPORT_MAX_AGE_MS
-          : entry.attempts + 1 >= MAX_OUTBOX_ATTEMPTS;
+          : friendLifecycleAction
+            ? ageMs >= FRIEND_REQUEST_TTL_MS
+            : entry.attempts + 1 >= MAX_OUTBOX_ATTEMPTS;
         if (expired) {
           // Give up so the queue can't wedge forever.
           removeOutbox(entry.id);
@@ -1276,37 +1305,86 @@ export function nativeResolveReport(reportId: string, resolved = true): void {
 
 /** Extract the bare peer id from either a raw peer id or a dialable multiaddr. */
 function peerIdFromAddr(peerAddr: string): string {
-  const trimmed = peerAddr.trim();
-  if (trimmed.includes('/p2p/')) return trimmed.split('/p2p/').pop() ?? trimmed;
-  return trimmed;
+  return friendPeerIdFromAddress(peerAddr);
 }
 
-export async function nativeAddFriendRequest(peerAddr: string): Promise<XoreinFriendRecord> {
-  const targetPeerId = peerIdFromAddr(peerAddr);
-  const record: XoreinFriendRecord = {
-    id: uid(),
-    from_peer_id: localPeerId(),
-    to_peer_id: targetPeerId,
-    to_peer_addr: peerAddr,
-    status: 'pending',
-    delivery_status: 'pending',
-    created_at: nowISO(),
-  };
-  addFriendRequest(record);
-  publishNativeSnapshot();
-  // P2P: deliver the request to the target so it lands in their Pending tab.
-  // If they gave a full multiaddr, register it so we dial the right circuit.
-  const sync = getPeerSync();
-  if (peerAddr.includes('/p2p-circuit')) sync?.registerPeer(targetPeerId, peerAddr);
-  const payload = {
+function friendRequestTarget(record: XoreinFriendRecord, me: string): string {
+  return friendRequestCounterparty(record, me);
+}
+
+function makeFriendRequestPayload(record: XoreinFriendRecord, me: string): Record<string, unknown> {
+  const createdAt = Date.parse(record.created_at ?? '');
+  const issuedAt = Number.isFinite(createdAt) ? createdAt : Date.now();
+  const advertisedExpiry = Date.parse(record.expires_at ?? '');
+  const expiresAt = Number.isFinite(advertisedExpiry)
+    && advertisedExpiry > issuedAt
+    && advertisedExpiry <= issuedAt + FRIEND_REQUEST_TTL_MS + FRIEND_REQUEST_MAX_FUTURE_SKEW_MS
+    ? advertisedExpiry
+    : issuedAt + FRIEND_REQUEST_TTL_MS;
+  return {
     kind: 'request',
     id: record.id,
-    from_peer_id: localPeerId(),
+    request_id: record.id,
+    from_peer_id: me,
     display_name: getState().identity?.profile?.display_name,
+    expires_at: new Date(expiresAt).toISOString(),
   };
-  // A first-contact request must not wait behind a silent direct destination.
-  // Race live/routed delivery with replicated peer custody. Either remote
-  // acknowledgement means the request has left this device and is "sent".
+}
+
+type NativeFriendRequestAction = 'accept' | 'decline' | 'cancel' | 'block';
+
+/**
+ * Keep `kind: accept` for older 0.1 peers, while new peers use the explicit
+ * action plus request_id. The protocol name remains `/aether/friends/0.1.0`.
+ */
+function makeFriendActionPayload(
+  request: XoreinFriendRecord,
+  action: NativeFriendRequestAction,
+  me: string,
+): Record<string, unknown> {
+  return {
+    kind: action === 'accept' ? 'accept' : action,
+    action,
+    id: request.id,
+    request_id: request.id,
+    from_peer_id: me,
+    ...(action === 'accept'
+      ? { display_name: getState().identity?.profile?.display_name }
+      : {}),
+  };
+}
+
+function requestStillPending(record: XoreinFriendRecord, me: string, targetPeerId: string): boolean {
+  return isPendingOutgoingFriendRequest(record.id, me, targetPeerId);
+}
+
+function queuedFriendRequestExists(requestId: string): boolean {
+  return getOutbox().some(entry =>
+    entry.protocol === PROTOCOLS.friends
+      && entry.operation === 'friends.request'
+      && entry.friend_request_id === requestId,
+  );
+}
+
+/**
+ * Expiry is a real visible state transition, including when the next user
+ * action discovers it. Publish immediately so an already-rendered stale row
+ * disappears instead of waiting for an unrelated mutation or heartbeat.
+ */
+function pruneExpiredFriendRequestsForUi(): Set<string> {
+  const removed = pruneExpiredFriendRequests();
+  if (removed.length) publishNativeSnapshot();
+  return new Set(removed);
+}
+
+/** Place the original intent under its stable id; retries never create a second request. */
+async function deliverFriendRequest(record: XoreinFriendRecord): Promise<XoreinFriendRecord> {
+  const me = localPeerId();
+  const targetPeerId = friendRequestTarget(record, me);
+  if (!me || !targetPeerId || record.from_peer_id !== me) {
+    throw new Error('Friend request is missing a valid local or target peer id.');
+  }
+  const payload = makeFriendRequestPayload(record, me);
   const delivered = await deliverRecipientOperation(
     targetPeerId,
     PROTOCOLS.friends,
@@ -1314,81 +1392,189 @@ export async function nativeAddFriendRequest(peerAddr: string): Promise<XoreinFr
     payload,
     record.id,
   );
+
+  // A user may cancel while the live/inbox placement races are pending. Never
+  // resurrect the local record or enqueue it after that terminal action.
+  if (!requestStillPending(record, me, targetPeerId)) {
+    return { ...record, status: 'cancelled' };
+  }
+
   if (delivered) {
     setFriendRequestDeliveryStatus(record.id, 'sent');
+    // A successful manual retry supersedes an older queued copy of the same
+    // stable request id, so it cannot be replayed after the user saw "sent".
+    removeFriendRequestOutboxEntries(record.id);
   } else {
-    // A friend request is a durable relationship operation, not a best-effort
-    // notification. The recipient-addressed inbox lets a first-contact target
-    // recover it without already knowing our pairwise mailbox token. If no
-    // storage peer answered, retain it in the encrypted local outbox.
     setFriendRequestDeliveryStatus(record.id, 'queued');
+    if (!queuedFriendRequestExists(record.id)) {
+      enqueueOutbox({
+        id: uid(),
+        targets: [targetPeerId],
+        protocol: PROTOCOLS.friends,
+        operation: 'friends.request',
+        payload,
+        friend_request_id: record.id,
+        created_at: nowISO(),
+        attempts: 0,
+      });
+    }
+  }
+  publishNativeSnapshot();
+  return getState().friend_requests.find(request => request.id === record.id)
+    ?? { ...record, delivery_status: delivered ? 'sent' : 'queued' };
+}
+
+export async function nativeAddFriendRequest(peerAddr: string): Promise<XoreinFriendRecord> {
+  pruneExpiredFriendRequestsForUi();
+  const me = localPeerId();
+  const targetPeerId = peerIdFromAddr(peerAddr);
+  if (!me) throw new Error('Create or unlock an identity before sending friend requests.');
+  if (!targetPeerId || targetPeerId === me) throw new Error('Choose another peer before sending a friend request.');
+
+  if (getState().friends.some(friend =>
+    friend.status === 'accepted' && friendRequestCounterparty(friend, me) === targetPeerId,
+  )) {
+    throw new Error('This peer is already your friend.');
+  }
+
+  // Native callers bypassing the panel still cannot create competing pending
+  // records. Reuse the original intent id so delivery remains idempotent.
+  const existing = getState().friend_requests.find(request =>
+    request.status === 'pending'
+      && request.from_peer_id === me
+      && friendRequestTarget(request, me) === targetPeerId,
+  );
+  if (existing) return nativeRetryFriendRequest(existing.id);
+
+  const issuedAt = Date.now();
+  const record: XoreinFriendRecord = {
+    id: uid(),
+    from_peer_id: me,
+    to_peer_id: targetPeerId,
+    to_peer_addr: peerAddr.trim(),
+    status: 'pending',
+    delivery_status: 'pending',
+    created_at: new Date(issuedAt).toISOString(),
+    expires_at: new Date(issuedAt + FRIEND_REQUEST_TTL_MS).toISOString(),
+  };
+  addFriendRequest(record);
+  publishNativeSnapshot();
+  // If they gave a full multiaddr, register it so we dial the right circuit.
+  const sync = getPeerSync();
+  if (peerAddr.includes('/p2p-circuit')) sync?.registerPeer(targetPeerId, peerAddr);
+  return deliverFriendRequest(record);
+}
+
+/** Retry the same friend intent now, rather than creating a duplicate request. */
+export async function nativeRetryFriendRequest(requestId: string): Promise<XoreinFriendRecord> {
+  const expired = pruneExpiredFriendRequestsForUi();
+  const me = localPeerId();
+  const request = getState().friend_requests.find(record =>
+    record.id === requestId && record.status === 'pending' && record.from_peer_id === me,
+  );
+  if (!request) {
+    throw new Error(expired.has(requestId)
+      ? 'This pending friend request expired and was removed.'
+      : 'This pending friend request is no longer available to retry.');
+  }
+  return deliverFriendRequest(request);
+}
+
+async function deliverFriendAction(
+  request: XoreinFriendRecord,
+  action: Exclude<NativeFriendRequestAction, 'block'>,
+  remotePeerId: string,
+  me: string,
+): Promise<void> {
+  const payload = makeFriendActionPayload(request, action, me);
+  const delivered = await deliverRecipientOperation(
+    remotePeerId,
+    PROTOCOLS.friends,
+    'friends.accept',
+    payload,
+    `friend-action:${action}:${request.id}`,
+  );
+  if (!delivered) {
+    // This is an action *about* a request, not the original request itself.
+    // Deliberately do not attach friend_request_id: cancelling the original must
+    // not erase the cancellation packet that prevents a late replica reappearing.
     enqueueOutbox({
       id: uid(),
-      targets: [targetPeerId],
+      targets: [remotePeerId],
       protocol: PROTOCOLS.friends,
-      operation: 'friends.request',
+      operation: 'friends.accept',
       payload,
-      friend_request_id: record.id,
       created_at: nowISO(),
       attempts: 0,
     });
   }
-  publishNativeSnapshot();
-  return { ...record, delivery_status: delivered ? 'sent' : 'queued' };
 }
 
-export function nativeAcceptFriend(requestId: string): void {
-  const req = getState().friend_requests.find(r => r.id === requestId);
-  acceptFriend(requestId);
-  publishNativeSnapshot();
-  // Tell the original requester we accepted so their outgoing pending flips to an
-  // accepted friend on their side too.
-  if (req) {
-    const me = localPeerId();
-    const requesterPeerId = req.from_peer_id === me ? (req.to_peer_id ?? req.to_peer_addr) : req.from_peer_id;
-    if (requesterPeerId) {
-      const payload = {
-        kind: 'accept',
-        id: req.id,
-        from_peer_id: me,
-        display_name: getState().identity?.profile?.display_name,
-      };
-      // DURABLE delivery: a one-shot fire-and-forget send here was the P0 — if the
-      // first dial to the requester failed (cold circuit, requester briefly offline),
-      // the accept was lost forever while our presence heartbeat kept reaching them,
-      // leaving their outgoing request stuck on PENDING. Queue the accept in the
-      // durable outbox on failure so the drain (reconnect + 25s heartbeat) retries it
-      // until the requester's node acknowledges.
-      void (async () => {
-        const delivered = await deliverRecipientOperation(
-          requesterPeerId,
-          PROTOCOLS.friends,
-          'friends.accept',
-          payload,
-          `accept:${req.id}`,
-        );
-        if (!delivered) {
-          enqueueOutbox({
-            id: uid(),
-            targets: [requesterPeerId],
-            protocol: PROTOCOLS.friends,
-            operation: 'friends.accept',
-            payload,
-            created_at: nowISO(),
-            attempts: 0,
-          });
-        }
-      })();
-    }
+/**
+ * Apply a direction-checked local transition, then deliver the authenticated
+ * lifecycle action durably. Only the action's original request id is accepted
+ * by the peer, preventing old packets from settling a newer retry.
+ */
+export async function nativeActOnFriendRequest(
+  requestId: string,
+  action: NativeFriendRequestAction,
+): Promise<void> {
+  const expired = pruneExpiredFriendRequestsForUi();
+  const me = localPeerId();
+  const request = getState().friend_requests.find(record => record.id === requestId && record.status === 'pending');
+  if (!me) throw new Error('Create or unlock an identity before changing friend requests.');
+  // The requested terminal result has already happened locally. Treat this as a
+  // successful idempotent action so a user never sees a stale row turn into an
+  // error merely because expiry raced their click.
+  if (!request && expired.has(requestId)) return;
+  if (!request) throw new Error('This pending friend request no longer exists.');
+  const outgoing = request.from_peer_id === me;
+  const remotePeerId = friendRequestTarget(request, me);
+  if (!remotePeerId) throw new Error('Friend request is missing a target peer.');
+
+  if (action === 'accept') {
+    if (outgoing) throw new Error('Only the recipient can accept this friend request.');
+    acceptFriend(requestId);
+    publishNativeSnapshot();
+    // Presence is a useful loss-recovery hint, but the exact-id action remains
+    // the authoritative state transition.
+    nativeAnnouncePresence();
+    await deliverFriendAction(request, 'accept', remotePeerId, me);
+    return;
   }
-  // Let the new friend see us online immediately rather than after the heartbeat.
-  nativeAnnouncePresence();
+
+  if (action === 'cancel') {
+    if (!outgoing) throw new Error('Only the sender can cancel this friend request.');
+    const removed = terminalizeFriendRequest(requestId, me, remotePeerId, 'outgoing', 'cancel');
+    if (!removed) throw new Error('This pending friend request no longer exists.');
+    publishNativeSnapshot();
+    await deliverFriendAction(removed, 'cancel', remotePeerId, me);
+    return;
+  }
+
+  if (action === 'decline') {
+    if (outgoing) throw new Error('Only the recipient can decline this friend request.');
+    const removed = terminalizeFriendRequest(requestId, me, remotePeerId, 'incoming', 'decline');
+    if (!removed) throw new Error('This pending friend request no longer exists.');
+    publishNativeSnapshot();
+    await deliverFriendAction(removed, 'decline', remotePeerId, me);
+    return;
+  }
+
+  // A block is deliberately local-only: telling a blocked peer would reveal the
+  // block. Keep a tombstone so delayed copies of this request stay suppressed.
+  if (outgoing) throw new Error('Only the recipient can block this friend request.');
+  const removed = terminalizeFriendRequest(requestId, me, remotePeerId, 'incoming', 'block');
+  if (!removed) throw new Error('This pending friend request no longer exists.');
+  publishNativeSnapshot();
 }
 
-/** Decline/cancel a pending friend request locally (no friendship recorded). */
-export function nativeDeclineFriend(requestId: string): void {
-  removeFriendRequest(requestId);
-  publishNativeSnapshot();
+export function nativeAcceptFriend(requestId: string): Promise<void> {
+  return nativeActOnFriendRequest(requestId, 'accept');
+}
+
+export function nativeDeclineFriend(requestId: string): Promise<void> {
+  return nativeActOnFriendRequest(requestId, 'decline');
 }
 
 // ── Voice ──────────────────────────────────────────────────────────────────
@@ -1437,7 +1623,7 @@ function presenceTargets(): string[] {
     for (const m of server.members ?? []) set.add(m);
   }
   for (const f of st.friends ?? []) {
-    const pid = f.from_peer_id === me ? (f.to_peer_id ?? f.to_peer_addr) : f.from_peer_id;
+    const pid = friendRequestCounterparty(f, me);
     if (pid) set.add(pid);
   }
   set.delete(me);

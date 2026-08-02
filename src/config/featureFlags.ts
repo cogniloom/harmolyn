@@ -74,6 +74,10 @@ export const FEATURES = {
   // AttachmentView verifies the signed manifest and SHA-256 content address.
   fileUploads: true,
   emojiPicker: true,
+  // The current "stickers" are just Unicode emoji sent as ordinary message
+  // bodies; keep the composer affordance hidden until a real, customizable
+  // sticker format exists.
+  stickers: false,
   typingIndicators: true,
   linkEmbeds: true,
   spoilerText: true,

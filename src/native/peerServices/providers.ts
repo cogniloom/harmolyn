@@ -1,5 +1,5 @@
 import { sha256 } from '@noble/hashes/sha2.js';
-import { getState } from '../state/store.js';
+import { friendRequestCounterparty, getState } from '../state/store.js';
 
 const enc = new TextEncoder();
 
@@ -27,8 +27,7 @@ export function peerServiceCandidates(key: string, limit: number): string[] {
     for (const peerId of dm.participants ?? []) ids.add(peerId);
   }
   for (const friend of state.friends) {
-    ids.add(friend.from_peer_id);
-    ids.add(friend.to_peer_id ?? friend.to_peer_addr);
+    ids.add(friendRequestCounterparty(friend, self));
   }
   ids.delete('');
   ids.delete(self);

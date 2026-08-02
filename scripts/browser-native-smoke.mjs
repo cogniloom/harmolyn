@@ -16,7 +16,7 @@ const MODE = process.argv[2] === 'no-peers' || process.argv[2] === 'missing-runt
   ? 'no-peers'
   : 'happy';
 const PASSWORD = 'correct horse battery';
-const RELAY_PEER_ID = '12D3KooWGWC3A4KawRYn9Mcyt9LjDg6TS7vF5uju7v6gTFsrEBS4';
+const RELAY_PEER_ID = '12D3KooWAe9by8oYTkvAoTKndPNTVX9mMeor4xwyvX7zsbSC1kVM';
 
 // Keep this smoke deterministic and independent of public/ambient relays.
 process.env.VITE_RELAY_PEER_ID = RELAY_PEER_ID;

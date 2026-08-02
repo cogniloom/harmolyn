@@ -124,6 +124,31 @@ describe("SettingsScreen About & Legal", () => {
     expect(screen.getByRole("button", { name: /desktop notifications/i })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("button", { name: /notification sounds/i })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("button", { name: /flash taskbar/i })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: /pending friend request badge/i })).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("persists and announces pending friend-request badge changes", async () => {
+    const u = userEvent.setup();
+    const preferenceEvents: boolean[] = [];
+    const onPreferenceChange = (event: Event) => {
+      const detail = (event as CustomEvent<{ enabled?: unknown }>).detail;
+      preferenceEvents.push(detail?.enabled === true);
+    };
+    window.addEventListener("harmolyn:friend-request-badge-preference", onPreferenceChange);
+
+    try {
+      render(<SettingsScreen user={user} onClose={() => {}} />);
+      await u.click(screen.getByRole("button", { name: /notifications/i }));
+      await u.click(screen.getByRole("button", { name: /pending friend request badge/i }));
+
+      expect(screen.getByRole("button", { name: /pending friend request badge/i })).toHaveAttribute("aria-pressed", "false");
+      expect(JSON.parse(window.localStorage.getItem("harmolyn:settings:notifications") ?? "{}")).toMatchObject({
+        friendRequestBadgeEnabled: false,
+      });
+      expect(preferenceEvents).toEqual([false]);
+    } finally {
+      window.removeEventListener("harmolyn:friend-request-badge-preference", onPreferenceChange);
+    }
   });
 
   it("keeps avatar editing local-only so profile data cannot trigger remote fetches", async () => {

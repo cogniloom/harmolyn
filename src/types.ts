@@ -8,6 +8,8 @@ export interface User {
   avatar: string;
   status: UserStatus;
   role?: string;
+  /** Display-only colour of the member's highest visible Space role. */
+  roleColor?: string;
   color?: string;
   bio?: string;
   joinedAt?: string;
@@ -574,6 +576,8 @@ export interface XoreinFriendRecord {
   /** P2P delivery state for an outbound request; relationship status remains `pending` until accepted. */
   delivery_status?: 'pending' | 'sent' | 'queued' | 'failed';
   created_at?: string;
+  /** Sender-advertised, bounded lifetime for a pending request. */
+  expires_at?: string;
 }
 
 export interface XoreinPresenceEntry {

@@ -135,6 +135,8 @@ interface ChannelRailProps {
   onToggleCollapse: () => void;
   onSelectChannel: (id: string) => void;
   onJoinVoice: (id: string) => void;
+  /** Join a live stream without requesting microphone access. */
+  onWatchVoice?: (id: string) => void;
   onOpenSettings: () => void;
   onOpenNodeLaunch?: () => void;
   /** Open the auth flow (used by the footer's "add another account"). */
@@ -157,6 +159,8 @@ interface ChannelRailProps {
   onToggleVoiceScreenShare?: () => void;
   isHome?: boolean;
   onShowFriends?: () => void;
+  /** Incoming pending friend-request count for the mobile/Home navigation. */
+  friendRequestBadge?: number;
 }
 
 export const ChannelRail: React.FC<ChannelRailProps> = ({ 
@@ -171,6 +175,7 @@ export const ChannelRail: React.FC<ChannelRailProps> = ({
   onToggleCollapse,
   onSelectChannel,
   onJoinVoice,
+  onWatchVoice,
   onOpenSettings,
   onOpenAuth,
   onOpenServerSettings,
@@ -188,6 +193,7 @@ export const ChannelRail: React.FC<ChannelRailProps> = ({
   onToggleVoiceScreenShare,
   isHome,
   onShowFriends,
+  friendRequestBadge = 0,
 }) => {
   const connectivityEnabled = connectionState.canUseConnectivityActions;
   const voiceDisabledReason = voiceControlState?.canInteract ? undefined : voiceControlState?.statusDetail;
@@ -443,7 +449,10 @@ export const ChannelRail: React.FC<ChannelRailProps> = ({
       <div className="flex-1 overflow-y-auto px-3 py-5 space-y-6 no-scrollbar">
         {isHome ? (
             <section>
-                <button onClick={onShowFriends} className="micro-label theme-text-dim mb-3 px-2 hover:text-primary transition-colors cursor-pointer w-full text-left" aria-label="Friends">Direct Communications</button>
+                <button onClick={onShowFriends} className="micro-label theme-text-dim mb-3 px-2 hover:text-primary transition-colors cursor-pointer w-full text-left flex items-center justify-between" aria-label={friendRequestBadge > 0 ? `Friends, ${friendRequestBadge} pending request${friendRequestBadge === 1 ? '' : 's'}` : 'Friends'}>
+                  <span>Direct Communications</span>
+                  {friendRequestBadge > 0 && <span className="min-w-4 h-4 px-1 rounded-full bg-accent-danger text-[9px] leading-4 text-white text-center font-bold" aria-label={`${friendRequestBadge} pending friend request${friendRequestBadge === 1 ? '' : 's'}`}>{friendRequestBadge > 99 ? '99+' : friendRequestBadge}</span>}
+                </button>
                 <div className="space-y-1.5">
                     {normalizedDirectMessages.map(dm => {
                         const user = normalizedUsers.find(u => u.id === dm.userId) ?? getUnknownRailUser();
@@ -528,6 +537,16 @@ export const ChannelRail: React.FC<ChannelRailProps> = ({
                                                     {u.muted && <MicOff size={11} className="text-accent-danger/80 shrink-0" />}
                                                 </div>
                                             ))}
+                                            {ch.activeUsers.some((user) => user.video || user.screenSharing) && !isConnected && (
+                                                <button
+                                                    type="button"
+                                                    onClick={() => (onWatchVoice ?? onJoinVoice)(ch.id)}
+                                                    className="ml-1.5 mt-1 flex items-center gap-1.5 text-[10px] font-semibold text-primary hover:text-white transition-colors focus-ring rounded"
+                                                    aria-label={`Watch stream in ${ch.name}`}
+                                                >
+                                                    <Video size={11} /> Watch stream
+                                                </button>
+                                            )}
                                         </div>
                                     )}
                                 </div>
@@ -618,6 +637,7 @@ export const ChannelRail: React.FC<ChannelRailProps> = ({
               deafened: false,
               videoOn: false,
               screenSharing: false,
+              receiveOnly: false,
               activeActivityId: null,
               canInteract: false,
               pendingAction: null,
@@ -659,7 +679,6 @@ export const ChannelRail: React.FC<ChannelRailProps> = ({
       {/* User Footer */}
       <UserFooter
         currentUser={normalizedCurrentUser}
-        connectionState={connectionState}
         onOpenSettings={onOpenSettings}
         onOpenAuth={onOpenAuth}
         voiceControlState={voiceControlState}
@@ -682,13 +701,12 @@ export const ChannelRail: React.FC<ChannelRailProps> = ({
 
 const UserFooter: React.FC<{
   currentUser: User;
-  connectionState: ConnectionState;
   onOpenSettings: () => void;
   onOpenAuth?: () => void;
   voiceControlState?: VoiceControlState;
   onToggleVoiceMute?: () => void;
   onToggleVoiceDeafen?: () => void;
-}> = ({ currentUser, connectionState, onOpenSettings, onOpenAuth, voiceControlState, onToggleVoiceMute, onToggleVoiceDeafen }) => {
+}> = ({ currentUser, onOpenSettings, onOpenAuth, voiceControlState, onToggleVoiceMute, onToggleVoiceDeafen }) => {
   const updatePresenceMutation = useUpdatePresence();
   const [showStatusPicker, setShowStatusPicker] = useState(false);
   const [userStatus, setUserStatus] = useState<UserStatus>(currentUser.status);
@@ -703,8 +721,8 @@ const UserFooter: React.FC<{
   const activePeerId = snapshot?.identity?.peer_id?.trim() ?? '';
   const activeDisplayName = snapshot?.identity?.profile?.display_name?.trim() ?? '';
   const hasIdentity = Boolean(activePeerId && activeDisplayName);
-  const connectivityEnabled = connectionState.canUseConnectivityActions;
-  const voiceControlsAvailable = Boolean(onToggleVoiceMute && onToggleVoiceDeafen);
+  const voiceControlsAvailable = Boolean(onToggleVoiceDeafen)
+    && (voiceControlState?.receiveOnly || Boolean(onToggleVoiceMute));
   const voiceActionTitle = !voiceControlState?.channelId
     ? 'Join a voice channel to use voice controls.'
     : voiceControlState.pendingAction
@@ -716,7 +734,7 @@ const UserFooter: React.FC<{
           : voiceControlState.statusDetail;
   const canUseVoiceFooterControls = Boolean(voiceControlState?.channelId)
     && !voiceControlState?.pendingAction
-    && connectivityEnabled
+    && voiceControlState?.canInteract
     && voiceControlsAvailable;
 
   // Global voice hotkeys: Ctrl+M toggles mute, Ctrl+D toggles deafen. Only active
@@ -727,7 +745,7 @@ const UserFooter: React.FC<{
     const onKeyDown = (event: KeyboardEvent) => {
       if (!event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return;
       const key = event.key.toLowerCase();
-      if (key === 'm') {
+      if (key === 'm' && !voiceControlState?.receiveOnly) {
         event.preventDefault();
         onToggleVoiceMute?.();
       } else if (key === 'd') {
@@ -737,7 +755,7 @@ const UserFooter: React.FC<{
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [canUseVoiceFooterControls, onToggleVoiceMute, onToggleVoiceDeafen]);
+  }, [canUseVoiceFooterControls, voiceControlState?.receiveOnly, onToggleVoiceMute, onToggleVoiceDeafen]);
 
   const statusColors: Record<UserStatus, string> = {
     online: 'bg-accent-success shadow-[0_0_5px_#05FFA1]',
@@ -852,14 +870,16 @@ const UserFooter: React.FC<{
         {hasAccountSwitching && (
           <button onClick={openAccountSwitcher} aria-label="Switch Account" className="p-1 text-white/40 hover:text-primary transition-colors"><ArrowUpDown size={14} /></button>
         )}
-        <button
-          disabled={!canUseVoiceFooterControls}
-          onClick={onToggleVoiceMute}
-          title={voiceActionTitle ?? `${voiceControlState?.muted ? 'Unmute Microphone' : 'Mute Microphone'} (Ctrl+M)`}
-          aria-keyshortcuts="Control+M"
-          aria-label={voiceControlState?.muted ? 'Unmute Microphone' : 'Mute Microphone'}
-          className={`p-1 transition-colors btn-press disabled:opacity-40 disabled:cursor-not-allowed ${voiceControlState?.muted ? 'text-accent-danger hover:text-accent-danger' : 'text-white/40 hover:text-primary'}`}
-        >{voiceControlState?.muted ? <MicOff size={14} /> : <Mic size={14} />}</button>
+        {!voiceControlState?.receiveOnly && (
+          <button
+            disabled={!canUseVoiceFooterControls}
+            onClick={onToggleVoiceMute}
+            title={voiceActionTitle ?? `${voiceControlState?.muted ? 'Unmute Microphone' : 'Mute Microphone'} (Ctrl+M)`}
+            aria-keyshortcuts="Control+M"
+            aria-label={voiceControlState?.muted ? 'Unmute Microphone' : 'Mute Microphone'}
+            className={`p-1 transition-colors btn-press disabled:opacity-40 disabled:cursor-not-allowed ${voiceControlState?.muted ? 'text-accent-danger hover:text-accent-danger' : 'text-white/40 hover:text-primary'}`}
+          >{voiceControlState?.muted ? <MicOff size={14} /> : <Mic size={14} />}</button>
+        )}
         <button
           disabled={!canUseVoiceFooterControls}
           onClick={onToggleVoiceDeafen}

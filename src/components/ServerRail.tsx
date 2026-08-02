@@ -108,6 +108,7 @@ function normalizeServerRail(value: unknown): Server | null {
 
 export const ServerRail: React.FC<ServerRailProps> = ({ servers, activeServerId, connectionState, onSelectServer, onCreateServer, showExplore = true, homeBadge = 0 }) => {
   const connectivityEnabled = connectionState.canUseConnectivityActions;
+  const homeBadgeLabel = homeBadge > 99 ? '99+' : String(homeBadge);
   const normalizedServers = React.useMemo(() => {
     const normalized: Server[] = [];
     const seen = new Set<string>();
@@ -143,7 +144,7 @@ export const ServerRail: React.FC<ServerRailProps> = ({ servers, activeServerId,
              open the Friends panel, so a request is never silently missed. */}
          {homeBadge > 0 && (
            <div className="absolute -bottom-0.5 -right-0.5 min-w-[15px] h-[15px] bg-accent-danger rounded-full flex items-center justify-center text-[8px] font-bold text-white border-2 border-bg-0 px-1 shadow-[0_0_6px_rgba(255,42,109,0.5)]" aria-label={`${homeBadge} pending friend requests`}>
-             {homeBadge}
+             {homeBadgeLabel}
            </div>
          )}
       </div>

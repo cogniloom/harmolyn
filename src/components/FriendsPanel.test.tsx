@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { FriendsPanel } from "@/components/FriendsPanel";
 import { useRuntimeSnapshot } from "@/lib/xoreinRuntimeContext";
-import { listFriends, refreshRuntimeSnapshot, sendFriendRequest } from "@/lib/xoreinControl";
+import { actOnFriendRequest, listFriends, refreshRuntimeSnapshot, sendFriendRequest } from "@/lib/xoreinControl";
 import { createHappyRuntime } from "@/test/fixtures";
 
 vi.mock("@/data", async () => {
@@ -62,6 +62,7 @@ describe("FriendsPanel", () => {
       status: "pending",
     });
     vi.mocked(refreshRuntimeSnapshot).mockResolvedValue(createHappyRuntime());
+    vi.mocked(actOnFriendRequest).mockResolvedValue(undefined);
     window.localStorage.clear();
   });
 
@@ -96,6 +97,58 @@ describe("FriendsPanel", () => {
       expect(sendFriendRequest).toHaveBeenCalledWith(runtime, "/ip4/127.0.0.1/tcp/4101/p2p/peer-remote");
     });
     expect(await screen.findByText("Friend request sent.")).toBeTruthy();
+  });
+
+  it("shows retry and cancel controls for an outgoing failed request", async () => {
+    const runtime = {
+      ...createHappyRuntime(),
+      friends: [],
+      friend_requests: [{
+        id: "request-outgoing",
+        from_peer_id: "peer-local",
+        to_peer_id: "12D3KooWCaseSensitivePeer",
+        status: "pending" as const,
+        delivery_status: "failed" as const,
+        created_at: new Date().toISOString(),
+      }],
+    };
+    vi.mocked(useRuntimeSnapshot).mockReturnValue(runtime);
+
+    const user = userEvent.setup();
+    render(<FriendsPanel onOpenDM={() => ({ ok: true })} hasIdentity />);
+    await user.click(screen.getByRole("button", { name: /^pending/i }));
+
+    expect(screen.getByRole("button", { name: "Retry now" })).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Cancel request" }));
+    await waitFor(() => {
+      expect(actOnFriendRequest).toHaveBeenCalledWith(runtime, "request-outgoing", "cancel");
+    });
+  });
+
+  it("allows a seven-day stale outgoing request to be sent again", async () => {
+    const runtime = {
+      ...createHappyRuntime(),
+      friends: [],
+      friend_requests: [{
+        id: "request-stale",
+        from_peer_id: "peer-local",
+        to_peer_id: "12D3KooWCaseSensitivePeer",
+        status: "pending" as const,
+        delivery_status: "sent" as const,
+        created_at: "2020-01-01T00:00:00Z",
+      }],
+    };
+    vi.mocked(useRuntimeSnapshot).mockReturnValue(runtime);
+
+    const user = userEvent.setup();
+    render(<FriendsPanel onOpenDM={() => ({ ok: true })} hasIdentity />);
+    await user.click(screen.getByRole("button", { name: /add friend/i }));
+    await user.type(screen.getByPlaceholderText(/peer id/i), "12D3KooWCaseSensitivePeer");
+    await user.click(screen.getByRole("button", { name: /send request/i }));
+
+    await waitFor(() => {
+      expect(sendFriendRequest).toHaveBeenCalledWith(runtime, "12D3KooWCaseSensitivePeer");
+    });
   });
 
 
