@@ -14,6 +14,7 @@ describe("resolveFeatureFlag", () => {
   it("returns the compiled default when no override is present", () => {
     expect(resolveFeatureFlag("directMessages")).toBe(FEATURES.directMessages);
     expect(resolveFeatureFlag("forumChannels")).toBe(FEATURES.forumChannels);
+    expect(resolveFeatureFlag("stickers")).toBe(false);
   });
 
   it("lets a localStorage override flip a flag in either direction", () => {

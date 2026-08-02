@@ -9,6 +9,7 @@ import { registerPeerSync } from '../sync/registry.js';
 import type { PeerSync } from '../sync/peersync.js';
 import { VoiceSession } from './session.js';
 import type { VoicePresenceResponse } from './signaling.js';
+import { VOICE_PRESENCE_HEARTBEAT_MS } from './presence.js';
 
 const ME = 'me-peer';
 const ALICE = 'alice-peer';
@@ -123,6 +124,26 @@ describe('voice presence handshake roster symmetry', () => {
       );
     } finally {
       await session.stop();
+    }
+  });
+
+  it('re-announces join state as a bounded heartbeat for passive observers', async () => {
+    vi.useFakeTimers();
+    const peerSync = fakePeerSync({ ok: true, in_channel: false });
+    registerPeerSync(peerSync);
+    const session = new VoiceSession(CHAN, {} as never, ME, {});
+    try {
+      await session.start();
+      await vi.advanceTimersByTimeAsync(VOICE_PRESENCE_HEARTBEAT_MS);
+      expect(peerSync.broadcastToScope).toHaveBeenCalledWith(
+        [ALICE],
+        expect.any(String),
+        'voice.presence',
+        expect.objectContaining({ session_id: CHAN, action: 'join' }),
+      );
+    } finally {
+      await session.stop();
+      vi.useRealTimers();
     }
   });
 

@@ -11,10 +11,17 @@ export interface NotificationPreferences {
   flashTaskbar: boolean;
   suppressEveryone: boolean;
   suppressRoles: boolean;
+  /** Whether an incoming pending friend request may add a count badge to Home. */
+  friendRequestBadgeEnabled: boolean;
 }
 
 export const NOTIFICATION_SETTINGS_STORAGE_KEY = 'harmolyn:settings:notifications';
+export const FRIEND_REQUEST_BADGE_PREFERENCE_EVENT = 'harmolyn:friend-request-badge-preference';
 const STORAGE_KEY = NOTIFICATION_SETTINGS_STORAGE_KEY;
+
+export interface FriendRequestBadgePreferenceDetail {
+  enabled: boolean;
+}
 
 const DEFAULT_PREFERENCES: NotificationPreferences = {
   globalLevel: 'mentions',
@@ -23,7 +30,18 @@ const DEFAULT_PREFERENCES: NotificationPreferences = {
   flashTaskbar: true,
   suppressEveryone: false,
   suppressRoles: false,
+  friendRequestBadgeEnabled: true,
 };
+
+function emitFriendRequestBadgePreference(enabled: boolean): void {
+  if (typeof window === 'undefined' || typeof window.dispatchEvent !== 'function') {
+    return;
+  }
+  window.dispatchEvent(new CustomEvent<FriendRequestBadgePreferenceDetail>(
+    FRIEND_REQUEST_BADGE_PREFERENCE_EVENT,
+    { detail: { enabled } },
+  ));
+}
 
 export const NotificationSettings: React.FC = () => {
   const [storedPreferences, setPreferences] = usePersistentState<NotificationPreferences>(STORAGE_KEY, DEFAULT_PREFERENCES);
@@ -120,6 +138,19 @@ export const NotificationSettings: React.FC = () => {
           </div>
         </section>
 
+        <section>
+          <h3 className="micro-label text-white/40 border-b border-white/5 pb-2 mb-4">FRIEND REQUESTS</h3>
+          <ToggleRow
+            label="Pending Friend Request Badge"
+            desc="Show Home badge and request alerts while someone is waiting for your response"
+            checked={preferences.friendRequestBadgeEnabled}
+            onChange={(value) => {
+              setPreferences((prev) => ({ ...prev, friendRequestBadgeEnabled: value }));
+              emitFriendRequestBadgePreference(value);
+            }}
+          />
+        </section>
+
         <div className="flex items-center gap-2 text-[10px] text-white/30">
           <Volume2 size={12} />
           <span>Preferences are stored locally in this browser.</span>
@@ -144,6 +175,11 @@ export function readNotificationPreferences(): NotificationPreferences {
   }
 }
 
+/** Read the Home pending-friend-request badge preference without subscribing to React state. */
+export function readFriendRequestBadgeEnabled(): boolean {
+  return readNotificationPreferences().friendRequestBadgeEnabled;
+}
+
 function normalizeNotificationPreferences(value: unknown): NotificationPreferences {
   if (!isPlainObject(value)) {
     return DEFAULT_PREFERENCES;
@@ -158,6 +194,9 @@ function normalizeNotificationPreferences(value: unknown): NotificationPreferenc
     flashTaskbar: typeof value.flashTaskbar === 'boolean' ? value.flashTaskbar : DEFAULT_PREFERENCES.flashTaskbar,
     suppressEveryone: typeof value.suppressEveryone === 'boolean' ? value.suppressEveryone : DEFAULT_PREFERENCES.suppressEveryone,
     suppressRoles: typeof value.suppressRoles === 'boolean' ? value.suppressRoles : DEFAULT_PREFERENCES.suppressRoles,
+    friendRequestBadgeEnabled: typeof value.friendRequestBadgeEnabled === 'boolean'
+      ? value.friendRequestBadgeEnabled
+      : DEFAULT_PREFERENCES.friendRequestBadgeEnabled,
   };
 }
 

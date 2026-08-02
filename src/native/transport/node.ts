@@ -17,6 +17,10 @@ import { multiaddr } from '@multiformats/multiaddr';
 import { peerIdFromString } from '@libp2p/peer-id';
 import { generateKeyPairFromSeed } from '@libp2p/crypto/keys';
 import { resolveFeatureFlag } from '../../config/featureFlags.js';
+import {
+  DEFAULT_RELAY_MULTIADDR,
+  DEFAULT_RELAY_PEER_ID,
+} from '../../config/runtimeDefaults.js';
 import { isPrivateNetworkHostname } from '../../lib/trustedOrigin.js';
 import { supportNodeOrigin } from '../nodeOrigin.js';
 import { hasControlCharacters } from '../security/limits.js';
@@ -62,12 +66,12 @@ export type { Libp2p } from 'libp2p';
 // staging/testnet builds can target a different relay without a code change. Update
 // the default if the production node identity is rotated.
 export const RELAY_PEER_ID: string =
-  import.meta.env.VITE_RELAY_PEER_ID ?? '12D3KooWGWC3A4KawRYn9Mcyt9LjDg6TS7vF5uju7v6gTFsrEBS4';
+  DEFAULT_RELAY_PEER_ID;
 
 // Full multiaddr browsers use to reach the relay. Override via VITE_RELAY_MULTIADDR.
 // Default: Traefik TLS → WS → relay node (port 9999).
 export const RELAY_MULTIADDR: string =
-  import.meta.env.VITE_RELAY_MULTIADDR ?? `/dns4/node.xorein.com/tcp/9999/wss/p2p/${RELAY_PEER_ID}`;
+  DEFAULT_RELAY_MULTIADDR;
 
 // How long to wait for the relay dial + Noise + yamux handshake (ms).
 const RELAY_DIAL_TIMEOUT_MS = 30_000;

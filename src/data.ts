@@ -23,6 +23,7 @@ import type {
   XoreinRuntimeVoiceParticipant,
   XoreinRuntimeVoiceSession,
   XoreinSessionSnapshot,
+  ServerRole,
 } from '@/types';
 
 const CURRENT_USER_ID = 'me';
@@ -277,6 +278,7 @@ function createShellRuntimeData(): ShellRuntimeData {
     peerId: string,
     options: {
       role?: string;
+      roleColor?: string;
       fallbackName?: string;
       muted?: boolean;
       speaking?: boolean;
@@ -290,6 +292,7 @@ function createShellRuntimeData(): ShellRuntimeData {
       const merged: User = {
         ...existing,
         ...(options.role ? { role: options.role } : {}),
+        ...(options.roleColor ? { roleColor: options.roleColor } : {}),
         ...(typeof options.muted === 'boolean' ? { muted: options.muted } : {}),
         ...(typeof options.speaking === 'boolean' ? { speaking: options.speaking } : {}),
         ...(typeof options.video === 'boolean' ? { video: options.video } : {}),
@@ -316,6 +319,7 @@ function createShellRuntimeData(): ShellRuntimeData {
       avatar,
       status: statusFromPresence(presenceByPeer.get(peerId), Boolean(options.muted)) ?? statusFromPeer(peer, Boolean(options.muted)),
       role: options.role,
+      roleColor: options.roleColor,
       color: colorForSeed(peerId || username),
       bio: userId === CURRENT_USER_ID ? currentUser.bio : peer?.source ? `SOURCE // ${peer.source.toUpperCase()}` : undefined,
       joinedAt: formatDate(peer?.last_seen_at),
@@ -394,15 +398,29 @@ function mapServer(
   server: XoreinRuntimeServer,
   currentPeerId: string,
   voiceSessions: Map<string, XoreinRuntimeVoiceSession>,
-  ensureUser: (peerId: string, options?: { role?: string; fallbackName?: string; muted?: boolean }) => User,
+  ensureUser: (peerId: string, options?: { role?: string; roleColor?: string; fallbackName?: string; muted?: boolean }) => User,
   unreadByScope: Record<string, number> = {},
 ): Server {
   const channels = Object.values(server.channels ?? {}).sort((left, right) => toTimestamp(left.created_at) - toTimestamp(right.created_at));
   const textChannels = channels.filter((channel) => !channel.voice).map((channel) => mapChannel(channel, voiceSessions, currentPeerId, ensureUser, unreadByScope));
   const voiceChannels = channels.filter((channel) => channel.voice).map((channel) => mapChannel(channel, voiceSessions, currentPeerId, ensureUser, unreadByScope));
-  const members = uniqueUsers(server.members.map((peerId) => ensureUser(peerId, {
-    role: peerId === server.owner_peer_id ? 'Admin' : 'Member',
-  })));
+  const rolesById = new Map((server.roles ?? []).map((role) => [role.id, role]));
+  const members = uniqueUsers(server.members.map((peerId) => {
+    // `User` is shared by chat/DM/voice normalization, while a role is scoped
+    // to one Space. Clone the baseline user here so a role from another Space
+    // cannot bleed into this member overview.
+    const user = ensureUser(peerId);
+    const { role: _previousRole, roleColor: _previousRoleColor, ...withoutServerRole } = user;
+    if (peerId === server.owner_peer_id) {
+      return { ...withoutServerRole, role: 'Admin', roleColor: '#F5B942' };
+    }
+    const role = (server.member_roles?.[peerId] ?? [])
+      .map((roleId) => rolesById.get(roleId))
+      .find((candidate): candidate is ServerRole => Boolean(candidate));
+    return role
+      ? { ...withoutServerRole, role: role.name, ...(role.color ? { roleColor: role.color } : {}) }
+      : withoutServerRole;
+  }));
 
   return {
     id: server.id,
@@ -536,7 +554,7 @@ function createCurrentUser(runtimeSnapshot: XoreinRuntimeSnapshot | null, curren
     avatar: profileAvatar && isSafeAvatarSource(profileAvatar) ? profileAvatar : buildAvatarDataUri(displayName, color),
     status: presenceToUserStatus(presence?.status) ?? (identity?.peer_id ? 'online' : 'offline'),
     color,
-    bio: identity?.profile?.bio?.trim() || (identity?.peer_id ? 'CONNECTED TO LOCAL XOREIN RUNTIME' : 'WAITING FOR LOCAL XOREIN RUNTIME'),
+    ...(identity?.profile?.bio?.trim() ? { bio: identity.profile.bio.trim() } : {}),
     joinedAt: formatDate(identity?.created_at),
   };
 }
@@ -1046,6 +1064,14 @@ function normalizeRuntimeVoiceSession(value: unknown): XoreinRuntimeVoiceSession
   return {
     channel_id: channelId,
     participants,
+    ...(value.security_mode === 'seal' || value.security_mode === 'crowd' || value.security_mode === 'tree' || value.security_mode === 'clear'
+      ? { security_mode: value.security_mode }
+      : {}),
+    ...(value.connection_state === 'connecting' || value.connection_state === 'connected' || value.connection_state === 'failed' || value.connection_state === 'closed'
+      ? { connection_state: value.connection_state }
+      : {}),
+    ...(typeof value.self_muted === 'boolean' ? { self_muted: value.self_muted } : {}),
+    ...(typeof value.turn_unavailable === 'boolean' ? { turn_unavailable: value.turn_unavailable } : {}),
   };
 }
 
@@ -1088,6 +1114,12 @@ function normalizeRuntimeVoiceParticipant(value: unknown, fallbackPeerId: string
     ...(isPlainObject(value) && typeof value.muted === 'boolean' ? { muted: value.muted } : {}),
     ...(isPlainObject(value) && typeof value.joined_at === 'string' && value.joined_at.trim() ? { joined_at: value.joined_at.trim() } : {}),
     ...(isPlainObject(value) && typeof value.last_frame_at === 'string' && value.last_frame_at.trim() ? { last_frame_at: value.last_frame_at.trim() } : {}),
+    ...(isPlainObject(value) && typeof value.video === 'boolean' ? { video: value.video } : {}),
+    ...(isPlainObject(value) && typeof value.screen_sharing === 'boolean' ? { screen_sharing: value.screen_sharing } : {}),
+    ...(isPlainObject(value) && typeof value.speaking === 'boolean' ? { speaking: value.speaking } : {}),
+    ...(isPlainObject(value) && typeof value.connection_state === 'string' && value.connection_state.trim()
+      ? { connection_state: value.connection_state.trim() }
+      : {}),
   };
 }
 
@@ -1142,6 +1174,8 @@ function normalizeRuntimeServer(server: unknown): XoreinRuntimeServer | undefine
   if (members.length === 0) {
     return undefined;
   }
+  const roles = normalizeRuntimeRoles(server.roles);
+  const memberRoles = normalizeRuntimeMemberRoles(server.member_roles, members, roles ?? []);
   const normalizedServer: XoreinRuntimeServer = {
     id,
     name,
@@ -1157,11 +1191,68 @@ function normalizeRuntimeServer(server: unknown): XoreinRuntimeServer | undefine
     ...(typeof server.created_at === 'string' && server.created_at.trim() ? { created_at: server.created_at.trim() } : {}),
     ...(typeof server.updated_at === 'string' && server.updated_at.trim() ? { updated_at: server.updated_at.trim() } : {}),
     ...(manifest ? { manifest } : {}),
+    ...(roles ? { roles } : {}),
+    ...(memberRoles ? { member_roles: memberRoles } : {}),
     ...(server.channel_security_mode === 'tree' || server.channel_security_mode === 'crowd'
       ? { channel_security_mode: server.channel_security_mode }
       : {}),
   };
   return normalizedServer;
+}
+
+const SAFE_ROLE_COLOR = /^#(?:[\da-f]{3}|[\da-f]{6}|[\da-f]{8})$/i;
+
+function normalizeRuntimeRoles(value: unknown): ServerRole[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  const seenIds = new Set<string>();
+  const roles: ServerRole[] = [];
+  for (const entry of value) {
+    if (!isPlainObject(entry)) continue;
+    const id = typeof entry.id === 'string' ? entry.id.trim() : '';
+    const name = typeof entry.name === 'string' ? entry.name.trim() : '';
+    if (!id || !name || seenIds.has(id)) continue;
+    seenIds.add(id);
+    const color = typeof entry.color === 'string' && SAFE_ROLE_COLOR.test(entry.color.trim())
+      ? entry.color.trim()
+      : undefined;
+    const permissions = Array.isArray(entry.permissions)
+      ? uniqueStrings(entry.permissions.map((permission) => typeof permission === 'string' ? permission : ''))
+      : [];
+    roles.push({
+      id,
+      name,
+      permissions,
+      ...(color ? { color } : {}),
+      ...(entry.protected === true ? { protected: true } : {}),
+    });
+  }
+  return roles;
+}
+
+function normalizeRuntimeMemberRoles(
+  value: unknown,
+  members: readonly string[],
+  roles: readonly ServerRole[],
+): Record<string, string[]> | undefined {
+  if (!isPlainObject(value)) {
+    return undefined;
+  }
+  const memberIds = new Set(members);
+  const roleIds = new Set(roles.map((role) => role.id));
+  const assignments: Record<string, string[]> = {};
+  for (const [peerId, assignedRoles] of Object.entries(value)) {
+    if (!memberIds.has(peerId) || !Array.isArray(assignedRoles)) continue;
+    const normalized = uniqueStrings(assignedRoles.map((roleId) => {
+      const id = typeof roleId === 'string' ? roleId.trim() : '';
+      return roleIds.has(id) ? id : '';
+    }));
+    if (normalized.length > 0) {
+      assignments[peerId] = normalized;
+    }
+  }
+  return assignments;
 }
 
 function normalizeRuntimeChannel(value: unknown, serverId: string): XoreinRuntimeChannel | undefined {
@@ -1353,6 +1444,7 @@ function normalizeRuntimeFriendRecord(value: unknown): XoreinFriendRecord | unde
   const toPeerId = typeof value.to_peer_id === 'string' && value.to_peer_id.trim() ? value.to_peer_id.trim() : undefined;
   const toPeerAddr = typeof value.to_peer_addr === 'string' && value.to_peer_addr.trim() ? value.to_peer_addr.trim() : undefined;
   const createdAt = typeof value.created_at === 'string' && value.created_at.trim() ? value.created_at.trim() : undefined;
+  const expiresAt = typeof value.expires_at === 'string' && value.expires_at.trim() ? value.expires_at.trim() : undefined;
   return {
     id,
     from_peer_id: fromPeerId,
@@ -1363,6 +1455,7 @@ function normalizeRuntimeFriendRecord(value: unknown): XoreinFriendRecord | unde
       ? { delivery_status: value.delivery_status }
       : {}),
     ...(createdAt ? { created_at: createdAt } : {}),
+    ...(expiresAt ? { expires_at: expiresAt } : {}),
   };
 }
 

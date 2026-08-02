@@ -31,6 +31,34 @@ import { verifySignedHistoryMessage } from '../sync/signedHistory.js';
 
 const STORAGE_KEY = 'harmolyn:native:state';
 
+/**
+ * Pending friend requests are intentionally short lived. This is both the
+ * user-visible expiry contract and the maximum lifetime of recipient-inbox
+ * packets, so retaining a pending record beyond it would only create a stale
+ * duplicate blocker.
+ */
+export const FRIEND_REQUEST_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+/** Allow a small sender-clock skew, but never an effectively unbounded pending request. */
+export const FRIEND_REQUEST_MAX_FUTURE_SKEW_MS = 5 * 60 * 1000;
+/** Bound unhandled inbound requests so one identity cannot exhaust local state/storage. */
+export const MAX_PENDING_INCOMING_FRIEND_REQUESTS = 500;
+const FRIEND_REQUEST_TOMBSTONE_TTL_MS = FRIEND_REQUEST_TTL_MS;
+const MAX_FRIEND_REQUEST_TOMBSTONES = 10_000;
+
+export type FriendRequestTerminalAction = 'cancel' | 'decline' | 'block' | 'expired';
+
+/**
+ * A short-lived logical tombstone for a terminal friend-request action. Durable
+ * inbox replicas can deliver an older request after it was cancelled/declined,
+ * so removing only the visible row is not sufficient to keep it gone.
+ */
+export interface FriendRequestTombstone {
+  request_id: string;
+  peer_id: string;
+  action: FriendRequestTerminalAction;
+  expires_at: string;
+}
+
 // Cap the number of persisted messages so the at-rest blob can't grow without
 // bound and silently blow the storage quota (after which persist() would fail and
 // the app would quietly stop saving). In-memory state is unaffected; only what we
@@ -165,6 +193,8 @@ export interface NativeState {
   dms: Record<string, XoreinRuntimeDM>;
   friends: XoreinFriendRecord[];
   friend_requests: XoreinFriendRecord[];
+  /** Terminal request ids retained long enough to suppress delayed inbox copies. */
+  friend_request_tombstones: FriendRequestTombstone[];
   voice_sessions: XoreinRuntimeVoiceSession[];
   /** Live transport state; reset on reload because reachability is never durable. */
   transport_state: 'connecting' | 'connected' | 'disconnected';
@@ -198,6 +228,7 @@ const EMPTY: NativeState = {
   dms: {},
   friends: [],
   friend_requests: [],
+  friend_request_tombstones: [],
   voice_sessions: [],
   transport_state: 'disconnected',
   relay_addrs: [],
@@ -286,6 +317,34 @@ function restorePeerTrust(persisted: Record<string, XoreinRuntimePeer> | undefin
   return out;
 }
 
+function normalizeFriendRequestTombstones(value: unknown): FriendRequestTombstone[] {
+  if (!Array.isArray(value)) return [];
+  const now = Date.now();
+  const seen = new Set<string>();
+  const out: FriendRequestTombstone[] = [];
+  for (const entry of value) {
+    if (!isPlainObject(entry)
+      || !boundedStateText(entry.request_id, 256)
+      || !boundedStateText(entry.peer_id, 256)
+      || (entry.action !== 'cancel' && entry.action !== 'decline'
+        && entry.action !== 'block' && entry.action !== 'expired')
+      || !boundedStateText(entry.expires_at, 96)) continue;
+    const expiresAt = Date.parse(entry.expires_at);
+    if (!Number.isFinite(expiresAt) || expiresAt <= now) continue;
+    const key = `${entry.peer_id}\n${entry.request_id}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({
+      request_id: entry.request_id,
+      peer_id: entry.peer_id,
+      action: entry.action,
+      expires_at: entry.expires_at,
+    });
+    if (out.length >= MAX_FRIEND_REQUEST_TOMBSTONES) break;
+  }
+  return out;
+}
+
 function load(): NativeState {
   try {
     const parsed = readPersistedState();
@@ -307,6 +366,7 @@ function load(): NativeState {
         messages: parsed.messages ?? [],
         friends: parsed.friends ?? [],
         friend_requests: parsed.friend_requests ?? [],
+        friend_request_tombstones: normalizeFriendRequestTombstones(parsed.friend_request_tombstones),
         // Voice sessions are live runtime state tied to an in-memory VoiceSession +
         // WebRTC connections — never restore them, or a reload leaves you "in" a
         // channel with no live session and no controls. You start out of voice.
@@ -364,6 +424,9 @@ function persist(): void {
 export function initStore(): NativeState {
   const rawBeforeLoad = _storage()?.getItem(STORAGE_KEY);
   _state = load();
+  // Expiry is a state invariant, not merely a view filter: stale records would
+  // otherwise keep blocking resend forever after a restart.
+  pruneExpiredFriendRequests();
   // Migrate legacy plaintext only after an identity key is active. A v2 blob is
   // never overwritten here, which preserves data when the wrong identity key is
   // supplied and decryption correctly fails closed.
@@ -608,23 +671,39 @@ export function pinPeerIdentity(peerId: string, identityKey: string): void {
 
 const OUTBOX_CAP = 500;
 
+/** Terminal friend actions keep a remote inbox from resurrecting a removed request. */
+function isFriendLifecycleOutboxEntry(entry: XoreinOutboxEntry): boolean {
+  return entry.operation === 'friends.accept';
+}
+
 /** Queue an encrypted envelope for delivery once the transport is back (deduped by id). */
 export function enqueueOutbox(entry: XoreinOutboxEntry): void {
-  let evicted: XoreinOutboxEntry[] = [];
+  let dropped: XoreinOutboxEntry | null = null;
   updateState(s => {
     if (s.outbox.some(e => e.id === entry.id)) return {};
-    // Bound the queue so a long offline stretch can't grow it without limit. The oldest
-    // entries fall off the front; capture them so their messages can be marked failed
-    // rather than silently dropped (which would leave the UI showing a stuck "queued").
-    const next = [...s.outbox, entry];
-    if (next.length > OUTBOX_CAP) {
-      evicted = next.slice(0, next.length - OUTBOX_CAP);
-      return { outbox: next.slice(-OUTBOX_CAP) };
+    if (s.outbox.length < OUTBOX_CAP) {
+      return { outbox: [...s.outbox, entry] };
     }
-    return { outbox: next };
+
+    // A cancel/decline/accept is the only durable proof that removes a remote
+    // pending row. Preserve those packets in preference to ordinary traffic;
+    // otherwise a full offline queue can permanently resurrect stale requests.
+    const ordinaryIndex = s.outbox.findIndex(candidate => !isFriendLifecycleOutboxEntry(candidate));
+    if (!isFriendLifecycleOutboxEntry(entry) && ordinaryIndex < 0) {
+      // The queue consists entirely of lifecycle actions. Keep those existing
+      // proofs rather than silently evicting one for a lower-priority packet.
+      dropped = entry;
+      return {};
+    }
+    const victimIndex = ordinaryIndex >= 0 ? ordinaryIndex : 0;
+    dropped = s.outbox[victimIndex] ?? null;
+    return {
+      outbox: [...s.outbox.filter((_, index) => index !== victimIndex), entry],
+    };
   });
-  for (const e of evicted) {
-    if (e.message_id) setMessageDeliveryStatus(e.message_id, 'failed');
+  if (dropped) {
+    if (dropped.message_id) setMessageDeliveryStatus(dropped.message_id, 'failed');
+    if (dropped.friend_request_id) setFriendRequestDeliveryStatus(dropped.friend_request_id, 'failed');
   }
 }
 
@@ -959,13 +1038,250 @@ export function ensureDm(dmId: string, participants: string[]): void {
 
 // ── Friends ────────────────────────────────────────────────────────────────
 
-export function addFriendRequest(record: XoreinFriendRecord): void {
+export type FriendRequestDirection = 'incoming' | 'outgoing';
+
+/** Canonicalize both current peer ids and legacy dialable multiaddrs. */
+export function friendPeerIdFromAddress(value: string | undefined): string {
+  const trimmed = value?.trim() ?? '';
+  const marker = trimmed.lastIndexOf('/p2p/');
+  if (marker < 0) return trimmed;
+  return trimmed.slice(marker + '/p2p/'.length).split('/')[0] ?? '';
+}
+
+export function friendRequestCounterparty(
+  record: XoreinFriendRecord,
+  localPeerId: string,
+): string {
+  const remote = record.from_peer_id === localPeerId
+    ? (record.to_peer_id?.trim() || record.to_peer_addr || '')
+    : record.from_peer_id;
+  return friendPeerIdFromAddress(remote);
+}
+
+function appendFriendRequestTombstone(
+  tombstones: FriendRequestTombstone[],
+  peerId: string,
+  requestId: string,
+  action: FriendRequestTerminalAction,
+  now: number,
+): FriendRequestTombstone[] {
+  if (!boundedStateText(peerId, 256) || !boundedStateText(requestId, 256)) {
+    return tombstones;
+  }
+  const key = `${peerId}\n${requestId}`;
+  const next = tombstones.filter(existing =>
+    `${existing.peer_id}\n${existing.request_id}` !== key
+      && Number.isFinite(Date.parse(existing.expires_at))
+      && Date.parse(existing.expires_at) > now,
+  );
+  next.push({
+    peer_id: peerId,
+    request_id: requestId,
+    action,
+    expires_at: new Date(now + FRIEND_REQUEST_TOMBSTONE_TTL_MS).toISOString(),
+  });
+  return next.slice(-MAX_FRIEND_REQUEST_TOMBSTONES);
+}
+
+/** True while a terminal action must suppress a delayed packet for this request. */
+export function isFriendRequestTombstoned(
+  peerId: string,
+  requestId: string,
+  now = Date.now(),
+): boolean {
+  return _state.friend_request_tombstones.some(tombstone =>
+    tombstone.peer_id === peerId
+      && tombstone.request_id === requestId
+      && Number.isFinite(Date.parse(tombstone.expires_at))
+      && Date.parse(tombstone.expires_at) > now,
+  );
+}
+
+/** Persist a terminal action before deleting the request it applies to. */
+export function rememberFriendRequestTombstone(
+  peerId: string,
+  requestId: string,
+  action: FriendRequestTerminalAction,
+  now = Date.now(),
+): void {
   updateState(s => ({
-    friend_requests: [
-      ...s.friend_requests.filter(r => r.id !== record.id),
-      record,
-    ],
+    friend_request_tombstones: appendFriendRequestTombstone(
+      s.friend_request_tombstones,
+      peerId,
+      requestId,
+      action,
+      now,
+    ),
   }));
+}
+
+function isExpiredPendingFriendRequest(record: XoreinFriendRecord, now: number): boolean {
+  if (record.status !== 'pending') return false;
+  if (record.expires_at !== undefined) {
+    const advertisedExpiry = Date.parse(record.expires_at);
+    // An explicit but malformed expiry cannot establish a valid pending state.
+    return !Number.isFinite(advertisedExpiry) || advertisedExpiry <= now;
+  }
+  const createdAt = Date.parse(record.created_at ?? '');
+  // A request without a parseable receipt timestamp cannot establish freshness,
+  // so fail closed rather than allow it to block another request forever.
+  return !Number.isFinite(createdAt) || createdAt <= now - FRIEND_REQUEST_TTL_MS;
+}
+
+/**
+ * Delete terminally stale pending requests and their queued original deliveries.
+ * Called on every native-store startup and safe to call before inbox/outbox work.
+ */
+export function pruneExpiredFriendRequests(now = Date.now()): string[] {
+  const removed: string[] = [];
+  updateState(s => {
+    const expired = s.friend_requests.filter(record => isExpiredPendingFriendRequest(record, now));
+    if (expired.length === 0
+      && !s.friend_request_tombstones.some(tombstone => Date.parse(tombstone.expires_at) <= now)) {
+      return {};
+    }
+    const expiredIds = new Set(expired.map(record => record.id));
+    let tombstones = s.friend_request_tombstones.filter(tombstone =>
+      Number.isFinite(Date.parse(tombstone.expires_at)) && Date.parse(tombstone.expires_at) > now,
+    );
+    const localPeerId = s.identity?.peer_id ?? '';
+    for (const record of expired) {
+      removed.push(record.id);
+      const peerId = friendRequestCounterparty(record, localPeerId);
+      tombstones = appendFriendRequestTombstone(tombstones, peerId, record.id, 'expired', now);
+    }
+    return {
+      friend_requests: s.friend_requests.filter(record => !expiredIds.has(record.id)),
+      friend_request_tombstones: tombstones,
+      outbox: s.outbox.filter(entry => !entry.friend_request_id || !expiredIds.has(entry.friend_request_id)),
+    };
+  });
+  return removed;
+}
+
+/**
+ * Atomically terminate one pending request after verifying both its direction
+ * and the authenticated counterparty. For an outgoing cancellation this also
+ * removes every queued original delivery before it can be replayed.
+ */
+export function terminalizeFriendRequest(
+  requestId: string,
+  localPeerId: string,
+  remotePeerId: string,
+  direction: FriendRequestDirection,
+  action: FriendRequestTerminalAction,
+  now = Date.now(),
+): XoreinFriendRecord | null {
+  let removed: XoreinFriendRecord | null = null;
+  updateState(s => {
+    const request = s.friend_requests.find(record => record.id === requestId && record.status === 'pending');
+    if (!request) return {};
+    const counterparty = friendRequestCounterparty(request, localPeerId);
+    const directionMatches = direction === 'incoming'
+      ? request.from_peer_id === remotePeerId && (request.to_peer_id ?? '') === localPeerId
+      : request.from_peer_id === localPeerId && counterparty === remotePeerId;
+    if (!directionMatches) return {};
+    removed = request;
+    return {
+      friend_requests: s.friend_requests.filter(record => record.id !== requestId),
+      friend_request_tombstones: appendFriendRequestTombstone(
+        s.friend_request_tombstones,
+        remotePeerId,
+        requestId,
+        action,
+        now,
+      ),
+      ...(direction === 'outgoing'
+        ? { outbox: s.outbox.filter(entry => entry.friend_request_id !== requestId) }
+        : {}),
+    };
+  });
+  return removed;
+}
+
+/** Exact-id acceptance prevents an old delayed acceptance from settling a retry. */
+export function acceptFriendByRequestId(
+  requestId: string,
+  localPeerId: string,
+  remotePeerId: string,
+): boolean {
+  let accepted = false;
+  updateState(s => {
+    const request = s.friend_requests.find(record =>
+      record.id === requestId
+        && record.status === 'pending'
+        && record.from_peer_id === localPeerId
+        && friendRequestCounterparty(record, localPeerId) === remotePeerId,
+    );
+    if (!request) return {};
+    accepted = true;
+    return {
+      friend_requests: s.friend_requests.filter(record => record.id !== requestId),
+      friends: [...s.friends.filter(friend => friend.id !== request.id), { ...request, status: 'accepted' as const }],
+    };
+  });
+  return accepted;
+}
+
+/** Whether an outgoing request remains eligible for delivery/retry. */
+export function isPendingOutgoingFriendRequest(
+  requestId: string,
+  localPeerId: string,
+  remotePeerId?: string,
+): boolean {
+  return _state.friend_requests.some(record =>
+    record.id === requestId
+      && record.status === 'pending'
+      && record.from_peer_id === localPeerId
+      && (!remotePeerId || friendRequestCounterparty(record, localPeerId) === remotePeerId),
+  );
+}
+
+/** Remove all queued original deliveries for one request (used after a retry succeeds). */
+export function removeFriendRequestOutboxEntries(requestId: string): void {
+  updateState(s => ({
+    outbox: s.outbox.filter(entry => entry.friend_request_id !== requestId),
+  }));
+}
+
+export function addFriendRequest(record: XoreinFriendRecord): boolean {
+  let added = false;
+  updateState(s => {
+    // Request ids are global correlation ids. Replacing an existing row here
+    // would let a remote peer overwrite an unrelated pending relationship.
+    if (s.friend_requests.some(existing => existing.id === record.id)
+      || s.friends.some(existing => existing.id === record.id)) return {};
+    added = true;
+    return { friend_requests: [...s.friend_requests, record] };
+  });
+  return added;
+}
+
+export type IncomingFriendRequestAdmission = 'added' | 'duplicate' | 'full';
+
+/** Atomically admit a new inbound request without allowing unbounded local buildup. */
+export function admitIncomingFriendRequest(
+  record: XoreinFriendRecord,
+  localPeerId: string,
+): IncomingFriendRequestAdmission {
+  let admission: IncomingFriendRequestAdmission = 'duplicate';
+  updateState(s => {
+    if (s.friend_requests.some(existing => existing.id === record.id)
+      || s.friends.some(existing => existing.id === record.id)) {
+      admission = 'duplicate';
+      return {};
+    }
+    const incomingCount = s.friend_requests.filter(existing =>
+      existing.status === 'pending' && existing.from_peer_id !== localPeerId,
+    ).length;
+    if (incomingCount >= MAX_PENDING_INCOMING_FRIEND_REQUESTS) {
+      admission = 'full';
+      return {};
+    }
+    admission = 'added';
+    return { friend_requests: [...s.friend_requests, record] };
+  });
+  return admission;
 }
 
 /** Update delivery of a locally-originated friend request without changing its relationship status. */
@@ -998,27 +1314,15 @@ export function removeFriendRequest(requestId: string): void {
 }
 
 /**
- * Accept the pending request involving `peerId` (used when the *other* side tells
- * us they accepted — we match by counterparty rather than request id since the two
- * peers each hold their own request record).
+ * @deprecated A remote acceptance without the original request id is unsafe:
+ * a delayed packet could settle a newer retry to the same peer. Use
+ * `acceptFriendByRequestId` with the authenticated remote peer instead.
+ *
+ * Kept as a no-op compatibility export so older callers fail closed rather
+ * than silently reintroducing peer-only settlement.
  */
-export function acceptFriendByPeer(peerId: string): void {
-  updateState(s => {
-    const me = s.identity?.peer_id ?? '';
-    // This is the REMOTE-driven path ("peer says they accepted my request"), so it
-    // may only settle a request the local user actually sent. Matching a request
-    // the peer sent to US would let them accept their own request and add
-    // themselves to our friends list with no consent — the local user's own accept
-    // goes through acceptFriend(requestId) instead.
-    const req = s.friend_requests.find(r =>
-      r.from_peer_id === me && (r.to_peer_id ?? r.to_peer_addr ?? '') === peerId,
-    );
-    if (!req) return {};
-    return {
-      friend_requests: s.friend_requests.filter(r => r.id !== req.id),
-      friends: [...s.friends.filter(f => f.id !== req.id), { ...req, status: 'accepted' as const }],
-    };
-  });
+export function acceptFriendByPeer(_peerId: string): void {
+  // Intentionally empty.
 }
 
 // ── Voice ──────────────────────────────────────────────────────────────────

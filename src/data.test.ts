@@ -459,6 +459,80 @@ describe("readShellRuntimeData mapping", () => {
     expect(shell.users.some((user) => user.id === "unknown" && user.username === "Unknown User")).toBe(true);
   });
 
+  it("does not invent a biography from local runtime connectivity", () => {
+    clearRuntime();
+    injectRuntimeSnapshot({
+      ...createHappyRuntime(),
+      identity: {
+        peer_id: "peer-local",
+        profile: { display_name: "Ada" },
+      },
+    });
+
+    expect(readShellRuntimeData().currentUser.bio).toBeUndefined();
+  });
+
+  it("preserves Space roles and member role colours for the member overview", () => {
+    clearRuntime();
+    const server = createRuntimeServer({
+      id: "roles-space",
+      name: "Roles Space",
+      ownerPeerId: "peer-owner",
+      memberPeerIds: ["peer-local", "u2"],
+    });
+    injectRuntimeSnapshot({
+      ...createHappyRuntime(),
+      servers: [{
+        ...server,
+        roles: [{ id: "moderator", name: "Moderator", color: "#7C5CFF", permissions: ["MANAGE_MESSAGES"] }],
+        member_roles: { u2: ["moderator", "unknown-role"] },
+      }],
+    });
+
+    const members = readShellRuntimeData().servers[0].members;
+    expect(members.find((member) => member.id === "u2")).toMatchObject({
+      role: "Moderator",
+      roleColor: "#7C5CFF",
+    });
+    expect(members.find((member) => member.id === "peer-owner")).toMatchObject({
+      role: "Admin",
+      roleColor: "#F5B942",
+    });
+  });
+
+  it("keeps member roles scoped to their own Space", () => {
+    clearRuntime();
+    const moderatorSpace = createRuntimeServer({
+      id: "moderator-space",
+      name: "Moderator Space",
+      ownerPeerId: "peer-owner",
+      memberPeerIds: ["peer-local", "u2"],
+    });
+    const memberSpace = createRuntimeServer({
+      id: "member-space",
+      name: "Member Space",
+      ownerPeerId: "peer-owner-2",
+      memberPeerIds: ["peer-local", "u2"],
+    });
+    injectRuntimeSnapshot({
+      ...createHappyRuntime(),
+      servers: [
+        {
+          ...moderatorSpace,
+          roles: [{ id: "moderator", name: "Moderator", color: "#7C5CFF", permissions: ["MANAGE_MESSAGES"] }],
+          member_roles: { u2: ["moderator"] },
+        },
+        memberSpace,
+      ],
+    });
+
+    const servers = readShellRuntimeData().servers;
+    expect(servers.find((server) => server.id === "moderator-space")?.members.find((member) => member.id === "u2"))
+      .toMatchObject({ role: "Moderator", roleColor: "#7C5CFF" });
+    expect(servers.find((server) => server.id === "member-space")?.members.find((member) => member.id === "u2"))
+      .not.toHaveProperty("role");
+  });
+
   it("normalizes runtime voice sessions into strict participant maps", () => {
     clearRuntime();
     injectRuntimeSnapshot({
@@ -466,10 +540,18 @@ describe("readShellRuntimeData mapping", () => {
       voice_sessions: [
         {
           id: "voice-base",
+          security_mode: "crowd",
+          connection_state: "connected",
+          self_muted: true,
+          turn_unavailable: false,
           participants: [
             {
               peer_id: "peer-local",
               muted: true,
+              video: true,
+              screen_sharing: false,
+              speaking: true,
+              connection_state: "connected",
               joined_at: " 2026-04-22T00:00:00Z ",
               last_frame_at: { bad: true } as never,
             },
@@ -489,11 +571,19 @@ describe("readShellRuntimeData mapping", () => {
     const shell = readShellRuntimeData();
     expect(shell.runtimeSnapshot?.voice_sessions?.[0]).toEqual({
       channel_id: "voice-base",
+      security_mode: "crowd",
+      connection_state: "connected",
+      self_muted: true,
+      turn_unavailable: false,
       participants: {
         "peer-local": {
           peer_id: "peer-local",
           muted: true,
           joined_at: "2026-04-22T00:00:00Z",
+          video: true,
+          screen_sharing: false,
+          speaking: true,
+          connection_state: "connected",
         },
         "u2": {
           peer_id: "u2",

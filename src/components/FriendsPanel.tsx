@@ -5,7 +5,7 @@ import { USERS } from '@/data';
 import { useRuntimeSnapshot } from '@/lib/xoreinRuntimeContext';
 import { useRuntimeMutations } from '@/hooks/runtime/useRuntimeMutations';
 import { PendingButton } from '@/components/ui/PendingButton';
-import { Search, MessageSquare, X, UserPlus, Users, UserX, Clock, Check, Ban, Copy } from 'lucide-react';
+import { Search, MessageSquare, X, UserPlus, Users, UserX, Clock, Check, Ban, Copy, RotateCcw } from 'lucide-react';
 import { useFeature } from '@/hooks/useFeature';
 import { MessageRequests } from '@/components/MessageRequests';
 import { resolveAvatarSrc } from '@/lib/avatar';
@@ -23,6 +23,7 @@ interface FriendRequest {
   type: 'incoming' | 'outgoing';
   deliveryStatus?: XoreinFriendRecord['delivery_status'];
   timestamp: string;
+  expiresAt?: string;
 }
 
 interface FeedbackState {
@@ -32,8 +33,24 @@ interface FeedbackState {
 
 function friendPeerId(record: XoreinFriendRecord, currentPeerId: string): string {
   return record.from_peer_id === currentPeerId
-    ? (record.to_peer_id ?? record.to_peer_addr ?? '')
+    ? (record.to_peer_id ?? peerIdFromFriendInput(record.to_peer_addr ?? ''))
     : record.from_peer_id;
+}
+
+/** Extract a case-sensitive libp2p peer id from a pasted ID or a multiaddr. */
+function peerIdFromFriendInput(value: string): string {
+  const trimmed = value.trim();
+  const match = /\/p2p\/([^/\s]+)$/.exec(trimmed);
+  return match?.[1] ?? trimmed;
+}
+
+function requestIsExpired(record: Pick<XoreinFriendRecord, 'created_at' | 'expires_at'>): boolean {
+  const advertisedExpiry = Date.parse(record.expires_at ?? '');
+  if (Number.isFinite(advertisedExpiry)) {
+    return advertisedExpiry <= Date.now();
+  }
+  const createdAt = Date.parse(record.created_at ?? '');
+  return !Number.isFinite(createdAt) || createdAt <= Date.now() - 7 * 24 * 60 * 60 * 1000;
 }
 
 const getStatusColor = (status: UserStatus) => {
@@ -132,6 +149,7 @@ export const FriendsPanel: React.FC<FriendsPanelProps> = ({ onOpenDM, hasIdentit
       type: r.from_peer_id === currentPeerId ? 'outgoing' : 'incoming',
       ...(r.delivery_status ? { deliveryStatus: r.delivery_status } : {}),
       timestamp: r.created_at ?? '',
+      ...(r.expires_at ? { expiresAt: r.expires_at } : {}),
     })),
     [pendingRecords, currentPeerId],
   );
@@ -238,6 +256,24 @@ export const FriendsPanel: React.FC<FriendsPanelProps> = ({ onOpenDM, hasIdentit
     }
   };
 
+  const cancelRequest = async (recordId: string) => {
+    try {
+      await mutations.actOnFriendRequest(recordId, 'cancel');
+      setFeedback({ tone: 'info', message: 'Friend request cancelled.' });
+    } catch (error) {
+      setFeedback({ tone: 'error', message: error instanceof Error ? error.message : 'Failed to cancel friend request.' });
+    }
+  };
+
+  const retryRequest = async (recordId: string) => {
+    try {
+      await mutations.retryFriendRequest(recordId);
+      setFeedback({ tone: 'info', message: 'Friend request delivery retried.' });
+    } catch (error) {
+      setFeedback({ tone: 'error', message: error instanceof Error ? error.message : 'Failed to retry friend request.' });
+    }
+  };
+
   const unblockUser = async (peerId: string) => {
     if (!runtimeSnapshot) return;
     const record = blockedRecords.find((r) => friendPeerId(r, currentPeerId) === peerId);
@@ -266,9 +302,16 @@ export const FriendsPanel: React.FC<FriendsPanelProps> = ({ onOpenDM, hasIdentit
       return;
     }
 
-    const normalizedLower = normalized.toLowerCase();
-    const duplicate = friendRequests.some((request) => request.userId.toLowerCase() === normalizedLower);
-    if (duplicate) {
+    const targetPeerId = peerIdFromFriendInput(normalized);
+    const duplicate = friendRequests.find((request) => request.userId === targetPeerId);
+    // A queued/failed request can be deliberately re-sent using its stable id.
+    // Let the native lifecycle retry it instead of creating a competing request.
+    // A seven-day stale row is also allowed through; the native store prunes it
+    // before accepting the new request.
+    if (duplicate && !['queued', 'failed'].includes(duplicate.deliveryStatus ?? '') && !requestIsExpired({
+      created_at: duplicate.timestamp,
+      expires_at: duplicate.expiresAt,
+    })) {
       setFeedback({ tone: 'info', message: 'A pending friend request already exists for that peer.' });
       return;
     }
@@ -398,9 +441,15 @@ export const FriendsPanel: React.FC<FriendsPanelProps> = ({ onOpenDM, hasIdentit
               <ActionButton icon={<X size={16} />} label="Decline" onClick={() => void declineRequest(request.recordId)} variant="danger" />
             </>
           ) : (
-            <span className="micro-label text-white/20 tracking-widest mr-1.5">
-              {request.deliveryStatus === 'queued' ? 'QUEUED' : request.deliveryStatus === 'failed' ? 'FAILED' : 'OUTGOING'}
-            </span>
+            <>
+              <span className="micro-label text-white/20 tracking-widest mr-1.5">
+                {request.deliveryStatus === 'queued' ? 'QUEUED' : request.deliveryStatus === 'failed' ? 'FAILED' : 'OUTGOING'}
+              </span>
+              {(request.deliveryStatus === 'queued' || request.deliveryStatus === 'failed') && (
+                <ActionButton icon={<RotateCcw size={14} />} label="Retry now" onClick={() => void retryRequest(request.recordId)} />
+              )}
+              <ActionButton icon={<X size={16} />} label="Cancel request" onClick={() => void cancelRequest(request.recordId)} variant="danger" />
+            </>
           ));
         })}
       </div>

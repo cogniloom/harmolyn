@@ -33,6 +33,7 @@ import {
 } from './signaling.js';
 import { VoiceActivityMonitor } from './activity.js';
 import { IceCandidateBuffer, ReconnectScheduler, hasTurnServer, sfuConnectTargets } from './reliability.js';
+import { VOICE_PRESENCE_HEARTBEAT_MS } from './presence.js';
 import { PROTOCOLS } from '../families/families.js';
 import { resolveFeatureFlag } from '../../config/featureFlags.js';
 
@@ -340,6 +341,11 @@ export interface VoiceSessionCallbacks {
   onLocalState?: () => void;
 }
 
+/** A watch-only join negotiates inbound media but never asks for local capture. */
+export interface VoiceSessionStartOptions {
+  receiveOnly?: boolean;
+}
+
 interface PeerConn {
   pc: RTCPeerConnection;
   polite: boolean;
@@ -381,6 +387,7 @@ export class VoiceSession {
   // Per-peer connection quality, refreshed on a timer from RTCPeerConnection.getStats().
   private peerStats = new Map<string, PeerConnectionStats>();
   private statsTimer: ReturnType<typeof setInterval> | null = null;
+  private presenceHeartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private cap: InsertableCap = 'none';
   private useSframe = false;
   private localKey: PeerKey | null = null;
@@ -413,6 +420,7 @@ export class VoiceSession {
   private rosterListeners = new Set<() => void>();
 
   private muted = false;
+  private receiveOnly = false;
   private stopped = false;
 
   constructor(channelId: string, node: Libp2p | null, localPeerId: string, callbacks: VoiceSessionCallbacks = {}) {
@@ -426,11 +434,17 @@ export class VoiceSession {
   // ── Lifecycle ────────────────────────────────────────────────────────────
 
   /**
-   * Join the channel. Captures the mic and publishes self into voice_sessions
+   * Join the channel. Captures the mic unless this is a receive-only watcher and
+   * publishes self into voice_sessions
    * IMMEDIATELY (local-first), then connects the mesh best-effort. Never throws
    * after the local join: voice is usable even with no reachable peers.
    */
-  async start(): Promise<void> {
+  async start(options: VoiceSessionStartOptions = {}): Promise<void> {
+    this.receiveOnly = options.receiveOnly === true;
+    // A watch-only session never owns an outbound microphone track. The muted
+    // state is still advertised so other members cannot mistake it for a failed
+    // capture or a participant who might be sending audio.
+    this.muted = this.receiveOnly;
     this.cap = insertableStreamsCapability();
     // SFrame only for server (Crowd) channels where a REAL shared key can be
     // derived. deriveVoicePeerKey fails closed (returns null) when no crowd_root
@@ -445,34 +459,38 @@ export class VoiceSession {
     // active (a real key), else clear (DTLS-only). The badge never overclaims.
     this.securityMode = this.useSframe ? 'crowd' : 'clear';
 
-    // 1) Capture the microphone. Failure does NOT block the join — you can join
-    //    a voice channel without a working mic (you simply can't be heard).
-    try {
-      const prefs = readAvPrefs();
-      const rawStream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints(prefs), video: false });
-      // Always route through a gain stage so mic volume is adjustable live (the
-      // processed track is what we send/monitor). Keep raw stream + ctx for teardown.
-      const volume = typeof prefs.micVolume === 'number' ? prefs.micVolume : 100;
-      const graph = buildMicGain(rawStream, volume, prefs.ultraLowLatency ? 0 : 'interactive');
-      if (graph) {
-        this.micRawStream = rawStream;
-        this.micAudioCtx = graph.ctx;
-        this.micGain = graph.gain;
-        this.localStream = graph.stream;
-      } else {
-        this.localStream = rawStream;
+    // 1) Capture the microphone. Failure does NOT block a regular join — you
+    //    can join without a working mic (you simply can't be heard). A watcher
+    //    deliberately skips this entirely, avoiding an unnecessary permission
+    //    prompt and never creating a local media track.
+    if (!this.receiveOnly) {
+      try {
+        const prefs = readAvPrefs();
+        const rawStream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints(prefs), video: false });
+        // Always route through a gain stage so mic volume is adjustable live (the
+        // processed track is what we send/monitor). Keep raw stream + ctx for teardown.
+        const volume = typeof prefs.micVolume === 'number' ? prefs.micVolume : 100;
+        const graph = buildMicGain(rawStream, volume, prefs.ultraLowLatency ? 0 : 'interactive');
+        if (graph) {
+          this.micRawStream = rawStream;
+          this.micAudioCtx = graph.ctx;
+          this.micGain = graph.gain;
+          this.localStream = graph.stream;
+        } else {
+          this.localStream = rawStream;
+        }
+        const micTrack = this.localStream.getAudioTracks()[0];
+        // Tell the encoder what it's carrying: 'music' preserves full fidelity,
+        // 'speech' lets it optimise for intelligibility/latency.
+        if (micTrack) micTrack.contentHint = prefs.highFidelityAudio ? 'music' : 'speech';
+      } catch {
+        this.localStream = null;
       }
-      const micTrack = this.localStream.getAudioTracks()[0];
-      // Tell the encoder what it's carrying: 'music' preserves full fidelity,
-      // 'speech' lets it optimise for intelligibility/latency.
-      if (micTrack) micTrack.contentHint = prefs.highFidelityAudio ? 'music' : 'speech';
-    } catch {
-      this.localStream = null;
     }
 
     // 2) LOCAL-FIRST: publish ourselves so the UI immediately reflects "joined".
     storeJoinVoice(this.channelId, this.localPeerId);
-    setVoiceParticipant(this.channelId, this.localPeerId, { muted: false, video: false, screen_sharing: false });
+    setVoiceParticipant(this.channelId, this.localPeerId, { muted: this.muted, video: false, screen_sharing: false });
     setVoiceConnectionState(this.channelId, 'connecting');
     setVoiceSecurityMode(this.channelId, this.securityMode);
     publishNativeSnapshot();
@@ -480,15 +498,23 @@ export class VoiceSession {
     // 3) Speaking ring for self.
     if (this.localStream) this.activity.addStream(this.localPeerId, this.localStream);
 
-    // 4) Best-effort mesh: discover who is already here and dial them.
+    // 4) Announce occupancy before TURN credential retrieval. Credential fetch
+    // can stall on an unhealthy support node, but it must not make a live member
+    // invisible to passive observers while it does.
+    this.startPresenceHeartbeat();
+
+    // 5) Best-effort mesh: discover who is already here and dial them.
     this.iceServers = await fetchTurnCredentials().catch(() => [] as RTCIceServer[]);
+    // Leave may race the bounded credential fetch. Do not recreate state or
+    // timers after stop() has released the local media session.
+    if (this.stopped) return;
     // Surface an honest warning when no TURN relay is available: on restrictive or
     // symmetric NATs a STUN-only mesh may never connect, and the user deserves to
     // know rather than watch a call spin forever.
     setVoiceTurnUnavailable(this.channelId, !hasTurnServer(this.iceServers));
     void this.announceAndConnect();
 
-    // 5) Sample per-peer connection quality (RTT/jitter/loss) for the UI readout.
+    // 6) Sample per-peer connection quality (RTT/jitter/loss) for the UI readout.
     if (!this.statsTimer) this.statsTimer = setInterval(() => { void this.pollStats(); }, 1500);
   }
 
@@ -593,6 +619,7 @@ export class VoiceSession {
     }
 
     if (this.statsTimer) { clearInterval(this.statsTimer); this.statsTimer = null; }
+    if (this.presenceHeartbeatTimer) { clearInterval(this.presenceHeartbeatTimer); this.presenceHeartbeatTimer = null; }
     this.peerStats.clear();
     this.activity.stop();
     this.localStream?.getTracks().forEach(t => t.stop());
@@ -628,6 +655,9 @@ export class VoiceSession {
   // ── Local controls ─────────────────────────────────────────────────────────
 
   setMuted(muted: boolean): void {
+    if (this.receiveOnly && !muted) {
+      throw new Error('A receive-only voice session cannot enable its microphone.');
+    }
     this.muted = muted;
     this.localStream?.getAudioTracks().forEach(t => { t.enabled = !muted; });
     setVoiceParticipant(this.channelId, this.localPeerId, { muted });
@@ -680,6 +710,9 @@ export class VoiceSession {
 
   /** Toggle the camera. Adds/removes a video track and renegotiates every peer. */
   async setCameraEnabled(on: boolean): Promise<void> {
+    if (this.receiveOnly && on) {
+      throw new Error('A receive-only voice session cannot enable its camera.');
+    }
     if (on && !this.cameraTrack) {
       const stream = await navigator.mediaDevices.getUserMedia({ video: cameraConstraints(readAvPrefs()), audio: false });
       const track = stream.getVideoTracks()[0];
@@ -707,6 +740,9 @@ export class VoiceSession {
 
   /** Start sharing a screen/game. Opens the OS picker and renegotiates each peer. */
   async startScreenShare(opts: { withAudio?: boolean; quality?: string; surface?: 'screen' | 'window' | 'tab' } = {}): Promise<void> {
+    if (this.receiveOnly) {
+      throw new Error('A receive-only voice session cannot share its screen.');
+    }
     if (this.screenStream) return;
     const md = navigator.mediaDevices as MediaDevices & { getDisplayMedia?: (c: DisplayMediaStreamOptions) => Promise<MediaStream> };
     if (!md.getDisplayMedia) throw new Error('Screen sharing is not supported in this browser.');
@@ -756,6 +792,7 @@ export class VoiceSession {
 
   get isScreenSharing(): boolean { return this.screenStream != null; }
   get isCameraOn(): boolean { return this.cameraTrack != null; }
+  get isReceiveOnly(): boolean { return this.receiveOnly; }
   /** Local screen-capture stream (for the sharer's own preview), or null. */
   get localScreenStream(): MediaStream | null { return this.screenStream; }
   get localMediaStream(): MediaStream | null { return this.localStream; }
@@ -870,6 +907,16 @@ export class VoiceSession {
       disconnectTimer: null,
     };
     this.peers.set(remotePeerId, entry);
+
+    // A watcher is normally the offerer. Add enough recvonly m-lines before its
+    // offer so a remote member can answer with mic audio, camera video, screen
+    // video, and optional display audio. No sender tracks are attached and the
+    // session controls above prevent later capture/track creation.
+    if (this.receiveOnly && typeof pc.addTransceiver === 'function') {
+      for (const kind of ['audio', 'audio', 'video', 'video'] as const) {
+        try { pc.addTransceiver(kind, { direction: 'recvonly' }); } catch { break; }
+      }
+    }
 
     // Adopt any ICE candidates that arrived before this connection existed (they were
     // buffered pre-offer). They queue in the iceBuffer and flush once the remote SDP lands.
@@ -1283,14 +1330,30 @@ export class VoiceSession {
     publishNativeSnapshot();
   }
 
+  private startPresenceHeartbeat(): void {
+    if (this.presenceHeartbeatTimer) return;
+    const members = serverMembersForChannel(this.channelId).filter(p => p && p !== this.localPeerId);
+    if (!members.length) return;
+    // A repeated join doubles as a heartbeat for passive observers. It is
+    // intentionally not a new operation so older peers already understand it.
+    this.broadcastPresence('join');
+    this.presenceHeartbeatTimer = setInterval(() => {
+      if (!this.stopped) this.broadcastPresence('join');
+    }, VOICE_PRESENCE_HEARTBEAT_MS);
+  }
+
   private broadcastPresenceUpdate(): void {
+    this.broadcastPresence('query');
+  }
+
+  private broadcastPresence(action: 'join' | 'query'): void {
     const peerSync = getPeerSync();
     if (!peerSync) return;
     const members = serverMembersForChannel(this.channelId).filter(p => p && p !== this.localPeerId);
     if (!members.length) return;
     const req: VoicePresenceRequest = {
       session_id: this.channelId,
-      action: 'query',
+      action,
       muted: this.muted,
       video: this.isCameraOn,
       screen_sharing: this.isScreenSharing,

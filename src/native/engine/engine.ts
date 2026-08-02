@@ -59,8 +59,13 @@ import {
 } from '../recovery/recovery.js';
 import { encryptSyncState, captureSyncState, restorePendingSyncState, registerStateSyncHandler, type EncryptedSyncBlob } from '../state/stateSync.js';
 import { getRecoveryContacts } from '../recovery/custody.js';
-import { VoiceSession } from '../voice/session.js';
+import { VoiceSession, type VoiceSessionStartOptions } from '../voice/session.js';
 import { registerVoiceSession, getVoiceSession, clearVoiceSession, rekeyVoiceForServer } from '../voice/registry.js';
+import {
+  clearObservedVoicePresence,
+  observeVoicePresence,
+  voicePresenceChannelId,
+} from '../voice/presence.js';
 import { resolveFeatureFlag } from '../../config/featureFlags.js';
 import { decodeBase64Strict, isSafeBlobSwarmManifest } from '../security/limits.js';
 import {
@@ -615,18 +620,36 @@ export class XoreinNativeEngine {
               try {
                 payload = req.payload ? (JSON.parse(new TextDecoder().decode(req.payload)) as Record<string, unknown>) : {};
               } catch { return framedReply({ ok: false, error: 'bad_frame' }); }
-              const channelId = String(payload.session_id ?? '');
+              // Voice payload is authenticated to `remotePeerId`, but its fields
+              // are still untrusted. In particular, never let an arbitrary
+              // object stringify into a runtime channel key.
+              const channelId = voicePresenceChannelId(payload.session_id) ?? '';
               const session = channelId ? getVoiceSession(channelId) : null;
 
               if (req.operation === VOICE_OPS.presence) {
-                return framedReply(session ? session.handlePresence(payload as unknown as VoicePresenceRequest, remotePeerId) : { ok: true, in_channel: false });
+                if (session) {
+                  return framedReply(session.handlePresence(payload as unknown as VoicePresenceRequest, remotePeerId));
+                }
+                // A passive observer may show bounded channel occupancy, but
+                // only for a current server member. This does not open a media
+                // session or expose it through the public HTTP gateway.
+                const accepted = channelId
+                  ? observeVoicePresence(channelId, remotePeerId, payload as unknown as VoicePresenceRequest)
+                  : false;
+                return framedReply({ ok: accepted, in_channel: false });
               } else if (req.operation === VOICE_OPS.offer) {
                 return framedReply(session ? await session.handleOffer(payload as unknown as VoiceOfferRequest, remotePeerId) : { ok: false, error: 'not_in_channel' });
               } else if (req.operation === VOICE_OPS.ice) {
                 return framedReply(session ? session.handleIce(payload as unknown as VoiceIceRequest, remotePeerId) : { ok: false });
               } else if (req.operation === VOICE_OPS.leave) {
-                session?.handlePresence({ session_id: channelId, action: 'leave' }, remotePeerId);
-                return framedReply({ ok: true });
+                if (session) {
+                  session.handlePresence({ session_id: channelId, action: 'leave' }, remotePeerId);
+                  return framedReply({ ok: true });
+                }
+                const accepted = channelId
+                  ? observeVoicePresence(channelId, remotePeerId, { session_id: channelId, action: 'leave' })
+                  : false;
+                return framedReply({ ok: accepted });
               }
               return framedReply({ ok: false, error: 'unknown_op' });
             });
@@ -1483,14 +1506,53 @@ export class XoreinNativeEngine {
    * Join a voice channel as a P2P WebRTC mesh peer (local-first: see VoiceSession).
    * When `voiceMediaTransport` is off, falls back to a store-only join. When the
    * transport isn't wired yet we ALSO fall back to a store-only join rather than
-   * throwing — clicking a voice channel must always "join" the UI even offline.
+   * throwing — a regular voice join must always work offline. An explicit
+   * receive-only watch is the exception: it fails closed when a real WebRTC
+   * receiver cannot be created.
    */
-  async joinVoice(channelId: string): Promise<void> {
-    if (getVoiceSession(channelId)) return; // idempotent
+  private hasUsableReceiveOnlyVoiceTransport(): boolean {
+    const transport = this._transport;
+    // `currentNode` deliberately survives a relay outage to preserve direct P2P
+    // links. A watcher can use that path, but only after PeerSync has been wired
+    // to the same live node. Comparing the identities rejects a stale `_wiredNode`
+    // during reconnect/endpoint replacement instead of creating a false watcher.
+    return typeof RTCPeerConnection === 'function'
+      && Boolean(
+        transport
+        && transport.currentNode
+        && this._wiredNode === transport.currentNode
+        && transport.hasLivePeerPath(),
+      );
+  }
+
+  async joinVoice(channelId: string, options: VoiceSessionStartOptions = {}): Promise<void> {
+    const existing = getVoiceSession(channelId);
+    if (existing) {
+      // A caller must not be told it entered Watch mode while an outbound session
+      // still owns capture (or vice versa). Make same-mode clicks idempotent, but
+      // require an explicit leave before changing the privacy boundary.
+      if (existing.isReceiveOnly !== Boolean(options.receiveOnly)) {
+        throw new Error(existing.isReceiveOnly
+          ? 'Leave Watch mode before joining with a microphone.'
+          : 'Leave the current voice session before starting Watch mode.');
+      }
+      return;
+    }
     // Create a real media session whenever we have an identity — local voice (mic
     // capture, mute, speaking, camera/screen) does NOT require the relay node. The
     // mesh layer connects best-effort once a node is wired. Only fall back to a
     // store-only join if voice media is disabled or there's no identity yet.
+    if (options.receiveOnly && (!resolveFeatureFlag('voiceMediaTransport') || !this._identity)) {
+      // A store-only watcher would claim to receive media without owning a
+      // WebRTC receiver, so fail closed instead of rendering a false watch mode.
+      throw new Error('Receive-only voice requires the native media transport and an unlocked identity.');
+    }
+    if (options.receiveOnly && !this.hasUsableReceiveOnlyVoiceTransport()) {
+      throw new Error('Watch mode requires an active native peer connection. Wait for the runtime to reconnect and try again.');
+    }
+    // Passive beacons are intentionally short-lived and never share a session
+    // with a real local call. The active handshake immediately rebuilds it.
+    clearObservedVoicePresence(channelId);
     if (!resolveFeatureFlag('voiceMediaTransport') || !this._identity) {
       nativeJoinVoice(channelId);
       publishNativeSnapshot();
@@ -1498,7 +1560,7 @@ export class XoreinNativeEngine {
     }
     const session = new VoiceSession(channelId, this._wiredNode, this._identity.peerId, {});
     registerVoiceSession(session);
-    await session.start();
+    await session.start(options);
   }
 
   /** Leave the voice channel: release media and tear down peer connections. */

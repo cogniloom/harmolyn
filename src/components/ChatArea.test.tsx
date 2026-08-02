@@ -77,6 +77,13 @@ describe("ChatArea", () => {
     expect(screen.queryByRole("button", { name: /^follow channel$/i })).toBeNull();
   });
 
+  it("keeps the sticker composer disabled until customizable stickers exist", () => {
+    renderChatArea();
+
+    expect(screen.queryByRole("button", { name: /^stickers$/i })).toBeNull();
+    expect(screen.getByRole("button", { name: /^emoji picker$/i })).toBeTruthy();
+  });
+
   it("does not persist attachment placeholder messages", async () => {
     const user = userEvent.setup();
     renderChatArea();
@@ -132,6 +139,32 @@ describe("ChatArea", () => {
     // ... but the dead "not exposed by the runtime" actions are gone.
     expect(screen.queryByRole("button", { name: /direct link/i })).toBeNull();
     expect(screen.queryByRole("button", { name: /more options/i })).toBeNull();
+  });
+
+  it("does not render an empty biography card in the user popover", async () => {
+    const user = userEvent.setup();
+    const author: User = { id: "u2", username: "nova", avatar: "/avatar.png", status: "online" };
+    const messages: Message[] = [{ id: "m1", userId: "u2", content: "hey", timestamp: "12:00" }];
+
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <ChatArea
+          channel={channel}
+          messages={messages}
+          users={[author]}
+          mobileMenuOpen={false}
+          onToggleMobileMenu={() => {}}
+          onToggleMemberList={() => {}}
+          isDM={false}
+          messageLayout="modern"
+          onToggleLayout={() => {}}
+        />
+      </QueryClientProvider>,
+    );
+
+    await user.hover(screen.getByAltText("nova"));
+
+    expect(screen.queryByText("BIO // DECRYPTED")).toBeNull();
   });
 
   it("normalizes malformed user records before rendering messages", () => {
