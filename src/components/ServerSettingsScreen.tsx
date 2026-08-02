@@ -637,8 +637,44 @@ export const ServerSettingsScreen: React.FC<ServerSettingsScreenProps> = ({ serv
   ];
 
   return (
-    <div className="absolute inset-0 z-[100] bg-bg-0 flex flex-col md:flex-row text-white/70 animate-in fade-in zoom-in-95 duration-300 overflow-hidden">
-      <div className="hidden md:flex w-[224px] bg-bg-1 flex-col items-end py-10 px-5 border-r border-white/5">
+    <div className="absolute inset-0 z-[100] flex min-w-0 flex-col overflow-hidden bg-bg-0 text-white/70 animate-in fade-in zoom-in-95 duration-300 md:flex-row">
+      <header className="safe-top sticky top-0 z-[120] flex shrink-0 border-b border-white/10 bg-bg-1/95 backdrop-blur-xl md:hidden">
+        <div className="flex min-w-0 flex-1 items-center gap-2 px-3 py-2">
+          <label htmlFor="mobile-space-settings-section" className="sr-only">Space settings section</label>
+          <select
+            id="mobile-space-settings-section"
+            aria-label="Space settings section"
+            value={activeSection}
+            onChange={(event) => setActiveSection(event.target.value as SettingsSection)}
+            className="focus-ring h-11 min-w-0 flex-1 rounded-r1 border border-white/10 bg-surface-dark px-3 text-base font-semibold text-white outline-none"
+          >
+            {sections.map((section) => (
+              <option key={section.id} value={section.id}>{section.label}</option>
+            ))}
+          </select>
+          {isOwner && (
+            <button
+              type="button"
+              onClick={() => void handleDeleteServer()}
+              aria-label="Open Space deletion confirmation"
+              title="Delete Space"
+              className="focus-ring flex h-11 w-11 shrink-0 items-center justify-center rounded-full border border-accent-danger/25 bg-accent-danger/10 text-accent-danger transition-colors hover:bg-accent-danger/20"
+            >
+              <Trash2 size={18} />
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close Space settings"
+            className="focus-ring flex h-11 w-11 shrink-0 items-center justify-center rounded-full border border-white/10 bg-white/5 text-white/70 transition-colors hover:border-primary/40 hover:text-primary"
+          >
+            <X size={20} />
+          </button>
+        </div>
+      </header>
+
+      <div className="hidden min-h-0 w-[224px] shrink-0 flex-col items-end overflow-y-auto overscroll-contain border-r border-white/5 bg-bg-1 px-5 py-10 md:flex">
         <div className="w-full space-y-1.5">
           <div className="micro-label text-white/20 px-3 mb-3">SPACE // CONFIGURATION</div>
           {sections.map((section) => (
@@ -672,10 +708,10 @@ export const ServerSettingsScreen: React.FC<ServerSettingsScreenProps> = ({ serv
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto bg-bg-2 grid-overlay">
+      <div className="grid-overlay min-h-0 min-w-0 flex-1 overflow-y-auto overscroll-contain bg-bg-2">
         {/* `.grid-overlay` sets `pointer-events: none`; that property inherits, so
             without re-enabling it here every field/button below becomes unclickable. */}
-        <div className="max-w-[640px] mx-auto py-12 px-6 md:px-10 pointer-events-auto">
+        <div className="pointer-events-auto mx-auto max-w-[640px] min-w-0 px-4 pb-[calc(2.5rem+env(safe-area-inset-bottom))] pt-6 md:px-10 md:py-12">
           {feedback && <FeedbackBanner feedback={feedback} />}
 
           {activeSection === 'overview' && (
@@ -789,12 +825,17 @@ export const ServerSettingsScreen: React.FC<ServerSettingsScreenProps> = ({ serv
         />
       )}
 
-      <div className="absolute top-6 right-6 flex flex-col items-center gap-1.5 group cursor-pointer z-[110]" onClick={onClose}>
-        <div className="w-10 h-10 rounded-full border border-white/10 glass-panel flex items-center justify-center group-hover:border-primary group-hover:shadow-glow transition-all">
+      <button
+        type="button"
+        aria-label="Close Space settings"
+        className="focus-ring absolute right-6 top-6 z-[110] hidden flex-col items-center gap-1.5 rounded-full md:flex group"
+        onClick={onClose}
+      >
+        <div className="w-11 h-11 rounded-full border border-white/10 glass-panel flex items-center justify-center group-hover:border-primary group-hover:shadow-glow transition-all">
           <X size={20} className="text-white group-hover:text-primary" />
         </div>
         <span className="micro-label text-[7px] text-white/20 group-hover:text-white">ESC</span>
-      </div>
+      </button>
     </div>
   );
 };
@@ -972,9 +1013,9 @@ const RoleRow: React.FC<{ role: ManagedRole; onRename: (role: ManagedRole, name:
           </div>
         </div>
       </div>
-      <div className="flex items-center gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
+      <div className="touch-action-reveal flex items-center gap-1.5 transition-opacity">
         {!role.protected && (
-          <button onClick={() => onDelete(role)} aria-label={`Delete ${role.name}`} title={`Delete ${role.name}`} className="p-1.5 rounded-full hover:bg-accent-danger/10 text-white/40 hover:text-accent-danger transition-all"><Trash2 size={12} /></button>
+          <button onClick={() => onDelete(role)} aria-label={`Delete ${role.name}`} title={`Delete ${role.name}`} className="compact-touch-target flex items-center justify-center rounded-full hover:bg-accent-danger/10 text-white/40 hover:text-accent-danger transition-all"><Trash2 size={12} /></button>
         )}
       </div>
     </div>
@@ -1081,9 +1122,9 @@ const ChannelsSection: React.FC<{
                 )}
               </div>
               {canManage && !editing && (
-                <div className="flex items-center gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
-                  <button onClick={() => onEditChannel(channel)} aria-label={`Edit ${channel.name}`} title={`Edit ${channel.name}`} className="p-1.5 rounded-full hover:bg-white/5 text-white/40 hover:text-primary transition-all"><Pencil size={12} /></button>
-                  <button onClick={() => onDeleteChannel(channel)} aria-label={`Delete ${channel.name}`} title={`Delete ${channel.name}`} className="p-1.5 rounded-full hover:bg-accent-danger/10 text-white/40 hover:text-accent-danger transition-all"><Trash2 size={12} /></button>
+                <div className="touch-action-reveal flex items-center gap-1.5 transition-opacity">
+                  <button onClick={() => onEditChannel(channel)} aria-label={`Edit ${channel.name}`} title={`Edit ${channel.name}`} className="compact-touch-target flex items-center justify-center rounded-full hover:bg-white/5 text-white/40 hover:text-primary transition-all"><Pencil size={12} /></button>
+                  <button onClick={() => onDeleteChannel(channel)} aria-label={`Delete ${channel.name}`} title={`Delete ${channel.name}`} className="compact-touch-target flex items-center justify-center rounded-full hover:bg-accent-danger/10 text-white/40 hover:text-accent-danger transition-all"><Trash2 size={12} /></button>
                 </div>
               )}
             </div>
@@ -1164,7 +1205,7 @@ const MembersSection: React.FC<{
             <div className="flex items-center gap-2.5">
               {getRoleBadge(member)}
               {canManage && member.id !== ownerPeerId && member.id !== 'me' && (
-                <button onClick={() => onRemoveMember(member)} aria-label={`Remove ${member.username}`} title={`Remove ${member.username}`} className="p-1.5 rounded-full hover:bg-accent-danger/10 text-white/40 hover:text-accent-danger transition-all opacity-0 group-hover:opacity-100">
+                <button onClick={() => onRemoveMember(member)} aria-label={`Remove ${member.username}`} title={`Remove ${member.username}`} className="touch-action-reveal compact-touch-target flex items-center justify-center rounded-full hover:bg-accent-danger/10 text-white/40 hover:text-accent-danger transition-all">
                   <Trash2 size={12} />
                 </button>
               )}
@@ -1546,7 +1587,7 @@ const BotManagementSection: React.FC<{
               <button
                 onClick={() => void handleDelete(bot.id, bot.name)}
                 aria-label={`Delete bot ${bot.name}`}
-                className="p-1.5 rounded-full hover:bg-accent-danger/10 text-white/30 hover:text-accent-danger transition-all opacity-0 group-hover:opacity-100"
+                className="touch-action-reveal compact-touch-target flex items-center justify-center rounded-full hover:bg-accent-danger/10 text-white/30 hover:text-accent-danger transition-all"
               >
                 <Trash2 size={13} />
               </button>

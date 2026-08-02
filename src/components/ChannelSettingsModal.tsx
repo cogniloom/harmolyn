@@ -49,26 +49,32 @@ export const ChannelSettingsModal: React.FC<ChannelSettingsModalProps> = ({ chan
   };
 
   return (
-    <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/60 backdrop-blur-sm animate-in fade-in duration-200" onClick={onClose}>
-      <div className="w-full max-w-[520px] mx-6 glass-card rounded-r3 border border-stroke overflow-hidden max-h-[85vh] flex flex-col" onClick={e => e.stopPropagation()}>
+    <div className="responsive-overlay-scroll fixed inset-0 z-[200] flex items-center justify-center bg-black/60 backdrop-blur-sm animate-in fade-in duration-200" onClick={onClose}>
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="channel-settings-title"
+        className="flex max-h-full w-full max-w-[520px] flex-col overflow-hidden rounded-r3 border border-stroke glass-card"
+        onClick={e => e.stopPropagation()}
+      >
         {/* Header */}
-        <div className="p-6 border-b border-white/5 flex items-center justify-between flex-shrink-0">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center text-primary">
+        <div className="flex flex-shrink-0 items-center justify-between gap-3 border-b border-white/5 p-4 sm:p-6">
+          <div className="flex min-w-0 items-center gap-3">
+            <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary">
               {isVoice ? <Volume2 size={18} /> : <Hash size={18} />}
             </div>
-            <div>
-              <h2 className="text-title font-semibold text-text-primary">Edit {isVoice ? 'Voice' : 'Text'} Channel</h2>
-              <p className="text-caption text-text-tertiary">{isVoice ? '' : '#'}{channel.name}</p>
+            <div className="min-w-0">
+              <h2 id="channel-settings-title" className="truncate text-title font-semibold text-text-primary">Edit {isVoice ? 'Voice' : 'Text'} Channel</h2>
+              <p className="truncate text-caption text-text-tertiary">{isVoice ? '' : '#'}{channel.name}</p>
             </div>
           </div>
-          <button onClick={onClose} aria-label="Close" className="w-8 h-8 rounded-full glass-panel border border-stroke-subtle flex items-center justify-center text-text-secondary hover:text-primary hover:border-primary transition-all">
+          <button onClick={onClose} aria-label="Close" className="touch-target flex flex-shrink-0 items-center justify-center rounded-full border border-stroke-subtle text-text-secondary glass-panel transition-all hover:border-primary hover:text-primary focus-ring">
             <X size={16} />
           </button>
         </div>
 
         {/* Content */}
-        <div className="p-6 space-y-5 overflow-y-auto flex-1">
+        <div className="min-h-0 flex-1 space-y-5 overflow-y-auto overscroll-contain p-4 sm:p-6">
           <div className="space-y-1.5">
             <label htmlFor="channel-name-input" className="micro-label text-text-tertiary">CHANNEL NAME</label>
             <input
@@ -113,7 +119,7 @@ export const ChannelSettingsModal: React.FC<ChannelSettingsModalProps> = ({ chan
                     <button
                       key={opt}
                       onClick={() => setBitrate(opt)}
-                      className={`px-3 py-1.5 rounded-full text-xs font-bold transition-all border ${
+                      className={`compact-touch-target rounded-full border px-3 py-1.5 text-xs font-bold transition-all ${
                         bitrate === opt
                           ? 'bg-primary/15 text-primary border-primary/30'
                           : 'text-text-secondary border-stroke-subtle hover:bg-white/5'
@@ -137,7 +143,7 @@ export const ChannelSettingsModal: React.FC<ChannelSettingsModalProps> = ({ chan
                   max={99}
                   value={userLimit}
                   onChange={e => setUserLimit(Number(e.target.value))}
-                  className="w-full accent-primary"
+                  className="compact-touch-target w-full cursor-pointer accent-primary"
                 />
                 <div className="text-[10px] text-text-tertiary">0 = no limit. Drag to cap how many people can join.</div>
               </div>
@@ -150,7 +156,7 @@ export const ChannelSettingsModal: React.FC<ChannelSettingsModalProps> = ({ chan
             <button
               onClick={onDelete}
               disabled={busy}
-              className="h-10 px-5 rounded-full bg-accent-danger/10 border border-accent-danger/20 text-accent-danger font-bold text-xs flex items-center gap-2 hover:bg-accent-danger/20 transition-all disabled:opacity-40"
+              className="compact-touch-target flex h-10 items-center gap-2 rounded-full border border-accent-danger/20 bg-accent-danger/10 px-5 text-xs font-bold text-accent-danger transition-all hover:bg-accent-danger/20 disabled:opacity-40"
             >
               <Trash2 size={14} />
               Delete Channel
@@ -159,11 +165,11 @@ export const ChannelSettingsModal: React.FC<ChannelSettingsModalProps> = ({ chan
         </div>
 
         {/* Footer */}
-        <div className="p-4 border-t border-white/5 flex justify-end gap-3 flex-shrink-0">
-          <button onClick={onClose} className="h-10 px-5 rounded-full border border-stroke-subtle text-text-secondary text-body-strong hover:bg-white/5 transition-all">
+        <div className="flex flex-shrink-0 flex-wrap justify-end gap-2 border-t border-white/5 p-4 sm:gap-3">
+          <button onClick={onClose} className="compact-touch-target h-10 rounded-full border border-stroke-subtle px-5 text-text-secondary text-body-strong transition-all hover:bg-white/5">
             Cancel
           </button>
-          <button onClick={handleSave} disabled={busy || !name.trim()} className="h-10 px-5 rounded-full bg-primary text-bg-0 font-bold text-body-strong flex items-center gap-2 hover:shadow-glow transition-all disabled:opacity-40">
+          <button onClick={handleSave} disabled={busy || !name.trim()} className="compact-touch-target flex h-10 items-center gap-2 rounded-full bg-primary px-5 font-bold text-bg-0 text-body-strong transition-all hover:shadow-glow disabled:opacity-40">
             <Save size={14} />
             Save Changes
           </button>

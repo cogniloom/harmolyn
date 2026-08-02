@@ -370,7 +370,7 @@ export const FriendsPanel: React.FC<FriendsPanelProps> = ({ onOpenDM, hasIdentit
       initial={{ opacity: 0, y: 10 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ delay: index * 0.04, duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
-      className="flex items-center gap-3 p-3 rounded-r2 border border-white/5 bg-white/[0.02] hover:bg-white/[0.05] hover:border-white/10 transition-all group hover-lift"
+      className="flex flex-wrap items-center gap-3 p-3 rounded-r2 border border-white/5 bg-white/[0.02] hover:bg-white/[0.05] hover:border-white/10 transition-all group hover-lift"
     >
       <div className="relative flex-shrink-0">
         <img src={resolveAvatarSrc(user.avatar, user.username)} alt={user.username} className="w-10 h-10 rounded-r2 ring-1 ring-white/10" />
@@ -386,7 +386,7 @@ export const FriendsPanel: React.FC<FriendsPanelProps> = ({ onOpenDM, hasIdentit
           <div className="text-[8px] font-mono text-white/20 truncate" title={user.id}>{user.id}</div>
         )}
       </div>
-      <div className="flex items-center gap-1.5 opacity-100 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100 transition-opacity">
+      <div className="flex w-full items-center justify-end gap-1.5 opacity-100 min-[600px]:w-auto min-[1100px]:opacity-0 min-[1100px]:group-hover:opacity-100 min-[1100px]:group-focus-within:opacity-100 transition-opacity">
         {actions}
       </div>
     </motion.div>
@@ -395,7 +395,7 @@ export const FriendsPanel: React.FC<FriendsPanelProps> = ({ onOpenDM, hasIdentit
   const ActionButton = ({ icon, label, onClick, variant = 'default' }: { icon: React.ReactNode; label: string; onClick: () => void; variant?: 'default' | 'danger' | 'success' }) => (
     <button
       onClick={onClick}
-      className={`w-8 h-8 rounded-full flex items-center justify-center transition-all border btn-press focus-ring ${
+      className={`compact-touch-target rounded-full flex items-center justify-center transition-all border btn-press focus-ring ${
         variant === 'danger' ? 'bg-accent-danger/10 border-accent-danger/20 text-accent-danger hover:bg-accent-danger/20' :
         variant === 'success' ? 'bg-accent-success/10 border-accent-success/20 text-accent-success hover:bg-accent-success/20' :
         'bg-white/5 border-white/10 text-white/50 hover:text-primary hover:border-primary/30 hover:bg-primary/10'
@@ -469,18 +469,20 @@ export const FriendsPanel: React.FC<FriendsPanelProps> = ({ onOpenDM, hasIdentit
 
   return (
     <div className="flex-1 h-full flex flex-col overflow-hidden">
-      <div className="h-[52px] flex items-center justify-between px-5 md:px-6 border-b border-white/5 glass-realistic flex-shrink-0">
-        <div className="flex items-center gap-3">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2 px-3 py-2 md:px-6 border-b border-white/5 glass-realistic flex-shrink-0 min-[1100px]:min-h-[52px] min-[1100px]:flex-nowrap min-[1100px]:py-0">
+        <div className="flex min-w-0 items-center gap-3">
           <Users size={18} className="text-white/50" />
           <span className="font-bold text-foreground font-display text-base tracking-wide">FRIENDS</span>
-          <div className="h-4 w-[1px] bg-white/10"></div>
-          <div className="flex items-center gap-0.5">
+          <div className="hidden h-4 w-px bg-white/10 min-[1100px]:block"></div>
+        </div>
+        <div className="order-3 w-full min-w-0 overflow-x-auto no-scrollbar min-[1100px]:order-none min-[1100px]:w-auto min-[1100px]:flex-1">
+          <div className="flex w-max min-w-full items-center gap-1 min-[1100px]:min-w-0">
             {tabs.map((tab) => (
               <button
                 key={tab.key}
                 onClick={() => setActiveTab(tab.key)}
                 aria-pressed={activeTab === tab.key}
-                className={`min-h-[32px] px-3 py-1.5 rounded-full text-[11px] font-bold tracking-wider transition-all focus-ring ${
+                className={`compact-touch-target px-3 py-1.5 rounded-full text-[11px] font-bold tracking-wider transition-all focus-ring ${
                   activeTab === tab.key
                     ? 'bg-primary/15 text-primary border border-primary/30'
                     : 'text-white/40 hover:text-white/70 hover:bg-white/5 border border-transparent'
@@ -497,7 +499,7 @@ export const FriendsPanel: React.FC<FriendsPanelProps> = ({ onOpenDM, hasIdentit
         <button
           onClick={() => hasIdentity ? setShowAddFriend(!showAddFriend) : onOpenAuth?.()}
           aria-expanded={showAddFriend}
-          className={`min-h-[32px] px-3 py-1.5 rounded-full text-[11px] font-bold tracking-wider transition-all flex items-center gap-1.5 focus-ring ${
+          className={`compact-touch-target ml-auto shrink-0 px-3 py-1.5 rounded-full text-[11px] font-bold tracking-wider transition-all flex items-center gap-1.5 focus-ring ${
             showAddFriend
               ? 'bg-transparent text-white/50 border border-white/10'
               : 'bg-accent-success text-bg-0 hover:brightness-110 shadow-[0_0_10px_rgba(5,255,161,0.2)]'
@@ -509,10 +511,10 @@ export const FriendsPanel: React.FC<FriendsPanelProps> = ({ onOpenDM, hasIdentit
       </div>
 
       {showAddFriend && (
-        <div className="px-5 md:px-6 py-4 border-b border-white/5 bg-white/[0.02]">
+        <div className="shrink-0 max-h-[min(50dvh,28rem)] overflow-y-auto px-3 md:px-6 py-4 border-b border-white/5 bg-white/[0.02] overscroll-contain">
           <p className="text-xs text-white/60 mb-2.5">You can add friends with their peer ID or dialable multiaddr.</p>
           {currentPeerId && (
-            <div className="mb-3 flex items-center gap-2 rounded-r1 bg-bg-0/60 border border-white/10 px-3 py-2">
+            <div className="mb-3 flex flex-wrap items-center gap-2 rounded-r1 bg-bg-0/60 border border-white/10 px-3 py-2">
               <div className="min-w-0 flex-1">
                 <div className="text-[9px] uppercase tracking-wider text-white/35 font-bold">Your ID — share it so friends can add you</div>
                 <div className="text-[10px] font-mono text-white/55 truncate">{currentPeerId}</div>
@@ -526,14 +528,14 @@ export const FriendsPanel: React.FC<FriendsPanelProps> = ({ onOpenDM, hasIdentit
                       : { tone: 'error', message: 'Couldn’t access the clipboard on this device.' }),
                   );
                 }}
-                className="flex-shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-primary/10 border border-primary/30 text-primary text-[10px] font-bold tracking-wider hover:bg-primary/20 transition-all focus-ring"
+                className="compact-touch-target ml-auto flex-shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-primary/10 border border-primary/30 text-primary text-[10px] font-bold tracking-wider hover:bg-primary/20 transition-all focus-ring"
               >
                 <Copy size={12} /> COPY MY ID
               </button>
             </div>
           )}
           {feedback && <FeedbackBanner feedback={feedback} className="mb-3" />}
-          <div className="flex gap-2.5">
+          <div className="flex flex-col gap-2.5 sm:flex-row">
             <input
               type="text"
               value={addFriendInput}
@@ -541,7 +543,7 @@ export const FriendsPanel: React.FC<FriendsPanelProps> = ({ onOpenDM, hasIdentit
               placeholder="Peer ID or multiaddr..."
               aria-label="Peer ID or multiaddr"
               onKeyDown={(event) => { if (event.key === 'Enter' && addFriendInput.trim() && !addFriendPending) { event.preventDefault(); void handleAddFriend(); } }}
-              className="flex-1 bg-bg-0 border border-white/10 rounded-full px-4 py-2.5 text-xs font-mono text-foreground placeholder-white/30 focus:outline-none focus:border-primary/50 transition-colors focus-ring"
+              className="min-h-[44px] min-w-0 flex-1 bg-bg-0 border border-white/10 rounded-full px-4 py-2.5 text-xs font-mono text-foreground placeholder-white/30 focus:outline-none focus:border-primary/50 transition-colors focus-ring"
             />
             <PendingButton
               onClick={handleAddFriend}
@@ -549,7 +551,7 @@ export const FriendsPanel: React.FC<FriendsPanelProps> = ({ onOpenDM, hasIdentit
               pendingLabel="Sending…"
               disabled={!addFriendInput.trim()}
               spinnerSize={14}
-              className="px-5 py-2.5 bg-primary rounded-full text-bg-0 font-bold text-xs tracking-wider flex items-center gap-2 disabled:opacity-30 disabled:cursor-not-allowed hover:shadow-glow transition-all"
+              className="touch-target justify-center px-5 py-2.5 bg-primary rounded-full text-bg-0 font-bold text-xs tracking-wider flex items-center gap-2 disabled:opacity-30 disabled:cursor-not-allowed hover:shadow-glow transition-all"
             >
               SEND REQUEST
             </PendingButton>
@@ -558,12 +560,12 @@ export const FriendsPanel: React.FC<FriendsPanelProps> = ({ onOpenDM, hasIdentit
       )}
 
       {!showAddFriend && feedback && (
-        <div className="mx-5 md:mx-6 mt-4">
+        <div className="mx-3 md:mx-6 mt-4">
           <FeedbackBanner feedback={feedback} />
         </div>
       )}
 
-      <div className="px-5 md:px-6 py-2.5">
+      <div className="shrink-0 px-3 md:px-6 py-2.5">
         <div className="relative">
           <Search size={14} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-white/20" />
           <input
@@ -573,12 +575,12 @@ export const FriendsPanel: React.FC<FriendsPanelProps> = ({ onOpenDM, hasIdentit
             onChange={(event) => setSearchQuery(event.target.value)}
             placeholder="Search friends...  ( / )"
             aria-label="Search friends"
-            className="w-full bg-bg-0/50 border border-white/5 rounded-full px-9 py-2 text-xs font-mono text-foreground placeholder-white/30 focus:outline-none focus:border-primary/50 transition-colors focus-ring"
+            className="w-full min-h-[44px] bg-bg-0/50 border border-white/5 rounded-full px-9 py-2 text-xs font-mono text-foreground placeholder-white/30 focus:outline-none focus:border-primary/50 transition-colors focus-ring"
           />
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto px-5 md:px-6 pb-6 no-scrollbar">
+      <div className="flex-1 min-h-0 overflow-y-auto px-3 md:px-6 pb-safe no-scrollbar overscroll-contain">
         {content}
       </div>
     </div>

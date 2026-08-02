@@ -7,10 +7,7 @@ import { ServerRail } from '@/components/ServerRail';
 import { ChannelRail } from '@/components/ChannelRail';
 import { ChatArea } from '@/components/ChatArea';
 import { MemberSidebar } from '@/components/MemberSidebar';
-import { SettingsScreen } from '@/components/SettingsScreen';
-import { ServerExplorer } from '@/components/ServerExplorer';
 import { WelcomeEmptyState } from '@/components/WelcomeEmptyState';
-import { ServerSettingsScreen } from '@/components/ServerSettingsScreen';
 import { CreateServerModal } from '@/components/CreateServerModal';
 import { JoinServerModal } from '@/components/JoinServerModal';
 import { FriendsPanel } from '@/components/FriendsPanel';
@@ -72,6 +69,27 @@ import { NODE_OFFLINE_BANNER_TITLE, NODE_OFFLINE_BANNER_DETAIL } from '@/lib/nod
 
 const MESSAGE_LAYOUT_STORAGE_KEY = 'harmolyn:settings:message-layout';
 
+const SettingsScreen = React.lazy(() => import('@/components/SettingsScreen').then((module) => ({ default: module.SettingsScreen })));
+const ServerSettingsScreen = React.lazy(() => import('@/components/ServerSettingsScreen').then((module) => ({ default: module.ServerSettingsScreen })));
+const ServerExplorer = React.lazy(() => import('@/components/ServerExplorer').then((module) => ({ default: module.ServerExplorer })));
+
+const DeferredSurfaceFallback = ({ label }: { label: string }) => (
+  <div className="flex h-full min-h-0 w-full flex-1 items-center justify-center bg-bg-0" role="status" aria-label={`Loading ${label}`}>
+    <div className="flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-4 py-2 text-xs text-white/55">
+      <Loader2 size={15} className="animate-spin text-primary" />
+      Loading {label}…
+    </div>
+  </div>
+);
+
+function readResponsiveMode(): { isMobile: boolean; isTablet: boolean } {
+  const width = safeViewportSize().width;
+  return {
+    isMobile: width !== null && width < 600,
+    isTablet: width !== null && width >= 600 && width < 1100,
+  };
+}
+
 function readStoredMessageLayout(): MessageLayout {
   if (typeof window === 'undefined') {
     return 'modern';
@@ -94,17 +112,21 @@ export const Layout: React.FC = () => {
 
   const shellData = useSyncExternalStore(subscribeShellRuntimeData, readShellRuntimeData, readShellRuntimeData);
   const initialUtilityScreen = readRequestedUtilityScreen();
-  const [state, setState] = useState<AppState>({
-    activeServerId: shellData.initialServerId,
-    activeChannelId: shellData.initialChannelId,
-    connectedVoiceChannelId: null,
-    viewMode: 'chat',
-    messageLayout: readStoredMessageLayout(),
-    mobileMenuOpen: false,
-    memberListCollapsed: false,
-    channelListCollapsed: false,
-    showCreateServer: false,
-    showSettings: false,
+  const [state, setState] = useState<AppState>(() => {
+    const initialResponsiveMode = readResponsiveMode();
+    const compact = initialResponsiveMode.isMobile || initialResponsiveMode.isTablet;
+    return {
+      activeServerId: shellData.initialServerId,
+      activeChannelId: shellData.initialChannelId,
+      connectedVoiceChannelId: null,
+      viewMode: 'chat',
+      messageLayout: readStoredMessageLayout(),
+      mobileMenuOpen: false,
+      memberListCollapsed: compact,
+      channelListCollapsed: compact,
+      showCreateServer: false,
+      showSettings: false,
+    };
   });
 
   // First-run welcome: shown once to a brand-new visitor (no dismissed flag yet).
@@ -298,8 +320,8 @@ export const Layout: React.FC = () => {
     setThemeStyle(theme.themeVars);
   }, [bgSeed]);
 
-  const [isMobile, setIsMobile] = useState(false);
-  const [isTablet, setIsTablet] = useState(false);
+  const [{ isMobile, isTablet }, setResponsiveMode] = useState(readResponsiveMode);
+  const compactViewportRef = useRef(isMobile || isTablet);
 
   const [channelListHovered, setChannelListHovered] = useState(false);
   const [memberListHovered, setMemberListHovered] = useState(false);
@@ -323,12 +345,27 @@ export const Layout: React.FC = () => {
 
   useEffect(() => {
     const handleResize = () => {
-      const width = safeViewportSize().width ?? 0;
-      const mobile = width < 600;
-      const tablet = width >= 600 && width < 1100;
+      const next = readResponsiveMode();
+      const nextCompact = next.isMobile || next.isTablet;
+      setResponsiveMode((current) => (
+        current.isMobile === next.isMobile && current.isTablet === next.isTablet
+          ? current
+          : next
+      ));
 
-      setIsMobile(mobile);
-      setIsTablet(tablet);
+      // A desktop-open rail must never become an unsolicited blocking overlay
+      // after rotation or a window resize. Reconcile only when crossing the
+      // compact breakpoint so keyboard-driven resize events do not close a
+      // drawer the user intentionally opened on mobile.
+      if (compactViewportRef.current !== nextCompact) {
+        compactViewportRef.current = nextCompact;
+        setState((current) => ({
+          ...current,
+          mobileMenuOpen: false,
+          memberListCollapsed: nextCompact ? true : current.memberListCollapsed,
+          channelListCollapsed: nextCompact ? true : current.channelListCollapsed,
+        }));
+      }
     };
 
     handleResize();
@@ -755,18 +792,53 @@ export const Layout: React.FC = () => {
   const isTouchDevice = isMobile || isTablet;
   const mainRef = useRef<HTMLDivElement>(null);
 
+  const openChannelDrawer = useCallback(() => {
+    setState((current) => ({
+      ...current,
+      mobileMenuOpen: true,
+      memberListCollapsed: true,
+    }));
+  }, []);
+
+  const toggleChannelDrawer = useCallback(() => {
+    setState((current) => ({
+      ...current,
+      mobileMenuOpen: !current.mobileMenuOpen,
+      memberListCollapsed: current.mobileMenuOpen ? current.memberListCollapsed : true,
+    }));
+  }, []);
+
+  const openMemberDrawer = useCallback(() => {
+    setState((current) => ({
+      ...current,
+      mobileMenuOpen: false,
+      memberListCollapsed: false,
+    }));
+  }, []);
+
+  const toggleMemberDrawer = useCallback(() => {
+    setState((current) => {
+      const memberListCollapsed = !current.memberListCollapsed;
+      return {
+        ...current,
+        mobileMenuOpen: memberListCollapsed ? current.mobileMenuOpen : false,
+        memberListCollapsed,
+      };
+    });
+  }, []);
+
   useSwipeGesture(mainRef, {
     edgeZone: 30,
     edge: 'left',
     enabled: isTouchDevice && !state.mobileMenuOpen && state.memberListCollapsed,
-    onSwipeRight: () => setState((s) => ({ ...s, mobileMenuOpen: true })),
+    onSwipeRight: openChannelDrawer,
   });
 
   useSwipeGesture(mainRef, {
     edgeZone: 30,
     edge: 'right',
     enabled: isTouchDevice && !state.mobileMenuOpen && !!showMemberSidebar && state.memberListCollapsed,
-    onSwipeLeft: () => setState((s) => ({ ...s, memberListCollapsed: false })),
+    onSwipeLeft: openMemberDrawer,
   });
 
   useSwipeGesture(mainRef, {
@@ -1024,7 +1096,7 @@ export const Layout: React.FC = () => {
 
   return (
    <StreamerModeProvider activeServerId={isHome || isExplore ? null : state.activeServerId}>
-    <div ref={mainRef} className="flex flex-col h-screen w-full bg-bg-0 overflow-hidden font-sans relative" style={themeStyle}>
+    <div ref={mainRef} className="app-viewport safe-inline safe-top flex flex-col bg-bg-0 overflow-hidden font-sans relative" style={themeStyle}>
       {/* Streamer mode: slim top-bar notification (no full-screen blocker). */}
       <StreamerTopBar />
       {/* Connectivity banners are STATIC flow (not fixed overlays): they push
@@ -1101,23 +1173,27 @@ export const Layout: React.FC = () => {
       <AnimatePresence mode="wait">
         {state.showSettings && (
           <FullScreenOverlay key="settings">
-            <SettingsScreen
-              user={currentUser}
-              initialSection={settingsSection ?? undefined}
-              onClose={() => { setState((s) => ({ ...s, showSettings: false })); setSettingsSection(null); }}
-              onLogOut={handleSettingsLogout}
-              messageLayout={state.messageLayout}
-              onSetMessageLayout={setMessageLayout}
-              runtimeSnapshot={shellData.runtimeSnapshot}
-              onOpenNodeLaunch={openNodeLaunch}
-              bgSeed={bgSeed}
-              onSetBgSeed={setBgSeed}
-            />
+            <React.Suspense fallback={<DeferredSurfaceFallback label="settings" />}>
+              <SettingsScreen
+                user={currentUser}
+                initialSection={settingsSection ?? undefined}
+                onClose={() => { setState((s) => ({ ...s, showSettings: false })); setSettingsSection(null); }}
+                onLogOut={handleSettingsLogout}
+                messageLayout={state.messageLayout}
+                onSetMessageLayout={setMessageLayout}
+                runtimeSnapshot={shellData.runtimeSnapshot}
+                onOpenNodeLaunch={openNodeLaunch}
+                bgSeed={bgSeed}
+                onSetBgSeed={setBgSeed}
+              />
+            </React.Suspense>
           </FullScreenOverlay>
         )}
         {state.viewMode === 'server-settings' && activeServer && (
           <FullScreenOverlay key="server-settings">
-            <ServerSettingsScreen server={activeServer} onClose={() => setState((s) => ({ ...s, viewMode: 'chat' }))} />
+            <React.Suspense fallback={<DeferredSurfaceFallback label="Space settings" />}>
+              <ServerSettingsScreen server={activeServer} onClose={() => setState((s) => ({ ...s, viewMode: 'chat' }))} />
+            </React.Suspense>
           </FullScreenOverlay>
         )}
       </AnimatePresence>
@@ -1170,18 +1246,21 @@ export const Layout: React.FC = () => {
       <RecoveryConsentPrompt />
 
       {!hasIdentity && (
-        <div className="fixed bottom-0 left-0 right-0 z-[100] flex items-center justify-between gap-4 px-6 py-3 bg-bg-1/95 backdrop-blur-sm border-t border-white/10">
-          <span className="text-xs text-white/60 tracking-wide">You're browsing as a guest. Create a free account to post, react, and join Spaces.</span>
+        <div data-testid="guest-account-banner" className="relative z-20 shrink-0 flex flex-wrap items-center justify-between gap-x-4 gap-y-2 px-3 py-2 sm:px-6 sm:py-3 bg-bg-1/95 backdrop-blur-sm border-b border-white/10">
+          <span className="min-w-0 basis-full flex-1 text-[11px] sm:basis-auto sm:text-xs text-white/60 tracking-wide">
+            <span className="sm:hidden">Guest mode: sign in to post, react, and join Spaces.</span>
+            <span className="hidden sm:inline">You're browsing as a guest. Create a free account to post, react, and join Spaces.</span>
+          </span>
           <div className="flex items-center gap-2 flex-shrink-0">
             <button
               onClick={() => setAuthScreen('login')}
-              className="px-4 py-1.5 rounded-full text-xs font-bold tracking-wide text-white/60 hover:text-white border border-white/15 hover:border-white/30 transition-all"
+              className="touch-target px-4 rounded-full text-xs font-bold tracking-wide text-white/70 hover:text-white border border-white/15 hover:border-white/30 transition-all"
             >
               Sign in
             </button>
             <button
               onClick={() => setAuthScreen('register')}
-              className="px-4 py-1.5 rounded-full text-xs font-bold tracking-wide bg-primary text-bg-0 hover:shadow-glow transition-all"
+              className="touch-target px-4 rounded-full text-xs font-bold tracking-wide bg-primary text-bg-0 hover:shadow-glow transition-all"
             >
               Create account
             </button>
@@ -1219,14 +1298,25 @@ export const Layout: React.FC = () => {
 
             <div
               className={`
-                absolute left-0 top-0 bottom-0 z-[60] h-full
-                ${(isMobile || isTablet) ? 'w-[224px] pointer-events-auto' : ''}
+                absolute left-0 top-0 bottom-0 z-[60] flex h-full
+                ${(isMobile || isTablet) ? 'w-[min(25rem,calc(100vw-1rem))] pointer-events-auto' : ''}
                 ${!(isMobile || isTablet) && (state.channelListCollapsed && !channelListHovered) ? 'w-[10px] pointer-events-auto' : ''}
                 ${!(isMobile || isTablet) && (!state.channelListCollapsed || channelListHovered) ? 'w-[224px] pointer-events-auto' : ''}
               `}
               onMouseEnter={!(isMobile || isTablet) ? handleChannelEnter : undefined}
               onMouseLeave={!(isMobile || isTablet) ? handleChannelLeave : undefined}
             >
+              {(isMobile || isTablet) && (
+                <ServerRail
+                  servers={servers}
+                  activeServerId={state.activeServerId}
+                  connectionState={connectionState}
+                  onSelectServer={handleServerSelect}
+                  onCreateServer={() => hasIdentity && connectionState.canUseConnectivityActions && setState((s) => ({ ...s, showCreateServer: true }))}
+                  showExplore={hasServerDiscovery}
+                  homeBadge={friendRequestBadgeEnabled ? incomingFriendRequests : 0}
+                />
+              )}
               <ChannelRail
                 server={activeServer}
                 activeChannelId={state.activeChannelId}
@@ -1251,10 +1341,10 @@ export const Layout: React.FC = () => {
                 }}
                 onJoinVoice={handleJoinVoice}
                 onWatchVoice={handleWatchVoice}
-                onOpenSettings={() => setState((s) => ({ ...s, showSettings: true }))}
+                onOpenSettings={() => setState((s) => ({ ...s, showSettings: true, mobileMenuOpen: false, memberListCollapsed: true }))}
                 onOpenNodeLaunch={openNodeLaunch}
                 onOpenAuth={() => setAuthScreen('login')}
-                onOpenServerSettings={!isHome && activeServer ? () => setState((s) => ({ ...s, viewMode: 'server-settings' })) : undefined}
+                onOpenServerSettings={!isHome && activeServer ? () => setState((s) => ({ ...s, viewMode: 'server-settings', mobileMenuOpen: false, memberListCollapsed: true })) : undefined}
                 onInvite={!isHome && activeServer ? handleCopyInvite : undefined}
                 onLeaveServer={!isHome && activeServer ? handleLeaveServer : undefined}
                 onDeleteServer={!isHome && activeServer ? handleDeleteServer : undefined}
@@ -1275,12 +1365,14 @@ export const Layout: React.FC = () => {
         <div className="flex-1 flex flex-col min-w-0 relative">
           <div className="flex-1 flex min-w-0 overflow-hidden relative">
             {isExplore ? (
-              <ServerExplorer
-                servers={servers}
-                runtimeSnapshot={shellData.runtimeSnapshot}
-                onSelectServer={handleServerSelect}
-                onOpenJoin={openJoinServerModal}
-              />
+              <React.Suspense fallback={<DeferredSurfaceFallback label="Space explorer" />}>
+                <ServerExplorer
+                  servers={servers}
+                  runtimeSnapshot={shellData.runtimeSnapshot}
+                  onSelectServer={handleServerSelect}
+                  onOpenJoin={openJoinServerModal}
+                />
+              </React.Suspense>
             ) : isHome && showFriends ? (
               <FriendsPanel onOpenDM={handleOpenDM} hasIdentity={hasIdentity} onOpenAuth={() => setAuthScreen('register')} />
             ) : (
@@ -1340,8 +1432,8 @@ export const Layout: React.FC = () => {
                       users={activeServer?.members.length ? activeServer.members : users}
                       mobileMenuOpen={state.mobileMenuOpen}
                       messageLayout={state.messageLayout}
-                      onToggleMobileMenu={() => setState((s) => ({ ...s, mobileMenuOpen: !s.mobileMenuOpen }))}
-                      onToggleMemberList={() => setState((s) => ({ ...s, memberListCollapsed: !s.memberListCollapsed }))}
+                      onToggleMobileMenu={toggleChannelDrawer}
+                      onToggleMemberList={toggleMemberDrawer}
                       onToggleLayout={toggleMessageLayout}
                       isDM={isDM}
                       securityMode={isDM ? shellData.sessionSnapshot?.securityMode : activeServer?.securityMode}
@@ -1367,7 +1459,7 @@ export const Layout: React.FC = () => {
                       <div
                         className={`
                           absolute right-0 top-0 bottom-0 z-40 h-full
-                          ${(isMobile || isTablet) ? 'z-[60] w-[224px] pointer-events-auto' : ''}
+                          ${(isMobile || isTablet) ? 'z-[60] w-[min(20rem,calc(100vw-3rem))] pointer-events-auto' : ''}
                           ${!(isMobile || isTablet) && (state.memberListCollapsed && !memberListHovered) ? 'w-[10px] pointer-events-auto' : ''}
                           ${!(isMobile || isTablet) && (!state.memberListCollapsed || memberListHovered) ? 'w-[224px] pointer-events-auto' : ''}
                         `}
@@ -1383,7 +1475,7 @@ export const Layout: React.FC = () => {
                           collapsed={!(isMobile || isTablet) && state.memberListCollapsed && !memberListHovered}
                           onToggleCollapse={() => {
                             setMemberListHovered(false);
-                            setState((s) => ({ ...s, memberListCollapsed: !s.memberListCollapsed }));
+                            toggleMemberDrawer();
                           }}
                           isOverlay={(isMobile || isTablet) || (memberListHovered && state.memberListCollapsed)}
                           onOpenDM={handleOpenDM}
@@ -1401,11 +1493,11 @@ export const Layout: React.FC = () => {
               initial={{ y: 88 }}
               animate={{ y: 0 }}
               transition={{ type: 'spring', stiffness: 300, damping: 30 }}
-              className="h-[88px] w-full glass-panel flex items-center justify-around px-4 border-t border-white/5 pb-safe z-50 relative"
+              className="min-h-[72px] w-full glass-panel flex items-center justify-around gap-0.5 px-1 pt-2 border-t border-white/5 pb-safe z-50 relative"
             >
               <BottomNavItem active={isHome} onClick={() => handleServerSelect('home')} icon={<Home size={22} />} label="HOME" />
-              <BottomNavItem active={!isHome && !isExplore} onClick={() => setState((s) => ({ ...s, mobileMenuOpen: true }))} icon={<Menu size={22} />} label="CHANNELS" />
-              <BottomNavItem active={false} disabled={!hasIdentity || !connectionState.canUseConnectivityActions} onClick={() => hasIdentity && connectionState.canUseConnectivityActions && setState((s) => ({ ...s, showCreateServer: true }))} icon={<div className="w-12 h-12 rounded-full bg-primary flex items-center justify-center text-bg-0 shadow-glow -mt-6"><UsersIcon size={22} /></div>} label="CREATE" isCore />
+              <BottomNavItem active={!isHome && !isExplore} onClick={openChannelDrawer} icon={<Menu size={22} />} label="CHANNELS" />
+              <BottomNavItem active={false} disabled={!hasIdentity || !connectionState.canUseConnectivityActions} onClick={() => hasIdentity && connectionState.canUseConnectivityActions && setState((s) => ({ ...s, showCreateServer: true }))} icon={<div className="w-11 h-11 rounded-full bg-primary flex items-center justify-center text-bg-0 shadow-glow"><UsersIcon size={21} /></div>} label="CREATE" isCore />
               {hasServerDiscovery && <BottomNavItem active={isExplore} disabled={!connectionState.canUseConnectivityActions} onClick={() => handleServerSelect('explore')} icon={<Compass size={22} />} label="EXPLORE" />}
               <BottomNavItem active={false} onClick={() => setState((s) => ({ ...s, showSettings: true }))} icon={<SettingsIcon size={22} />} label="SETTINGS" />
             </motion.div>
@@ -1422,7 +1514,7 @@ const BottomNavItem = ({ active, disabled = false, onClick, icon, label, isCore 
   <button
     onClick={onClick}
     disabled={disabled}
-    className={`flex flex-col items-center justify-center gap-1 min-w-[48px] min-h-[48px] px-2 py-1 rounded-r1 transition-all ${disabled ? 'opacity-40 cursor-not-allowed' : 'active:scale-95'} ${active ? 'text-primary' : 'text-white/40 active:text-white/60'}`}
+    className={`flex flex-1 max-w-[88px] min-w-[48px] min-h-[48px] flex-col items-center justify-center gap-1 px-1 py-1 rounded-r1 transition-all ${disabled ? 'opacity-40 cursor-not-allowed' : 'active:scale-95'} ${active ? 'text-primary' : 'text-white/50 active:text-white/70'}`}
     aria-label={label}
     title={disabled ? 'Requires an active xorein connection' : label}
   >

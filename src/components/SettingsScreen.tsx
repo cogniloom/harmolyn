@@ -129,6 +129,21 @@ interface SettingsScreenProps {
 type SettingsSection = 'account' | 'privacy' | 'recovery' | 'authorized' | 'network' | 'appearance' | 'notifications' | 'accessibility' | 'mobile' | 'streamer' | 'audio-video' | 'about';
 type FeedbackTone = 'error' | 'info' | 'success';
 
+const SETTINGS_SECTION_OPTIONS: ReadonlyArray<{ id: SettingsSection; label: string }> = [
+  { id: 'account', label: 'My Account' },
+  { id: 'privacy', label: 'Privacy & Safety' },
+  { id: 'recovery', label: 'Backup & Recovery' },
+  { id: 'authorized', label: 'Authorized Hubs' },
+  { id: 'network', label: 'Network' },
+  { id: 'appearance', label: 'Appearance' },
+  { id: 'notifications', label: 'Notifications' },
+  { id: 'accessibility', label: 'Accessibility' },
+  { id: 'audio-video', label: 'Audio & Video' },
+  { id: 'streamer', label: 'Streamer Mode' },
+  { id: 'mobile', label: 'Mobile Sync' },
+  { id: 'about', label: 'About & Legal' },
+];
+
 interface FeedbackState {
   tone: FeedbackTone;
   message: string;
@@ -252,8 +267,42 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
   });
 
   return (
-    <div className="absolute inset-0 z-[100] bg-bg-0 flex flex-col md:flex-row text-white/70 overflow-hidden">
-      <div className="hidden md:flex w-[224px] bg-bg-1 flex-col items-end py-10 px-5 border-r border-white/5">
+    <div className="absolute inset-0 z-[100] flex min-w-0 flex-col overflow-hidden bg-bg-0 text-white/70 md:flex-row">
+      <header className="safe-top sticky top-0 z-[120] flex shrink-0 border-b border-white/10 bg-bg-1/95 backdrop-blur-xl md:hidden">
+        <div className="flex min-w-0 flex-1 items-center gap-2 px-3 py-2">
+          <label htmlFor="mobile-settings-section" className="sr-only">Settings section</label>
+          <select
+            id="mobile-settings-section"
+            aria-label="Settings section"
+            value={activeSection}
+            onChange={(event) => setActiveSection(event.target.value as SettingsSection)}
+            className="focus-ring h-11 min-w-0 flex-1 rounded-r1 border border-white/10 bg-surface-dark px-3 text-base font-semibold text-white outline-none"
+          >
+            {SETTINGS_SECTION_OPTIONS.map((section) => (
+              <option key={section.id} value={section.id}>{section.label}</option>
+            ))}
+          </select>
+          <button
+            type="button"
+            onClick={() => setLogoutConfirmOpen(true)}
+            aria-label="Open logout confirmation"
+            title="Log out"
+            className="focus-ring flex h-11 w-11 shrink-0 items-center justify-center rounded-full border border-accent-danger/25 bg-accent-danger/10 text-accent-danger transition-colors hover:bg-accent-danger/20"
+          >
+            <LogOut size={18} />
+          </button>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close settings"
+            className="focus-ring flex h-11 w-11 shrink-0 items-center justify-center rounded-full border border-white/10 bg-white/5 text-white/70 transition-colors hover:border-primary/40 hover:text-primary"
+          >
+            <X size={20} />
+          </button>
+        </div>
+      </header>
+
+      <div className="hidden min-h-0 w-[224px] shrink-0 flex-col items-end overflow-y-auto overscroll-contain border-r border-white/5 bg-bg-1 px-5 py-10 md:flex">
         <div className="w-full space-y-1.5">
           <div className="micro-label text-white/20 px-3 mb-3">User settings</div>
           <SettingsItem icon={<User size={16} />} label="My Account" active={activeSection === 'account'} onClick={() => setActiveSection('account')} />
@@ -285,9 +334,9 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto bg-bg-2 relative">
+      <div className="relative min-h-0 min-w-0 flex-1 overflow-y-auto overscroll-contain bg-bg-2">
         <div className="absolute inset-0 grid-overlay opacity-30 pointer-events-none" />
-        <div className="max-w-[640px] mx-auto py-12 px-6 md:px-10">
+        <div className="mx-auto max-w-[640px] min-w-0 px-4 pb-[calc(2.5rem+env(safe-area-inset-bottom))] pt-6 md:px-10 md:py-12">
           {activeSection === 'account' && <AccountSection user={user} showFeedback={showFeedback} onOpenRecovery={() => setActiveSection('recovery')} />}
           {activeSection === 'privacy' && <PrivacySection showFeedback={showFeedback} />}
           {activeSection === 'recovery' && <RecoverySection showFeedback={showFeedback} />}
@@ -372,12 +421,17 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
         </div>
       )}
 
-      <div className="absolute top-6 right-6 flex flex-col items-center gap-1.5 group cursor-pointer z-[110]" onClick={onClose}>
-        <div className="w-10 h-10 rounded-full border border-white/10 glass-panel flex items-center justify-center group-hover:border-primary group-hover:shadow-glow transition-all">
+      <button
+        type="button"
+        aria-label="Close settings"
+        className="focus-ring absolute right-6 top-6 z-[110] hidden flex-col items-center gap-1.5 rounded-full md:flex group"
+        onClick={onClose}
+      >
+        <div className="w-11 h-11 rounded-full border border-white/10 glass-panel flex items-center justify-center group-hover:border-primary group-hover:shadow-glow transition-all">
           <X size={20} className="text-white group-hover:text-primary" />
         </div>
         <span className="micro-label text-[7px] text-white/20 group-hover:text-white">ESC</span>
-      </div>
+      </button>
     </div>
   );
 };

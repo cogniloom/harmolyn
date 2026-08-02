@@ -82,13 +82,13 @@ export const NodeLaunchScreen: React.FC<NodeLaunchScreenProps> = ({
   const loopbackEndpoint = isLoopbackEndpoint(endpoint);
   const privateNetworkEndpoint = isPrivateNetworkEndpoint(endpoint);
   return (
-    <div className="fixed inset-0 z-[260] bg-bg-0 overflow-hidden">
+    <div className="responsive-overlay-scroll fixed inset-0 z-[260] bg-bg-0">
       <div className="absolute inset-0 bg-gradient-to-b from-bg-0 via-bg-2 to-bg-0" />
       <div className="absolute inset-0 grid-overlay opacity-25" />
       <div className="absolute inset-0 pointer-events-none" style={{ background: 'radial-gradient(circle at 50% 0%, rgba(19,221,236,0.12) 0%, transparent 55%)' }} />
 
-      <div className="relative z-10 flex min-h-full items-center justify-center px-6 py-10">
-        <div className="w-full max-w-[620px]">
+      <div className="relative z-10 flex min-h-full w-full">
+        <div className="m-auto w-full max-w-[620px]">
           <div className="text-center mb-8">
             <div className="inline-flex items-center justify-center w-16 h-16 rounded-r3 bg-primary/10 border border-primary/20 mb-5 shadow-glow">
               <Shield size={30} className="text-primary" />
@@ -142,7 +142,7 @@ export const NodeLaunchScreen: React.FC<NodeLaunchScreenProps> = ({
                     spellCheck={false}
                     aria-invalid={!endpointLooksValid}
                     aria-describedby="node-address-help"
-                    className={`w-full h-12 pl-4 pr-10 rounded-full bg-surface-dark border text-white text-sm font-mono placeholder:text-white/25 focus:outline-none transition-colors ${
+                    className={`w-full h-12 pl-4 pr-12 rounded-full bg-surface-dark border text-white text-sm font-mono placeholder:text-white/25 focus:outline-none transition-colors ${
                       endpointLooksValid ? 'border-white/10 focus:border-primary/40' : 'border-accent-danger/50 focus:border-accent-danger/70'
                     }`}
                   />
@@ -151,7 +151,7 @@ export const NodeLaunchScreen: React.FC<NodeLaunchScreenProps> = ({
                       type="button"
                       onClick={() => onEndpointChange('')}
                       aria-label="Clear node address"
-                      className="focus-ring absolute right-1.5 top-1/2 -translate-y-1/2 flex h-8 w-8 items-center justify-center rounded-full text-white/40 hover:text-white hover:bg-white/10 transition-colors"
+                      className="touch-target focus-ring absolute right-0.5 top-1/2 -translate-y-1/2 flex items-center justify-center rounded-full text-white/40 hover:text-white hover:bg-white/10 transition-colors"
                     >
                       <X size={15} />
                     </button>

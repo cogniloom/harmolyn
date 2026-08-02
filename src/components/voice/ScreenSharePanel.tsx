@@ -47,15 +47,15 @@ export const ScreenSharePanel: React.FC<ScreenSharePanelProps> = ({ onClose, onS
   };
 
   return (
-    <div className="absolute inset-0 z-[110] bg-bg-0/95 backdrop-blur-xl flex items-center justify-center p-4 animate-in fade-in duration-200">
+    <div className="responsive-overlay-scroll absolute inset-0 z-[110] flex items-center justify-center bg-bg-0/95 backdrop-blur-xl animate-in fade-in duration-200">
       <div
         role="dialog"
         aria-modal="true"
         aria-labelledby="screen-share-title"
-        className="glass-card rounded-r3 border border-white/10 w-full max-w-[480px] shadow-2xl"
+        className="flex max-h-full w-full max-w-[480px] flex-col overflow-hidden rounded-r3 border border-white/10 glass-card shadow-2xl"
       >
         {/* Header */}
-        <div className="px-6 py-5 border-b border-white/5 flex items-center justify-between">
+        <div className="flex shrink-0 items-center justify-between border-b border-white/5 px-4 py-3 sm:px-6 sm:py-5">
           <div className="flex items-center gap-3">
             <MonitorUp size={20} className="text-primary" />
             <div>
@@ -67,12 +67,13 @@ export const ScreenSharePanel: React.FC<ScreenSharePanelProps> = ({ onClose, onS
             onClick={onClose}
             disabled={sharing || Boolean(isSharing)}
             aria-label="Close screen share"
-            className="w-10 h-10 rounded-full border border-white/10 glass-panel flex items-center justify-center hover:border-primary transition-all focus-ring disabled:opacity-40 disabled:cursor-not-allowed"
+            className="touch-target rounded-full border border-white/10 glass-panel flex items-center justify-center hover:border-primary transition-all focus-ring disabled:opacity-40 disabled:cursor-not-allowed"
           >
             <X size={18} className="text-white/60" />
           </button>
         </div>
 
+        <div className="min-h-0 overflow-y-auto overscroll-contain">
         {disabledReason && (
           <div className="mx-6 mt-4 rounded-r2 border border-accent-warning/20 bg-accent-warning/10 px-4 py-3 text-[10px] font-mono text-accent-warning">
             {disabledReason}
@@ -86,7 +87,7 @@ export const ScreenSharePanel: React.FC<ScreenSharePanelProps> = ({ onClose, onS
         )}
 
         {/* Share Type */}
-        <div className="px-6 py-5">
+        <div className="px-4 py-4 sm:px-6 sm:py-5">
           <div className="micro-label text-white/30 mb-3">SHARE TYPE</div>
           <div className="space-y-2">
             {SHARE_OPTIONS.map(opt => (
@@ -116,7 +117,7 @@ export const ScreenSharePanel: React.FC<ScreenSharePanelProps> = ({ onClose, onS
         </div>
 
         {/* Quality */}
-        <div className="px-6 pb-5">
+        <div className="px-4 pb-4 sm:px-6 sm:pb-5">
           <div className="micro-label text-white/30 mb-3">STREAM QUALITY</div>
           <div className="flex gap-2">
             {QUALITY_OPTIONS.map(q => (
@@ -138,8 +139,10 @@ export const ScreenSharePanel: React.FC<ScreenSharePanelProps> = ({ onClose, onS
           </div>
         </div>
 
+        </div>
+
         {/* Start */}
-        <div className="px-6 pb-6">
+        <div className="shrink-0 border-t border-white/5 px-4 py-3 sm:px-6 sm:py-4">
           <button
             onClick={handleStart}
             disabled={sharing || Boolean(disabledReason) || Boolean(isSharing)}

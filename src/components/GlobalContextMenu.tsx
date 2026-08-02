@@ -110,10 +110,12 @@ export const ContextMenuProvider: React.FC<{ children: React.ReactNode }> = ({ c
   const showMenu = useCallback((x: number, y: number, sections: ContextMenuSection[]) => {
     // Clamp to viewport so menu doesn't overflow offscreen
     const menuW = 200;
-    const menuH = sections.reduce((h, s) => h + s.items.length * 32 + 9, 8);
+    const menuH = sections.reduce((h, s) => h + s.items.length * 44 + 9, 8);
     const viewport = safeViewportSize();
-    const clampedX = viewport.width === null ? x : Math.min(x, viewport.width - menuW - 8);
-    const clampedY = viewport.height === null ? y : Math.min(y, viewport.height - menuH - 8);
+    const renderedMenuW = viewport.width === null ? menuW : Math.min(menuW, Math.max(0, viewport.width - 8));
+    const renderedMenuH = viewport.height === null ? menuH : Math.min(menuH, Math.max(0, viewport.height - 8));
+    const clampedX = viewport.width === null ? x : Math.min(x, viewport.width - renderedMenuW - 4);
+    const clampedY = viewport.height === null ? y : Math.min(y, viewport.height - renderedMenuH - 4);
     setMenu({ x: Math.max(4, clampedX), y: Math.max(4, clampedY), sections });
   }, []);
 
@@ -124,7 +126,12 @@ export const ContextMenuProvider: React.FC<{ children: React.ReactNode }> = ({ c
     if (!menu) return;
     const handleClick = () => closeMenu();
     const handleKey = (e: KeyboardEvent) => { if (e.key === 'Escape') closeMenu(); };
-    const handleScroll = () => closeMenu();
+    const handleScroll = (event: Event) => {
+      // The menu itself can scroll on short viewports. Only outside scrolling
+      // should dismiss it.
+      if (event.target instanceof Node && menuRef.current?.contains(event.target)) return;
+      closeMenu();
+    };
     window.addEventListener('click', handleClick);
     window.addEventListener('keydown', handleKey);
     window.addEventListener('scroll', handleScroll, true);
@@ -161,7 +168,7 @@ export const ContextMenuProvider: React.FC<{ children: React.ReactNode }> = ({ c
           ref={menuRef}
           role="menu"
           aria-label="Context menu"
-          className="fixed z-[200] w-[200px] glass-card rounded-r2 shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-100"
+          className="fixed z-[200] max-h-[calc(100dvh-0.5rem)] w-[min(200px,calc(100vw-0.5rem))] overflow-x-hidden overflow-y-auto overscroll-contain rounded-r2 glass-card shadow-2xl animate-in fade-in zoom-in-95 duration-100"
           style={{ top: menu.y, left: menu.x }}
           onClick={(e) => e.stopPropagation()}
         >
@@ -175,7 +182,7 @@ export const ContextMenuProvider: React.FC<{ children: React.ReactNode }> = ({ c
                     role="menuitem"
                     onClick={() => { if (!item.disabled) { item.onClick(); closeMenu(); } }}
                     disabled={item.disabled}
-                    className={`w-full text-left px-3 py-1.5 rounded-r1 text-[12px] flex items-center gap-2 transition-colors ${
+                    className={`touch-target flex w-full items-center gap-2 rounded-r1 px-3 py-2 text-left text-[12px] transition-colors ${
                       item.danger
                         ? 'text-accent-danger hover:bg-accent-danger/15'
                         : item.disabled
@@ -195,4 +202,3 @@ export const ContextMenuProvider: React.FC<{ children: React.ReactNode }> = ({ c
     </ContextMenuContext.Provider>
   );
 };
-

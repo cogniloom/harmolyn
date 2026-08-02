@@ -48,37 +48,39 @@ export function RecoveryConsentPrompt() {
   };
 
   return (
-    <div className="fixed inset-0 z-[320] flex items-center justify-center bg-black/60 backdrop-blur-sm">
-      <div className="w-full max-w-[420px] mx-6 glass-card rounded-r3 border border-primary/20 p-6 space-y-4 shadow-2xl">
-        <div className="flex items-center gap-3">
-          <div className="w-11 h-11 rounded-full bg-primary/10 flex items-center justify-center text-primary"><ShieldCheck size={20} /></div>
-          <div className="flex-1">
+    <div className="responsive-overlay-scroll fixed inset-0 z-[320] flex items-center justify-center bg-black/60 backdrop-blur-sm">
+      <div role="dialog" aria-modal="true" aria-label="Account recovery request" className="flex max-h-full min-h-0 w-full max-w-[420px] flex-col overflow-hidden rounded-r3 border border-primary/20 shadow-2xl glass-card">
+        <div className="flex shrink-0 items-center gap-3 border-b border-white/5 p-4 sm:p-5">
+          <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary"><ShieldCheck size={20} /></div>
+          <div className="min-w-0 flex-1">
             <div className="text-white font-bold">Account recovery request</div>
             <div className="text-[11px] text-white/45">A friend is trying to recover their account using the backup you hold.</div>
           </div>
-          <button type="button" onClick={deny} aria-label="Dismiss" className="text-white/30 hover:text-white/70 transition-colors"><X size={16} /></button>
+          <button type="button" onClick={deny} aria-label="Dismiss" className="touch-target flex shrink-0 items-center justify-center rounded-full text-white/30 transition-colors hover:bg-white/5 hover:text-white/70 focus-ring"><X size={16} /></button>
         </div>
 
-        <div className="space-y-2 text-[11px]">
-          <div className="rounded-r2 bg-bg-0/60 border border-white/10 px-3 py-2">
-            <div className="micro-label text-white/30">Account being recovered</div>
-            <code className="text-white/70 font-mono break-all">{current.ownerPeerId}</code>
+        <div className="min-h-0 space-y-4 overflow-y-auto overscroll-contain p-4 sm:p-5">
+          <div className="space-y-2 text-[11px]">
+            <div className="rounded-r2 bg-bg-0/60 border border-white/10 px-3 py-2">
+              <div className="micro-label text-white/30">Account being recovered</div>
+              <code className="text-white/70 font-mono break-all">{current.ownerPeerId}</code>
+            </div>
+            <div className="rounded-r2 bg-bg-0/60 border border-white/10 px-3 py-2">
+              <div className="micro-label text-white/30">Requesting device</div>
+              <code className="text-white/70 font-mono break-all">{current.requesterPeerId}</code>
+            </div>
           </div>
-          <div className="rounded-r2 bg-bg-0/60 border border-white/10 px-3 py-2">
-            <div className="micro-label text-white/30">Requesting device</div>
-            <code className="text-white/70 font-mono break-all">{current.requesterPeerId}</code>
-          </div>
+
+          <p className="text-[11px] text-white/55 leading-relaxed">
+            Only approve if you’re confident this is really your friend (check with them out-of-band). The backup stays encrypted — your friend still needs their password to use it.
+          </p>
         </div>
 
-        <p className="text-[11px] text-white/55 leading-relaxed">
-          Only approve if you’re confident this is really your friend (check with them out-of-band). The backup stays encrypted — your friend still needs their password to use it.
-        </p>
-
-        <div className="flex gap-2">
-          <button type="button" onClick={() => void approve()} disabled={busy} className="flex-1 h-11 rounded-full bg-primary text-bg-0 font-bold text-sm hover:shadow-glow transition-all disabled:opacity-50">
+        <div className="flex shrink-0 flex-wrap gap-2 border-t border-white/5 px-4 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:px-5 sm:py-4">
+          <button type="button" onClick={() => void approve()} disabled={busy} className="touch-target w-full rounded-full bg-primary px-4 text-sm font-bold text-bg-0 transition-all hover:shadow-glow disabled:opacity-50 sm:w-auto sm:flex-1">
             {busy ? 'Sending…' : 'Approve & send backup'}
           </button>
-          <button type="button" onClick={deny} className="px-5 h-11 rounded-full border border-white/10 text-white/60 text-sm hover:bg-white/5 transition-all">Deny</button>
+          <button type="button" onClick={deny} className="touch-target w-full rounded-full border border-white/10 px-5 text-sm text-white/60 transition-all hover:bg-white/5 sm:w-auto">Deny</button>
         </div>
       </div>
     </div>

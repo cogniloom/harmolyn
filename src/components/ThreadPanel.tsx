@@ -88,7 +88,7 @@ export const ThreadPanel: React.FC<ThreadPanelProps> = ({ parentMessage, parentU
         role="dialog"
         aria-modal="true"
         aria-label="Thread"
-        className="absolute top-0 right-0 bottom-0 w-[320px] max-w-full bg-bg-0 border-l border-white/10 z-40 flex flex-col animate-in slide-in-from-right duration-300 shadow-2xl"
+        className="absolute inset-y-0 right-0 z-40 flex h-full max-h-[100dvh] min-h-0 w-full max-w-full flex-col border-l border-white/10 bg-bg-0 shadow-2xl animate-in slide-in-from-right duration-300 sm:w-[360px] lg:w-[400px]"
       >
         {/* Header */}
         <div className="h-[52px] px-5 flex items-center justify-between border-b border-white/5 shrink-0">
@@ -99,23 +99,23 @@ export const ThreadPanel: React.FC<ThreadPanelProps> = ({ parentMessage, parentU
               <span className="micro-label text-white/30 text-[8px]">{replies.length} REPLIES</span>
             </div>
           </div>
-          <button onClick={onClose} aria-label="Close thread" className="focus-ring p-1.5 text-white/40 hover:text-primary transition-colors rounded-full hover:bg-white/5">
+          <button onClick={onClose} aria-label="Close thread" className="touch-target focus-ring flex shrink-0 items-center justify-center rounded-full text-white/40 transition-colors hover:bg-white/5 hover:text-primary">
             <X size={16} />
           </button>
         </div>
 
         {/* Parent message */}
-        <div className="px-4 py-3 border-b border-white/5 bg-white/[0.02]">
+        <div className="max-h-[min(35dvh,14rem)] shrink-0 overflow-y-auto overscroll-contain border-b border-white/5 bg-white/[0.02] px-4 py-3">
           <div className="flex items-center gap-2 mb-1.5">
             <img referrerPolicy="no-referrer" src={resolveAvatarSrc(normalizedParentUser.avatar, normalizedParentUser.username)} className="w-6 h-6 rounded-full" alt={normalizedParentUser.username} />
             <span className="text-xs font-bold" style={{ color: normalizedParentUser.color || '#F6F8F8' }}>{normalizedParentUser.username}</span>
             <span className="text-[9px] text-white/25 font-mono">{parentMessage.timestamp}</span>
           </div>
-          <div className="text-xs text-white/70 leading-relaxed">{renderMarkdown(parentMessage.content)}</div>
+          <div className="break-words text-xs leading-relaxed text-white/70">{renderMarkdown(parentMessage.content)}</div>
         </div>
 
         {/* Replies */}
-        <div className="flex-1 overflow-y-auto p-4 space-y-4 no-scrollbar">
+        <div className="min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain p-4 no-scrollbar">
           {replies.map(reply => {
             const user = getUser(reply.userId);
             return (
@@ -126,7 +126,7 @@ export const ThreadPanel: React.FC<ThreadPanelProps> = ({ parentMessage, parentU
                     <span className="text-[11px] font-bold" style={{ color: user.color || '#F6F8F8' }}>{user.username}</span>
                     <span className="text-[8px] text-white/20 font-mono">{reply.timestamp}</span>
                   </div>
-                  <div className="text-xs text-white/70 leading-relaxed">{renderMarkdown(reply.content)}</div>
+                  <div className="break-words text-xs leading-relaxed text-white/70">{renderMarkdown(reply.content)}</div>
                 </div>
               </div>
             );
@@ -134,7 +134,7 @@ export const ThreadPanel: React.FC<ThreadPanelProps> = ({ parentMessage, parentU
         </div>
 
         {/* Input */}
-        <div className="p-3 border-t border-white/5">
+        <div className="shrink-0 border-t border-white/5 px-3 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
           <label htmlFor="thread-reply-input" className="sr-only">Reply to thread</label>
           <div className="glass-realistic rounded-r2 flex items-center p-1 focus-within:border-primary/50 transition-all">
             <input
@@ -149,7 +149,7 @@ export const ThreadPanel: React.FC<ThreadPanelProps> = ({ parentMessage, parentU
             <button
               onClick={handleSend}
               disabled={!canSend}
-              className="focus-ring w-8 h-8 rounded-full bg-primary flex items-center justify-center text-bg-0 shadow-glow-sm transition-all hover:scale-105 disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:scale-100"
+              className="touch-target focus-ring flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-primary text-bg-0 shadow-glow-sm transition-all hover:scale-105 disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:scale-100"
               aria-label="Send Reply"
             >
               <Send size={14} />

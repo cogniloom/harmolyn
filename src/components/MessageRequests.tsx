@@ -124,17 +124,17 @@ export const MessageRequests: React.FC<MessageRequestsProps> = ({ requests, onAc
                   Message request
                 </div>
               </div>
-              <div className="flex gap-1.5 flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+              <div className="touch-action-reveal flex gap-1.5 flex-shrink-0 transition-opacity">
                 <button
                   onClick={() => onAccept(req.id)}
-                  className="w-8 h-8 rounded-full bg-accent-success/10 border border-accent-success/20 flex items-center justify-center text-accent-success hover:bg-accent-success/20 transition-all"
+                  className="compact-touch-target rounded-full bg-accent-success/10 border border-accent-success/20 flex items-center justify-center text-accent-success hover:bg-accent-success/20 transition-all"
                   aria-label="Accept request"
                 >
                   <Check size={14} />
                 </button>
                 <button
                   onClick={() => onIgnore(req.id)}
-                  className="w-8 h-8 rounded-full bg-accent-danger/10 border border-accent-danger/20 flex items-center justify-center text-accent-danger hover:bg-accent-danger/20 transition-all"
+                  className="compact-touch-target rounded-full bg-accent-danger/10 border border-accent-danger/20 flex items-center justify-center text-accent-danger hover:bg-accent-danger/20 transition-all"
                   aria-label="Ignore request"
                 >
                   <X size={14} />
