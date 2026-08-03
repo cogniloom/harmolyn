@@ -40,7 +40,7 @@
     "@emnapi/runtime": "^2.0.0-alpha.3",
     "@libp2p/circuit-relay-v2": "^4.2.6",
     "@libp2p/dcutr": "^3.0.25",
-    "@libp2p/identify": "^4.1.7",
+    "@libp2p/identify": "^4.1.12",
     "@libp2p/ping": "^3.1.6",
     "@libp2p/webrtc": "^6.0.28",
     "@libp2p/websockets": "^10.1.14",
