@@ -14,7 +14,7 @@ interface RegisterScreenProps {
   onClose?: () => void;
 }
 
-const MIN_PASSWORD_LENGTH = 10;
+const MIN_PASSWORD_LENGTH = 12;
 
 export const RegisterScreen: React.FC<RegisterScreenProps> = ({ onCreated, onSwitchToLogin, onClose }) => {
   const [displayName, setDisplayName] = useState('');
@@ -25,9 +25,12 @@ export const RegisterScreen: React.FC<RegisterScreenProps> = ({ onCreated, onSwi
   const [consented, setConsented] = useState(false);
   const [openDoc, setOpenDoc] = useState<'terms' | 'privacy' | 'guidelines' | null>(null);
   const createMutation = useCreateIdentity();
+  const pending = createMutation.isPending;
+  const passwordsMatch = Boolean(confirmPassword) && password === confirmPassword;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (pending) return;
     setFeedback(null);
     const name = displayName.trim();
     if (!name) {
@@ -49,14 +52,20 @@ export const RegisterScreen: React.FC<RegisterScreenProps> = ({ onCreated, onSwi
     try {
       const result = await createMutation.mutateAsync({ displayName: name, bio: bio.trim() || undefined, passphrase: password });
       const peerId = (result as { peer_id?: string })?.peer_id ?? '';
+      // Do not retain password material in React state after the crypto operation
+      // has completed. The provider owns the encrypted identity from here.
+      setPassword('');
+      setConfirmPassword('');
       onCreated({ peerId, displayName: name });
-    } catch (error) {
-      setFeedback({ tone: 'error', message: error instanceof Error ? error.message : 'Failed to create your account.' });
+    } catch {
+      // Creation crosses crypto/storage/native boundaries; raw errors can contain
+      // implementation details and should not be rendered into the UI.
+      setFeedback({ tone: 'error', message: 'Could not create your account. Nothing was published; try again.' });
     }
   };
 
   return (
-    <div className="fixed inset-0 z-[200] bg-bg-0 flex items-center justify-center overflow-auto">
+    <div className="fixed inset-0 z-[200] bg-bg-0 flex items-center justify-center overflow-auto" aria-busy={pending}>
       <div className="absolute inset-0 bg-gradient-to-b from-bg-0 via-bg-2 to-bg-0" />
       <div className="absolute inset-0" style={{ background: 'radial-gradient(circle at 50% 0%, rgba(19,221,236,0.08) 0%, transparent 60%)' }} />
       <div className="absolute inset-0 grid-overlay opacity-30" />
@@ -65,8 +74,9 @@ export const RegisterScreen: React.FC<RegisterScreenProps> = ({ onCreated, onSwi
         <button
           type="button"
           onClick={onClose}
+          disabled={pending}
           aria-label="Close"
-          className="absolute top-5 right-5 z-20 p-2 rounded-full text-text-tertiary hover:text-text-primary hover:bg-white/5 transition-all"
+          className="absolute top-5 right-5 z-20 p-2 rounded-full text-text-tertiary hover:text-text-primary hover:bg-white/5 transition-all disabled:opacity-40 disabled:cursor-wait"
         >
           <X size={20} />
         </button>
@@ -98,50 +108,85 @@ export const RegisterScreen: React.FC<RegisterScreenProps> = ({ onCreated, onSwi
           )}
 
           <div className="space-y-1.5">
-            <label className="micro-label text-text-tertiary">NICKNAME</label>
+            <label htmlFor="register-display-name" className="micro-label text-text-tertiary">NICKNAME</label>
             <input
+              id="register-display-name"
+              name="name"
               type="text"
               value={displayName}
               onChange={(e) => setDisplayName(e.target.value)}
               placeholder="e.g. Sam"
               maxLength={64}
-              className="w-full h-14 px-5 rounded-full bg-surface-dark border border-stroke-subtle text-text-primary text-body placeholder:text-text-disabled focus:border-stroke-primary focus:outline-none transition-colors"
+              autoComplete="nickname"
+              disabled={pending}
+              className="w-full h-14 px-5 rounded-full bg-surface-dark border border-stroke-subtle text-text-primary text-body placeholder:text-text-disabled focus:border-stroke-primary focus:outline-none transition-colors disabled:opacity-60"
             />
           </div>
 
           <div className="space-y-1.5">
-            <label className="micro-label text-text-tertiary">PASSWORD</label>
+            <label htmlFor="register-password" className="micro-label text-text-tertiary">PASSWORD</label>
             <input
+              id="register-password"
+              name="new-password"
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               placeholder={`At least ${MIN_PASSWORD_LENGTH} characters`}
               autoComplete="new-password"
-              className="w-full h-14 px-5 rounded-full bg-surface-dark border border-stroke-subtle text-text-primary text-body placeholder:text-text-disabled focus:border-stroke-primary focus:outline-none transition-colors"
+              minLength={MIN_PASSWORD_LENGTH}
+              required
+              autoCapitalize="none"
+              autoCorrect="off"
+              spellCheck={false}
+              disabled={pending}
+              aria-describedby="register-password-help"
+              className="w-full h-14 px-5 rounded-full bg-surface-dark border border-stroke-subtle text-text-primary text-body placeholder:text-text-disabled focus:border-stroke-primary focus:outline-none transition-colors disabled:opacity-60"
             />
+            <p id="register-password-help" className="px-1 text-[10px] text-text-disabled">
+              Use {MIN_PASSWORD_LENGTH}+ characters. A long, unique passphrase is easier to remember and harder to guess.
+            </p>
           </div>
 
           <div className="space-y-1.5">
-            <label className="micro-label text-text-tertiary">CONFIRM PASSWORD</label>
+            <label htmlFor="register-confirm-password" className="micro-label text-text-tertiary">CONFIRM PASSWORD</label>
             <input
+              id="register-confirm-password"
+              name="confirm-password"
               type="password"
               value={confirmPassword}
               onChange={(e) => setConfirmPassword(e.target.value)}
               placeholder="Re-enter your password"
               autoComplete="new-password"
-              className="w-full h-14 px-5 rounded-full bg-surface-dark border border-stroke-subtle text-text-primary text-body placeholder:text-text-disabled focus:border-stroke-primary focus:outline-none transition-colors"
+              minLength={MIN_PASSWORD_LENGTH}
+              required
+              autoCapitalize="none"
+              autoCorrect="off"
+              spellCheck={false}
+              disabled={pending}
+              aria-invalid={Boolean(confirmPassword) && !passwordsMatch}
+              className={`w-full h-14 px-5 rounded-full bg-surface-dark border text-text-primary text-body placeholder:text-text-disabled focus:outline-none transition-colors disabled:opacity-60 ${
+                confirmPassword && !passwordsMatch ? 'border-accent-danger/60 focus:border-accent-danger' : passwordsMatch ? 'border-accent-success/40 focus:border-accent-success' : 'border-stroke-subtle focus:border-stroke-primary'
+              }`}
             />
+            {confirmPassword && (
+              <p className={`px-1 text-[10px] ${passwordsMatch ? 'text-accent-success' : 'text-accent-danger'}`} aria-live="polite">
+                {passwordsMatch ? 'Passwords match.' : 'Passwords do not match yet.'}
+              </p>
+            )}
           </div>
 
           <div className="space-y-1.5">
-            <label className="micro-label text-text-tertiary">BIO <span className="text-text-disabled">(OPTIONAL)</span></label>
+            <label htmlFor="register-bio" className="micro-label text-text-tertiary">BIO <span className="text-text-disabled">(OPTIONAL)</span></label>
             <textarea
+              id="register-bio"
+              name="bio"
               value={bio}
               onChange={(e) => setBio(e.target.value)}
               rows={3}
               placeholder="A short description about yourself…"
               maxLength={200}
-              className="w-full px-5 py-3 rounded-r2 bg-surface-dark border border-stroke-subtle text-text-primary text-body placeholder:text-text-disabled focus:border-stroke-primary focus:outline-none transition-colors resize-none"
+              disabled={pending}
+              className="w-full px-5 py-3 rounded-r2 bg-surface-dark border border-stroke-subtle text-text-primary text-body placeholder:text-text-disabled focus:border-stroke-primary focus:outline-none transition-colors resize-none disabled:opacity-60"
             />
           </div>
 
@@ -156,14 +201,15 @@ export const RegisterScreen: React.FC<RegisterScreenProps> = ({ onCreated, onSwi
               type="checkbox"
               checked={consented}
               onChange={(e) => setConsented(e.target.checked)}
-              className="mt-0.5 h-4 w-4 shrink-0 accent-primary"
+              disabled={pending}
+              className="mt-0.5 h-4 w-4 shrink-0 accent-primary disabled:opacity-60"
               aria-label="Confirm age and agree to the Terms and Community Guidelines"
             />
             <span className="text-caption text-text-secondary leading-relaxed">
               {AGE_REQUIREMENT_TEXT} I agree to the{' '}
-              <button type="button" onClick={() => setOpenDoc('terms')} className="text-primary hover:underline font-semibold">Terms of Service</button>,{' '}
-              <button type="button" onClick={() => setOpenDoc('privacy')} className="text-primary hover:underline font-semibold">Privacy Policy</button>, and{' '}
-              <button type="button" onClick={() => setOpenDoc('guidelines')} className="text-primary hover:underline font-semibold">Community Guidelines</button>.
+              <button type="button" disabled={pending} onClick={() => setOpenDoc('terms')} className="text-primary hover:underline font-semibold disabled:opacity-50">Terms of Service</button>,{' '}
+              <button type="button" disabled={pending} onClick={() => setOpenDoc('privacy')} className="text-primary hover:underline font-semibold disabled:opacity-50">Privacy Policy</button>, and{' '}
+              <button type="button" disabled={pending} onClick={() => setOpenDoc('guidelines')} className="text-primary hover:underline font-semibold disabled:opacity-50">Community Guidelines</button>.
             </span>
           </label>
 
@@ -171,10 +217,10 @@ export const RegisterScreen: React.FC<RegisterScreenProps> = ({ onCreated, onSwi
 
           <button
             type="submit"
-            disabled={createMutation.isPending || !consented}
+            disabled={pending || !consented || password.length < MIN_PASSWORD_LENGTH || password !== confirmPassword || !displayName.trim()}
             className="w-full h-14 rounded-full bg-primary text-bg-0 font-bold text-body-strong flex items-center justify-center gap-2 hover:shadow-glow transition-all disabled:opacity-40 mt-2"
           >
-            {createMutation.isPending ? (
+            {pending ? (
               <div className="w-5 h-5 border-2 border-bg-0/30 border-t-bg-0 rounded-full animate-spin" />
             ) : (
               <>
@@ -187,7 +233,7 @@ export const RegisterScreen: React.FC<RegisterScreenProps> = ({ onCreated, onSwi
 
           <p className="text-center text-caption text-text-tertiary mt-3">
             Already have an account?{' '}
-            <button type="button" onClick={onSwitchToLogin} className="text-primary hover:underline font-semibold">
+            <button type="button" disabled={pending} onClick={onSwitchToLogin} className="text-primary hover:underline font-semibold disabled:opacity-50">
               Sign in
             </button>
           </p>
