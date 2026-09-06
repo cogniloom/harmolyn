@@ -110,6 +110,7 @@ jobs:
             x86_64-unknown-linux-gnu|aarch64-unknown-linux-gnu) ;;
             *) echo "Unsupported or missing Linux Rust host triple" >&2; exit 1 ;;
           esac
-          npm exec -- tauri build --debug --no-bundle --target "$target" -- --locked
-        env:
-          TAURI_SIGNING_PRIVATE_KEY: ""
+          # Debug validation produces no updater artifacts and receives no signing key.
+          # Signed release configuration and its mandatory keys remain unchanged.
+          npm exec -- tauri build --debug --no-bundle --target "$target" \
+            --config '{"bundle":{"createUpdaterArtifacts":false}}' -- --locked
