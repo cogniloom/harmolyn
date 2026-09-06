@@ -101,6 +101,15 @@ jobs:
       - run: npm run build
       - run: cargo test --locked --manifest-path src-tauri/Cargo.toml
       - name: Build native application without a release bundle
-        run: npm exec -- tauri build --debug --no-bundle
+        shell: bash
+        run: |
+          # Use Rust's canonical host triple instead of the CLI's architecture
+          # inference (which rejects feature-suffixed architectures such as x64+ssse3).
+          target="$(rustc -vV | sed -n 's/^host: //p')"
+          case "$target" in
+            x86_64-unknown-linux-gnu|aarch64-unknown-linux-gnu) ;;
+            *) echo "Unsupported or missing Linux Rust host triple" >&2; exit 1 ;;
+          esac
+          npm exec -- tauri build --debug --no-bundle --target "$target" -- --locked
         env:
           TAURI_SIGNING_PRIVATE_KEY: ""
