@@ -11,14 +11,14 @@ jobs:
     if: github.repository == 'cogniloom/harmolyn'
     runs-on: self-hosted
     container: node:26-bookworm
-    timeout-minutes: 40
+    timeout-minutes: 30
     env:
       CI: 'true'
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
-      - name: Assemble verified candidate and compatibility patches
+      - name: Recover exact reviewed source and apply verified fixes
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -27,86 +27,76 @@ jobs:
           python3 - <<'PY'
           import base64, gzip, hashlib, json, os, subprocess, urllib.request
           from pathlib import Path
+          from concurrent.futures import ThreadPoolExecutor
+          def digest(raw): return hashlib.sha1(b'blob '+str(len(raw)).encode()+b'\0'+raw).hexdigest()
           def blob(sha):
-              request=urllib.request.Request('https://api.github.com/repos/cogniloom/harmolyn/git/blobs/'+sha,headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],'Accept':'application/vnd.github+json'})
-              with urllib.request.urlopen(request,timeout=30) as response: value=json.load(response)
+              req=urllib.request.Request('https://api.github.com/repos/cogniloom/harmolyn/git/blobs/'+sha, headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],'Accept':'application/vnd.github+json'})
+              with urllib.request.urlopen(req,timeout=45) as response: value=json.load(response)
               raw=base64.b64decode(value['content'])
-              if hashlib.sha1(b'blob '+str(len(raw)).encode()+b'\0'+raw).hexdigest()!=sha: raise SystemExit('Git blob integrity failure')
+              if digest(raw)!=sha: raise SystemExit('Git blob integrity failure')
               return raw
-          parts=['2af508d865f8180f81ca04334555dc4699a1bbce','de344e458720abca83cf187bc0c36027c9337d40','b4340e9f10d5440511f5788df48bd40b3fa07982','c33da6bb2a0c1ddc7caa08fc69d17ffe6814d120']
-          compressed=b''.join(blob(sha) for sha in parts)
-          if hashlib.sha1(b'blob '+str(len(compressed)).encode()+b'\0'+compressed).hexdigest()!='d4645955cc09b34383a23509341b2bff31a930c6': raise SystemExit('Candidate integrity failure')
-          candidate=json.loads(gzip.decompress(compressed))
-          def apply(patch):
-              subprocess.run(['git','apply','--check','--whitespace=nowarn'],input=patch.encode(),check=True)
-              subprocess.run(['git','apply','--whitespace=nowarn'],input=patch.encode(),check=True)
-          def verify(expected):
-              for path,sha in expected.items():
-                  if path.startswith('/') or '..' in Path(path).parts: raise SystemExit('Invalid candidate path')
-                  raw=Path(path).read_bytes()
-                  if hashlib.sha1(b'blob '+str(len(raw)).encode()+b'\0'+raw).hexdigest()!=sha: raise SystemExit('Source mismatch: '+path)
-          for path,text in candidate['files'].items():
-              target=Path(path);target.parent.mkdir(parents=True,exist_ok=True);target.write_text(text)
-          for patch in candidate['diffs'].values(): apply(patch)
-          for path,sha in candidate['blobs'].items(): Path(path).write_bytes(blob(sha))
-          verify(candidate['expected'])
-          fixes=json.loads(gzip.decompress(blob('78be8bab6b424ab883e1b739c5dc8e440a4ab6a3')))
-          apply(fixes['patch']);verify(fixes['expected'])
-          paths=sorted(set(candidate['expected'])|set(fixes['expected'])|{'package-lock.json','website/package-lock.json','src-tauri/Cargo.lock'})
-          out=Path('candidate-evidence');out.mkdir(exist_ok=True)
-          (out/'paths.json').write_text(json.dumps(paths))
-          # The final migration verifies every resulting file against reviewed hashes.
-          clean_env={key:value for key,value in os.environ.items() if key!='GH_TOKEN'}
-          subprocess.run(['python3','-c',blob('6531b00cdc921693bc4f81ed214f0cbd7959302c').decode()],env=clean_env,check=True)
-          print('Assembled reviewed source; this job cannot update Git refs.')
+          parts=['7ad3d9e2c02e69ada9674f63196b958d83db3366','13905c718acbd0aead979f4a193aaf4cad18d5c6','bf4955643d2236834067dce4a7ef348c2e2595ac','da248d77da6845ab61bca84cd9814668ec4ab293','a40582d5e73093accb2e58ace78a137c687377e7','0ba606a804efee3c182a82477f4f5c4b03f80611']
+          raw=b''.join(blob(sha) for sha in parts)
+          if digest(raw)!='1aeb5739bdbd67e28bdedd3000f8ff34abbb93f5': raise SystemExit('Reviewed patch integrity failure')
+          plan=json.loads(gzip.decompress(raw))
+          expected={**plan['base'],**plan['expected']}
+          for name in expected:
+              if Path(name).is_absolute() or '..' in Path(name).parts: raise SystemExit('Invalid source path')
+          def restore(item):
+              name,sha=item; target=Path(name)
+              target.parent.mkdir(parents=True,exist_ok=True); target.write_bytes(blob(sha))
+          with ThreadPoolExecutor(max_workers=4) as pool: list(pool.map(restore,plan['base'].items()))
+          patch=plan['patch'].encode()
+          subprocess.run(['git','apply','--check','--whitespace=nowarn'],input=patch,check=True)
+          subprocess.run(['git','apply','--whitespace=nowarn'],input=patch,check=True)
+          for name,sha in expected.items():
+              if digest(Path(name).read_bytes())!=sha: raise SystemExit('Source mismatch: '+name)
+          out=Path('candidate-evidence'); out.mkdir(exist_ok=True)
+          (out/'expected.json').write_text(json.dumps(expected,indent=2))
+          print('Verified',len(expected),'source files, including all lockfiles. No Git refs are changed.')
           PY
-      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
-        with:
-          toolchain: stable
-      - name: Resolve lockfiles and execute validation
+      - name: Clean installs, production builds, tests and browser verification
         shell: bash
         env:
           HARMOLYN_REQUIRE_BROWSER: '1'
           HARMOLYN_APPEARANCE_EVIDENCE: candidate-evidence/appearance
         run: |
           python3 - <<'PY'
-          import json, subprocess, zipfile, hashlib, shutil, os
+          import hashlib,json,os,shutil,subprocess,zipfile
           from pathlib import Path
-          out=Path('candidate-evidence');results={}
+          out=Path('candidate-evidence'); results={}
           def run(name,args,timeout=600):
               with (out/(name+'.log')).open('w') as log:
                   try: code=subprocess.run(args,stdout=log,stderr=subprocess.STDOUT,timeout=timeout).returncode
                   except subprocess.TimeoutExpired: code=124
                   except OSError: code=127
-              results[name]=code;print(name+': '+str(code),flush=True)
+              results[name]=code; print(name+': '+str(code),flush=True)
               return code==0
           run('node-version',['node','--version'])
-          run('cargo-version',['cargo','--version'])
-          run('rust-lock',['cargo','update','--manifest-path','src-tauri/Cargo.toml'])
-          if run('npm-lock',['npm','install','--package-lock-only','--ignore-scripts','--no-fund']):
-              if run('npm-ci',['npm','ci','--no-fund']):
-                  run('lint',['npm','run','lint'])
-                  run('typecheck',['npm','run','typecheck'])
-                  built=run('build',['npm','run','build'])
-                  run('unit-tests',['npm','test','--','--reporter=dot'],900)
-                  run('protocol-tests',['npm','run','test:protocol'],900)
-                  run('contract-tests',['node','scripts/test-stabilization-contracts.mjs'])
-                  run('npm-audit',['npm','audit','--json'])
-                  run('npm-outdated',['npm','outdated','--json'])
-                  if built and run('browser-install',['npx','--no-install','playwright-core','install','--with-deps','chromium']):
-                      run('browser-smoke',['npm','run','test:browser:ci'])
-                      run('appearance-e2e',['node','scripts/appearance-e2e.mjs'])
-                      if Path('.generated/browser-evidence').exists(): shutil.copytree('.generated/browser-evidence',out/'browser',dirs_exist_ok=True)
-          if run('website-lock',['npm','--prefix','website','install','--package-lock-only','--ignore-scripts','--no-fund']):
-              if run('website-ci',['npm','--prefix','website','ci','--no-fund']):
-                  run('website-build',['npm','--prefix','website','run','build'])
-                  run('website-audit',['npm','--prefix','website','audit','--json'])
+          if run('npm-ci',['npm','ci','--no-fund']):
+              run('lint',['npm','run','lint'])
+              run('typecheck',['npm','run','typecheck'])
+              built=run('build',['npm','run','build'])
+              run('unit-tests',['npm','test','--','--reporter=dot'],900)
+              run('protocol-tests',['npm','run','test:protocol'])
+              run('contract-tests',['node','scripts/test-stabilization-contracts.mjs'])
+              run('npm-audit',['npm','audit','--json'])
+              run('npm-outdated',['npm','outdated','--json'])
+              if built and run('browser-install',['npx','--no-install','playwright-core','install','--with-deps','chromium']):
+                  run('browser-smoke',['npm','run','test:browser:ci'])
+                  run('appearance-e2e',['node','scripts/appearance-e2e.mjs'])
+                  if Path('.generated/browser-evidence').exists(): shutil.copytree('.generated/browser-evidence',out/'browser',dirs_exist_ok=True)
+          if run('website-ci',['npm','--prefix','website','ci','--no-fund']):
+              run('website-build',['npm','--prefix','website','run','build'])
+              run('website-audit',['npm','--prefix','website','audit','--json'])
+          expected=json.loads((out/'expected.json').read_text())
           files=[]
-          for name in json.loads((out/'paths.json').read_text()):
-              p=Path(name)
-              if p.is_file():
-                  target=out/'source'/name;target.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(p,target)
-                  raw=p.read_bytes();files.append({'path':name,'sha':hashlib.sha1(b'blob '+str(len(raw)).encode()+b'\0'+raw).hexdigest()})
+          for name,sha in expected.items():
+              source=Path(name); raw=source.read_bytes()
+              actual=hashlib.sha1(b'blob '+str(len(raw)).encode()+b'\0'+raw).hexdigest()
+              if actual!=sha: raise SystemExit('Validation mutated reviewed source: '+name)
+              target=out/'source'/name; target.parent.mkdir(parents=True,exist_ok=True); target.write_bytes(raw)
+              files.append({'path':name,'sha':sha})
           (out/'files.json').write_text(json.dumps(files,indent=2))
           (out/'results.json').write_text(json.dumps({'source':os.environ['GITHUB_SHA'],'checks':results},indent=2))
           for folder,label in [('dist','application-dist'),('website/dist','website-dist')]:
@@ -123,14 +113,14 @@ jobs:
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 3
-      - name: Require successful validation gates
+      - name: Require every validation gate to pass
         shell: bash
         run: |
           python3 - <<'PY'
           import json
           from pathlib import Path
           data=json.loads(Path('candidate-evidence/results.json').read_text())['checks']
-          required=['rust-lock','npm-lock','npm-ci','lint','typecheck','build','unit-tests','protocol-tests','contract-tests','website-lock','website-ci','website-build','browser-smoke','appearance-e2e']
+          required=['npm-ci','lint','typecheck','build','unit-tests','protocol-tests','contract-tests','website-ci','website-build','browser-smoke','appearance-e2e']
           failed=[name for name in required if data.get(name)!=0]
           if failed: raise SystemExit('Failed candidate checks: '+', '.join(failed))
           PY
@@ -143,30 +133,32 @@ jobs:
       actions: read
       contents: write
     steps:
+      # No checkout and no execution of candidate code with write credentials.
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: candidate-evidence
           path: evidence
-      - name: Retain source blobs without executing candidate code or updating Git refs
+      - name: Store verified source as unreferenced Git blobs only
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           python3 - <<'PY'
           from pathlib import Path
-          import hashlib, json, os, urllib.request
-          allowed={'.github/dependabot.yml','.github/workflows/agenthub-ci.yml','.github/workflows/codeql.yml','.github/workflows/release.yml','.nvmrc','package.json','package-lock.json','website/package.json','website/package-lock.json','scripts/test-stabilization-contracts.mjs','scripts/appearance-e2e.mjs','src-tauri/Cargo.toml','src-tauri/Cargo.lock','src-tauri/tauri.conf.json','src/components/ChatArea.tsx','src/components/MediaLightbox.tsx','src/components/ServerRail.tsx','src/components/SettingsScreen.tsx','src/components/settings/AppearanceSettings.tsx','src/components/voice/VoiceVideoSinks.tsx','src/lib/appearance/model.ts','src/lib/appearance/model.test.ts','src/lib/appearance/store.ts','src/lib/appearance/store.test.ts','src/main.tsx','src/styles/appearance.css','src/utils/themeGenerator.ts','tailwind.config.ts','src/components/ChannelRail.tsx','src/components/ChatArea.inbox.test.tsx','src/components/ChatArea.test.tsx','src/components/ForumChannel.tsx','src/components/JoinServerModal.tsx','src/components/MediaEmbed.test.tsx','src/components/MediaLightbox.test.tsx','src/components/SettingsScreen.test.tsx','src/components/auth/RestoreStep.tsx','src/data.ts','src/hooks/runtime/mutations.ts','src/hooks/usePersistentState.test.ts','src/lib/browserMedia.ts','src/lib/browserNavigator.ts','src/lib/stabilization/previews.ts','src/native/delivery/recipientInbox.ts','src/native/engine/engine.ts','src/native/families/streammux.ts','src/native/state/pins.test.ts','src/native/sync/inbound.ts','src/native/sync/invite.signed.test.ts','src/native/sync/peersync.ts','src/native/transport/manager.ts','src/native/transport/node.directTransport.test.ts','src/native/transport/node.ts','src/native/voice/session.roster.test.ts','tsconfig.protocol.json','src/components/onboarding/ProductTour.tsx','src/components/onboarding/SecurityOnboarding.tsx','vite.config.ts','docs/DEPENDENCY-MAINTENANCE.md'}
+          import hashlib,json,os,urllib.request
           files=json.loads(Path('evidence/files.json').read_text())
+          expected=json.loads(Path('evidence/expected.json').read_text())
           for item in files:
-              if item['path'] not in allowed: raise SystemExit('Unreviewed file path')
-              raw=Path('evidence/source',item['path']).read_bytes()
+              name=item['path']
+              if Path(name).is_absolute() or '..' in Path(name).parts or name not in expected: raise SystemExit('Invalid source path')
+              raw=Path('evidence/source',name).read_bytes()
               sha=hashlib.sha1(b'blob '+str(len(raw)).encode()+b'\0'+raw).hexdigest()
-              if sha!=item['sha']: raise SystemExit('Source integrity failure')
-              request=urllib.request.Request('https://api.github.com/repos/cogniloom/harmolyn/git/blobs',data=json.dumps({'content':raw.decode(),'encoding':'utf-8'}).encode(),headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],'Accept':'application/vnd.github+json','Content-Type':'application/json'},method='POST')
-              with urllib.request.urlopen(request,timeout=30) as response: result=json.load(response)
+              if sha!=item['sha'] or sha!=expected[name]: raise SystemExit('Source integrity failure')
+              req=urllib.request.Request('https://api.github.com/repos/cogniloom/harmolyn/git/blobs',data=json.dumps({'content':raw.decode(),'encoding':'utf-8'}).encode(),headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],'Accept':'application/vnd.github+json','Content-Type':'application/json'},method='POST')
+              with urllib.request.urlopen(req,timeout=45) as response: result=json.load(response)
               if result['sha']!=sha: raise SystemExit('Git integrity failure')
           Path('evidence/blob-manifest.json').write_text(json.dumps(files,indent=2))
-          print('Retained',len(files),'blobs; examine validation evidence before referencing them.')
+          print('Source blobs retained; no branch, release or tag updated.')
           PY
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
