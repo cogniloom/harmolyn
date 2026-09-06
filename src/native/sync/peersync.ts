@@ -208,7 +208,7 @@ export class PeerSync {
   activeRelayPeerId(): string | null {
     if (!isTrustedRelayMultiaddr(this.relayMultiaddr)) return null;
     const parts = this.relayMultiaddr.split('/p2p/');
-    return parts.length > 1 ? parts.at(-1) || null : null;
+    return parts.length > 1 ? parts.slice(-1)[0] || null : null;
   }
 
   /** This node's own reachable circuit addresses (which relay(s) we're on). */

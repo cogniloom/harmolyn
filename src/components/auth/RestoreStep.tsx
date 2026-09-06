@@ -58,7 +58,7 @@ export const RestoreStep: React.FC<RestoreStepProps> = ({ onRestored, onBack, on
         setFriendError('Your friend sent an invalid account-state backup; nothing was imported.');
         return;
       }
-      if (d.state) setDeliveredState(d.state);
+      if (isEncryptedSyncBlob(d.state)) setDeliveredState(d.state);
       // A chunk set can complete before or after the smaller identity packet.
       // State-only completion must not erase an identity that already arrived.
       if (d.blob === undefined) return;

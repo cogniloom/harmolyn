@@ -54,7 +54,12 @@ export function safePreviewMime(type: string): string {
   return /^image\/(?:png|jpeg|gif|webp|avif|bmp)$/.test(mime) ? mime : 'application/octet-stream';
 }
 export function safeDownloadName(name: string): string {
-  return name.replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069/\\]/g, '_').trim().slice(0, 180) || 'attachment';
+  return Array.from(name, character => {
+    const code = character.charCodeAt(0);
+    return code <= 31 || (code >= 127 && code <= 159)
+      || (code >= 0x202a && code <= 0x202e) || (code >= 0x2066 && code <= 0x2069)
+      || character === '/' || character === '\\' ? '_' : character;
+  }).join('').trim().slice(0, 180) || 'attachment';
 }
 
 /** Explicit ownership prevents late completions from leaking decrypted blob URLs. */

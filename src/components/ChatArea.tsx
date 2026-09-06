@@ -92,8 +92,8 @@ const MobileChatTool = ({
 const DeliveryStatusIcon = ({ status }: { status: Message['delivery_status'] }) => {
   if (!status || status === 'sent') return <Check size={9} className="text-primary/60" />;
   if (status === 'pending') return <Clock size={9} className="text-white/30 animate-pulse" />;
-  if (status === 'offline_queued') return <WifiOff size={9} className="text-yellow-400/70" title="Queued — recipient offline" />;
-  if (status === 'failed') return <AlertTriangle size={9} className="text-accent-danger/80" title="Delivery failed" />;
+  if (status === 'offline_queued') return <span title="Queued — recipient offline" aria-label="Queued — recipient offline"><WifiOff size={9} className="text-accent-warning" aria-hidden="true" /></span>;
+  if (status === 'failed') return <span title="Delivery failed" aria-label="Delivery failed"><AlertTriangle size={9} className="text-accent-danger" aria-hidden="true" /></span>;
   return null;
 };
 
@@ -154,67 +154,21 @@ const getStatusColor = (status: string) => {
   }
 };
 
-// Gradient text (background-clip: text + transparent fill) is a progressive
-// enhancement: where the technique is unsupported the transparent fill would
-// leave the author name INVISIBLE. Detect support once and otherwise fall back
-// to a solid colour — a username must never be invisible.
-const SUPPORTS_TEXT_CLIP_GRADIENT =
-  typeof CSS !== 'undefined' && typeof CSS.supports === 'function' &&
-  (CSS.supports('-webkit-background-clip', 'text') || CSS.supports('background-clip', 'text'));
-const SUPPORTS_COLOR_MIX =
-  typeof CSS !== 'undefined' && typeof CSS.supports === 'function' &&
-  CSS.supports('color', 'color-mix(in srgb, red 60%, transparent)');
+// Names are always legible under a custom palette. Role colors are decorative
+// markers, not transparent gradient text or peer-controlled background CSS.
+const safeRoleColor = (color: unknown): string | undefined =>
+  typeof color === 'string' && (/^#[0-9a-f]{6}$/i.test(color) || /^hsl\(\d{1,3} 72% 58%\)$/.test(color)) ? color : undefined;
 
-// Append an alpha to a user colour WITHOUT ever producing invalid CSS. The old
-// `${color}AA` trick only parses for 6-digit hex colours; native-path users get
-// `hsl(h 72% 58%)` colours (data.ts colorForSeed), and `hsl(...)AA` invalidates
-// the whole gradient declaration — which, combined with the transparent text
-// fill, rendered every author name invisible (blank names in the E2E shots).
-const fadeColor = (color: string, alphaHex: string, percent: number): string => {
-  if (/^#[0-9a-fA-F]{6}$/.test(color)) return `${color}${alphaHex}`;
-  return SUPPORTS_COLOR_MIX ? `color-mix(in srgb, ${color} ${percent}%, transparent)` : color;
-};
-
-// Enhanced Username Component with cyberpunk visual effects
-const UsernameDisplay = ({ user, compact = false }: { user: User, compact?: boolean }) => {
+const UsernameDisplay = ({ user, compact = false }: { user: User; compact?: boolean }) => {
   const isSpecial = user.role === 'Admin' || user.role === 'Moderator';
-  const baseColor = user.color || '#F6F8F8';
-
-  const gradient = baseColor === '#13DDEC'
-    ? 'linear-gradient(135deg, #13DDEC 0%, #00A8CC 100%)'
-    : `linear-gradient(135deg, ${baseColor} 0%, ${fadeColor(baseColor, 'AA', 67)} 100%)`;
-
-  const glowColor = fadeColor(baseColor, '66', 40);
-
+  const roleColor = safeRoleColor(user.roleColor ?? user.color);
   return (
-    <span className={`font-bold ${compact ? 'text-xs' : 'text-[13px]'} tracking-tight cursor-pointer transition-all duration-300 relative px-1 -mx-1 rounded-md inline-flex items-center gap-1.5`}>
-      <span
-        className="transition-all duration-300 hover:brightness-125 font-display"
-        style={{
-          // Solid fallback colour first — it paints the glyphs whenever the
-          // gradient-clip technique is unavailable, so the name always renders.
-          color: baseColor,
-          ...(SUPPORTS_TEXT_CLIP_GRADIENT ? {
-            background: gradient,
-            WebkitBackgroundClip: 'text',
-            backgroundClip: 'text',
-            WebkitTextFillColor: 'transparent',
-          } : {}),
-          filter: isSpecial && !compact ? `drop-shadow(0 0 6px ${glowColor})` : 'none',
-        }}
-      >
-        {user.username}
-      </span>
+    <span className={`font-semibold ${compact ? 'text-xs' : 'text-[13px]'} tracking-tight cursor-pointer relative inline-flex items-center gap-1.5`}>
+      {roleColor && <span className="h-2 w-2 shrink-0 rounded-full border border-current" style={{ backgroundColor: roleColor }} aria-hidden="true" />}
+      <span style={{ color: 'var(--appearance-text)' }}>{user.username}</span>
       {user.donationTier && <DonorBadge tier={user.donationTier} compact />}
-      {!compact && (
-        <div className={`w-1.5 h-1.5 rounded-full ${getStatusColor(user.status)}`} title={user.status}></div>
-      )}
-      {isSpecial && !compact && (
-        <span 
-          className="absolute -bottom-[1px] left-1 right-1 h-[1px] opacity-20"
-          style={{ background: `linear-gradient(90deg, ${baseColor}, transparent)` }}
-        ></span>
-      )}
+      {!compact && <span className={`w-1.5 h-1.5 rounded-full ${getStatusColor(user.status)}`} title={user.status} aria-label={user.status} />}
+      {isSpecial && <span className="sr-only"> · {user.role}</span>}
     </span>
   );
 };

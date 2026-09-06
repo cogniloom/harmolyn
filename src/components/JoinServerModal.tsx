@@ -97,7 +97,7 @@ export const JoinServerModal: React.FC<JoinServerModalProps> = ({ onClose, onJoi
     }
 
     // Validate + preview locally first (no network).
-    let meta: InviteMetadata | null = null;
+    let meta: InviteMetadata | null;
     try {
       meta = parseInviteMetadata(trimmed);
       setLocalMeta(meta);

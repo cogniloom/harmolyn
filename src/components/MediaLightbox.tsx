@@ -33,7 +33,7 @@ export const MediaLightbox: React.FC<MediaLightboxProps> = ({ src, alt = 'Image'
   }, [src]);
   if (typeof document === 'undefined') return null;
   return createPortal(
-    <div ref={root} className="harmolyn-visible-viewport media-lightbox" role="dialog" aria-modal="true" aria-label={alt || 'Image preview'}
+    <div ref={root} className="harmolyn-visible-viewport media-lightbox appearance-media-island" role="dialog" aria-modal="true" aria-label={alt || 'Image preview'}
       onPointerDown={event => { backdropPress.current = event.target === event.currentTarget; }}
       onClick={event => { if (event.target === event.currentTarget && backdropPress.current) onClose(); backdropPress.current = false; }}>
       <div className="media-lightbox-toolbar">

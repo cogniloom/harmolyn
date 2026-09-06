@@ -22,7 +22,7 @@ const IconArea = ({ primary: P, accent: A }: { primary: React.ElementType; accen
     <div className="w-16 h-16 rounded-2xl glass-card flex items-center justify-center text-primary">
       <P size={28} />
     </div>
-    <div className="absolute -bottom-1 -right-1 w-7 h-7 rounded-lg bg-[#111718] border border-white/10 flex items-center justify-center text-primary/70">
+    <div className="absolute -bottom-1 -right-1 w-7 h-7 rounded-lg bg-bg-1 border border-white/10 flex items-center justify-center text-primary/70">
       <A size={14} />
     </div>
   </div>
@@ -34,8 +34,8 @@ const Row = ({ icon: I, title, children }: { icon: React.ElementType; title: str
       <I size={16} />
     </div>
     <div>
-      <div className="text-sm font-semibold text-[#F6F8F8]">{title}</div>
-      <div className="text-sm leading-relaxed text-[rgba(246,248,248,0.7)]">{children}</div>
+      <div className="text-sm font-semibold text-text-primary">{title}</div>
+      <div className="text-sm leading-relaxed text-text-secondary">{children}</div>
     </div>
   </div>
 );
@@ -52,8 +52,8 @@ function buildScreens(t: TFn) {
       icon: <IconArea primary={Compass} accent={ShieldCheck} />,
       content: (
         <div className="flex flex-col gap-4">
-          <p className="text-sm text-[rgba(246,248,248,0.75)] text-center">{t('tour.welcome.body')}</p>
-          <div className="glass-card rounded-xl p-3 text-xs text-[rgba(246,248,248,0.6)] text-center">
+          <p className="text-sm text-text-secondary text-center">{t('tour.welcome.body')}</p>
+          <div className="glass-card rounded-xl p-3 text-xs text-text-secondary text-center">
             {t('tour.welcome.privacyNote')}
           </div>
         </div>
@@ -99,7 +99,7 @@ function buildScreens(t: TFn) {
       content: (
         <div className="flex flex-col gap-3">
           <Row icon={Mic} title={t('tour.voice.channels')}>{t('tour.voice.channelsBody')}</Row>
-          <div className="glass-card rounded-xl p-3 text-xs text-[rgba(246,248,248,0.6)]">{t('tour.voice.note')}</div>
+          <div className="glass-card rounded-xl p-3 text-xs text-text-secondary">{t('tour.voice.note')}</div>
         </div>
       ),
     },
@@ -153,7 +153,7 @@ export const ProductTour: React.FC<ProductTourProps> = ({ onClose }) => {
         <button
           onClick={handleClose}
           aria-label="Close tour"
-          className="focus-ring absolute top-4 right-4 w-8 h-8 rounded-full flex items-center justify-center text-[rgba(246,248,248,0.4)] hover:text-[rgba(246,248,248,0.8)] hover:bg-white/5 transition-colors z-10"
+          className="focus-ring absolute top-4 right-4 w-8 h-8 rounded-full flex items-center justify-center text-text-secondary hover:text-text-secondary hover:bg-white/5 transition-colors z-10"
         >
           <X size={18} />
         </button>
@@ -165,7 +165,7 @@ export const ProductTour: React.FC<ProductTourProps> = ({ onClose }) => {
 
           {screen.icon}
 
-          <h2 id="product-tour-title" className="text-xl font-bold text-center mb-5 text-[#F6F8F8]">
+          <h2 id="product-tour-title" className="text-xl font-bold text-center mb-5 text-text-primary">
             {screen.title}
           </h2>
 
@@ -187,7 +187,7 @@ export const ProductTour: React.FC<ProductTourProps> = ({ onClose }) => {
           <div className="flex items-center justify-between">
             <button
               onClick={handleClose}
-              className="text-xs font-semibold text-[rgba(246,248,248,0.4)] hover:text-[rgba(246,248,248,0.7)] transition-colors px-4 py-2"
+              className="text-xs font-semibold text-text-secondary hover:text-text-secondary transition-colors px-4 py-2"
             >
               {t('common:actions.skip')}
             </button>
@@ -196,7 +196,7 @@ export const ProductTour: React.FC<ProductTourProps> = ({ onClose }) => {
               {step > 0 && (
                 <button
                   onClick={() => setStep(s => s - 1)}
-                  className="h-10 px-4 rounded-full border border-white/10 text-sm font-semibold text-[rgba(246,248,248,0.7)] hover:border-[rgba(19,221,236,0.3)] hover:text-primary transition-colors flex items-center gap-1.5"
+                  className="h-10 px-4 rounded-full border border-white/10 text-sm font-semibold text-text-secondary hover:border-[rgba(19,221,236,0.3)] hover:text-primary transition-colors flex items-center gap-1.5"
                 >
                   <ArrowLeft size={14} />
                   {t('common:actions.back')}
@@ -204,7 +204,7 @@ export const ProductTour: React.FC<ProductTourProps> = ({ onClose }) => {
               )}
               <button
                 onClick={isLast ? handleClose : () => setStep(s => s + 1)}
-                className="h-10 px-5 rounded-full bg-primary text-[#050A0B] text-sm font-bold hover:brightness-110 transition-all flex items-center gap-1.5 shadow-[0_0_5px_rgba(19,221,236,0.4)]"
+                className="h-10 px-5 rounded-full bg-primary text-bg-0 text-sm font-bold hover:brightness-110 transition-all flex items-center gap-1.5 shadow-[0_0_5px_rgba(19,221,236,0.4)]"
               >
                 {isLast ? t('tour.start') : t('common:actions.next')}
                 {!isLast && <ArrowRight size={14} />}

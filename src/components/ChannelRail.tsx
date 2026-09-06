@@ -660,7 +660,6 @@ export const ChannelRail: React.FC<ChannelRailProps> = ({
               videoOn: false,
               screenSharing: false,
               receiveOnly: false,
-              activeActivityId: null,
               canInteract: false,
               pendingAction: null,
               error: voiceDisabledReason ?? null,
@@ -672,9 +671,6 @@ export const ChannelRail: React.FC<ChannelRailProps> = ({
             onToggleDeafen={onToggleVoiceDeafen}
             onToggleVideo={onToggleVoiceVideo}
             onToggleScreenShare={onToggleVoiceScreenShare}
-            onOpenActivities={onOpenActivities}
-            onOpenSoundboard={onOpenSoundboard}
-            onOpenStage={onOpenStage}
             onOpenVoiceSettings={onOpenVoiceSettings}
           />
           {voiceTextChatEnabled && (

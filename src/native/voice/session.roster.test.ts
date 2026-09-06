@@ -67,7 +67,7 @@ async function sessionWithAlicePeer(): Promise<{ session: VoiceSession; pc: Fake
   const session = new VoiceSession(CHAN, null, ME, {});
   const resp = await session.handleOffer({ session_id: CHAN, from_peer_id: ALICE, sdp: 'v=0' }, ALICE);
   expect(resp.ok).toBe(true);
-  const pc = createdPcs.at(-1);
+  const pc = createdPcs.slice(-1)[0];
   if (!pc) throw new Error('no RTCPeerConnection was created');
   return { session, pc };
 }

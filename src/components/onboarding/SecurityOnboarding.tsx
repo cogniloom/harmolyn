@@ -17,7 +17,7 @@ const IconArea = ({ primary: P, accent: A, color = 'text-primary' }: { primary: 
     <div className={`w-16 h-16 rounded-2xl glass-card flex items-center justify-center ${color}`}>
       <P size={28} />
     </div>
-    <div className="absolute -bottom-1 -right-1 w-7 h-7 rounded-lg bg-[#111718] border border-white/10 flex items-center justify-center text-primary/70">
+    <div className="absolute -bottom-1 -right-1 w-7 h-7 rounded-lg bg-bg-1 border border-white/10 flex items-center justify-center text-primary/70">
       <A size={14} />
     </div>
   </div>
@@ -26,7 +26,7 @@ const IconArea = ({ primary: P, accent: A, color = 'text-primary' }: { primary: 
 const Bullet = ({ icon: I, color, children }: { icon: React.ElementType; color: string; children: React.ReactNode }) => (
   <div className="flex gap-3 items-start">
     <I size={16} className={`mt-0.5 flex-shrink-0 ${color}`} />
-    <span className="text-sm leading-relaxed text-[rgba(246,248,248,0.85)]">{children}</span>
+    <span className="text-sm leading-relaxed text-text-secondary">{children}</span>
   </div>
 );
 
@@ -47,10 +47,10 @@ const SCREENS = [
         <Bullet icon={Info} color="text-primary">
           <strong>Harmolyn</strong> is the UI. <strong>xorein</strong> is the local network engine it talks to.
         </Bullet>
-        <Bullet icon={CheckCircle2} color="text-[#05FFA1]">
+        <Bullet icon={CheckCircle2} color="text-accent-success">
           There is no "central server" that needs your plaintext to work.
         </Bullet>
-        <Bullet icon={CheckCircle2} color="text-[#05FFA1]">
+        <Bullet icon={CheckCircle2} color="text-accent-success">
           Your messages are processed and encrypted <strong>on your device</strong>.
         </Bullet>
       </div>
@@ -65,10 +65,10 @@ const SCREENS = [
         <Bullet icon={Info} color="text-primary">
           Your account is a <strong>cryptographic identity</strong> — not an email/password.
         </Bullet>
-        <Bullet icon={AlertTriangle} color="text-[#FFB020]">
+        <Bullet icon={AlertTriangle} color="text-accent-warning">
           Losing your device without a backup can mean <strong>losing access</strong>.
         </Bullet>
-        <Bullet icon={CheckCircle2} color="text-[#05FFA1]">
+        <Bullet icon={CheckCircle2} color="text-accent-success">
           Create an encrypted backup early: <strong>Settings → Identity Backup</strong>.
         </Bullet>
       </div>
@@ -80,22 +80,22 @@ const SCREENS = [
     icon: <IconArea primary={ShieldCheck} accent={Lock} />,
     content: (
       <div className="flex flex-col gap-4">
-        <p className="text-sm text-[rgba(246,248,248,0.7)]">
+        <p className="text-sm text-text-secondary">
           Every conversation header shows a badge indicating its security mode:
         </p>
         <div className="grid grid-cols-3 gap-2">
-          <Badge icon={Lock} label="Seal" color="text-[#05FFA1]" bg="bg-[rgba(5,255,161,0.12)]" />
+          <Badge icon={Lock} label="Seal" color="text-accent-success" bg="bg-[rgba(5,255,161,0.12)]" />
           <Badge icon={TreePine} label="Tree" color="text-primary" bg="bg-[rgba(19,221,236,0.12)]" />
-          <Badge icon={Users} label="Crowd" color="text-[#FFB020]" bg="bg-[rgba(255,176,32,0.12)]" />
+          <Badge icon={Users} label="Crowd" color="text-accent-warning" bg="bg-[rgba(255,176,32,0.12)]" />
         </div>
-        <div className="glass-card rounded-xl p-3 text-xs text-[#FF2A6D]/90">
+        <div className="glass-card rounded-xl p-3 text-xs text-accent-danger/90">
           <AlertTriangle size={12} className="inline mr-1" />
           <span className="font-semibold">Clear means not encrypted.</span> Harmolyn never puts you in a Clear
           conversation — there is no option to choose it. If you ever see an unencrypted badge, treat the chat as
           readable by infrastructure and don't share anything sensitive.
         </div>
-        <div className="glass-card rounded-xl p-3 text-xs text-[rgba(246,248,248,0.6)] italic">
-          "This chat is: <span className="text-[#05FFA1] font-semibold not-italic">Seal (E2EE)</span>. Tap for details: algorithms, key status, and what's visible as metadata."
+        <div className="glass-card rounded-xl p-3 text-xs text-text-secondary italic">
+          "This chat is: <span className="text-accent-success font-semibold not-italic">Seal (E2EE)</span>. Tap for details: algorithms, key status, and what's visible as metadata."
         </div>
       </div>
     ),
@@ -106,27 +106,27 @@ const SCREENS = [
     icon: (
       <div className="relative w-16 h-16 mx-auto mb-5">
         <div className="w-16 h-16 rounded-2xl glass-card flex items-center justify-center">
-          <Lock size={20} className="text-[#05FFA1] -mr-0.5" />
-          <Unlock size={20} className="text-[#FFB020] -ml-0.5" />
+          <Lock size={20} className="text-accent-success -mr-0.5" />
+          <Unlock size={20} className="text-accent-warning -ml-0.5" />
         </div>
       </div>
     ),
     content: (
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <div className="flex flex-col gap-2.5">
-          <span className="micro-label text-[#05FFA1] tracking-widest">PROTECTED</span>
-          <Bullet icon={CheckCircle2} color="text-[#05FFA1]">Message text is encrypted end-to-end</Bullet>
-          <Bullet icon={CheckCircle2} color="text-[#05FFA1]">Attachments are encrypted</Bullet>
-          <Bullet icon={CheckCircle2} color="text-[#05FFA1]">Media frames (when enabled)</Bullet>
+          <span className="micro-label text-accent-success tracking-widest">PROTECTED</span>
+          <Bullet icon={CheckCircle2} color="text-accent-success">Message text is encrypted end-to-end</Bullet>
+          <Bullet icon={CheckCircle2} color="text-accent-success">Attachments are encrypted</Bullet>
+          <Bullet icon={CheckCircle2} color="text-accent-success">Media frames (when enabled)</Bullet>
         </div>
         <div className="flex flex-col gap-2.5">
-          <span className="micro-label text-[#FFB020] tracking-widest">NOT HIDDEN</span>
-          <Bullet icon={AlertTriangle} color="text-[#FFB020]">Who you talk to &amp; when</Bullet>
-          <Bullet icon={AlertTriangle} color="text-[#FFB020]">Channel membership &amp; routing</Bullet>
-          <Bullet icon={AlertTriangle} color="text-[#FFB020]">Traffic patterns &amp; sizes</Bullet>
+          <span className="micro-label text-accent-warning tracking-widest">NOT HIDDEN</span>
+          <Bullet icon={AlertTriangle} color="text-accent-warning">Who you talk to &amp; when</Bullet>
+          <Bullet icon={AlertTriangle} color="text-accent-warning">Channel membership &amp; routing</Bullet>
+          <Bullet icon={AlertTriangle} color="text-accent-warning">Traffic patterns &amp; sizes</Bullet>
         </div>
-        <div className="sm:col-span-2 text-xs text-[rgba(246,248,248,0.5)] mt-1">
-          <AlertTriangle size={12} className="inline mr-1 text-[#FF2A6D]" />
+        <div className="sm:col-span-2 text-xs text-text-secondary mt-1">
+          <AlertTriangle size={12} className="inline mr-1 text-accent-danger" />
           A compromised device can read your decrypted content — crypto can't solve that.
         </div>
       </div>
@@ -145,12 +145,12 @@ const SCREENS = [
           Search runs <strong>on your device</strong> over locally available messages.
         </Bullet>
         <div className="flex gap-2 flex-wrap mt-1">
-          <span className="px-2.5 py-1 rounded-full text-[10px] font-semibold uppercase tracking-wider bg-[rgba(5,255,161,0.15)] text-[#05FFA1]">Full</span>
-          <span className="px-2.5 py-1 rounded-full text-[10px] font-semibold uppercase tracking-wider bg-[rgba(255,176,32,0.15)] text-[#FFB020]">Partial</span>
-          <span className="px-2.5 py-1 rounded-full text-[10px] font-semibold uppercase tracking-wider bg-[rgba(255,42,109,0.15)] text-[#FF2A6D]">Empty</span>
+          <span className="px-2.5 py-1 rounded-full text-[10px] font-semibold uppercase tracking-wider bg-[rgba(5,255,161,0.15)] text-accent-success">Full</span>
+          <span className="px-2.5 py-1 rounded-full text-[10px] font-semibold uppercase tracking-wider bg-[rgba(255,176,32,0.15)] text-accent-warning">Partial</span>
+          <span className="px-2.5 py-1 rounded-full text-[10px] font-semibold uppercase tracking-wider bg-[rgba(255,42,109,0.15)] text-accent-danger">Empty</span>
         </div>
-        <p className="text-xs text-[rgba(246,248,248,0.5)] mt-1">Coverage labels tell you how complete your results are — so you're never tricked by "missing" results.</p>
-        <Bullet icon={AlertTriangle} color="text-[#FFB020]">
+        <p className="text-xs text-text-secondary mt-1">Coverage labels tell you how complete your results are — so you're never tricked by "missing" results.</p>
+        <Bullet icon={AlertTriangle} color="text-accent-warning">
           History is retention-bounded and may be locked across security-mode changes.
         </Bullet>
       </div>
@@ -162,7 +162,7 @@ const SCREENS = [
     icon: <IconArea primary={Network} accent={Activity} />,
     content: (
       <div className="flex flex-col gap-3">
-        <p className="text-sm text-[rgba(246,248,248,0.7)]">Honest indicators you can always check:</p>
+        <p className="text-sm text-text-secondary">Honest indicators you can always check:</p>
         <div className="grid grid-cols-2 gap-2">
           {[
             { icon: Wifi, label: 'Connected via', value: 'Direct / Relay' },
@@ -173,13 +173,13 @@ const SCREENS = [
             <div key={label} className="glass-card rounded-xl p-2.5 flex items-center gap-2">
               <I size={14} className="text-primary flex-shrink-0" />
               <div className="min-w-0">
-                <div className="text-[10px] font-semibold uppercase tracking-wider text-[rgba(246,248,248,0.45)]">{label}</div>
-                <div className="text-xs font-medium text-[rgba(246,248,248,0.85)]">{value}</div>
+                <div className="text-[10px] font-semibold uppercase tracking-wider text-text-secondary">{label}</div>
+                <div className="text-xs font-medium text-text-secondary">{value}</div>
               </div>
             </div>
           ))}
         </div>
-        <p className="text-xs text-[rgba(246,248,248,0.5)] mt-1">
+        <p className="text-xs text-text-secondary mt-1">
           If anything downgrades (e.g., media E2EE unavailable), the UI tells you explicitly.
         </p>
       </div>
@@ -194,16 +194,16 @@ const SCREENS = [
         <Bullet icon={Info} color="text-primary">
           Protocol + crypto is <strong>versioned and negotiated</strong> between peers.
         </Bullet>
-        <Bullet icon={CheckCircle2} color="text-[#05FFA1]">
+        <Bullet icon={CheckCircle2} color="text-accent-success">
           Old clients may keep working, but security fixes may require upgrading.
         </Bullet>
         <div className="glass-card rounded-xl p-3 flex items-center gap-3 mt-1">
           <div className="w-8 h-8 rounded-lg bg-[rgba(255,176,32,0.15)] flex items-center justify-center flex-shrink-0">
-            <AlertTriangle size={16} className="text-[#FFB020]" />
+            <AlertTriangle size={16} className="text-accent-warning" />
           </div>
           <div>
-            <div className="text-xs font-semibold text-[#FFB020]">Update recommended</div>
-            <div className="text-[11px] text-[rgba(246,248,248,0.5)]">The network prefers a newer secure profile.</div>
+            <div className="text-xs font-semibold text-accent-warning">Update recommended</div>
+            <div className="text-[11px] text-text-secondary">The network prefers a newer secure profile.</div>
           </div>
         </div>
       </div>
@@ -249,7 +249,7 @@ export const SecurityOnboarding: React.FC<SecurityOnboardingProps> = ({ onClose 
         <button
           onClick={handleClose}
           aria-label="Close security overview"
-          className="focus-ring absolute top-4 right-4 w-8 h-8 rounded-full flex items-center justify-center text-[rgba(246,248,248,0.4)] hover:text-[rgba(246,248,248,0.8)] hover:bg-white/5 transition-colors z-10"
+          className="focus-ring absolute top-4 right-4 w-8 h-8 rounded-full flex items-center justify-center text-text-secondary hover:text-text-secondary hover:bg-white/5 transition-colors z-10"
         >
           <X size={18} />
         </button>
@@ -262,7 +262,7 @@ export const SecurityOnboarding: React.FC<SecurityOnboardingProps> = ({ onClose 
 
           {screen.icon}
 
-          <h2 id="security-onboarding-title" className="text-xl font-bold text-center mb-5 text-[#F6F8F8]">
+          <h2 id="security-onboarding-title" className="text-xl font-bold text-center mb-5 text-text-primary">
             {screen.title}
           </h2>
 
@@ -301,9 +301,9 @@ export const SecurityOnboarding: React.FC<SecurityOnboardingProps> = ({ onClose 
                 dontShow ? 'bg-primary border-primary' : 'border-white/20 group-hover:border-white/40'
               }`}
             >
-              {dontShow && <CheckCircle2 size={12} className="text-[#050A0B]" />}
+              {dontShow && <CheckCircle2 size={12} className="text-bg-0" />}
             </span>
-            <span className="text-xs text-[rgba(246,248,248,0.5)]">
+            <span className="text-xs text-text-secondary">
               Do not show again
             </span>
           </label>
@@ -312,7 +312,7 @@ export const SecurityOnboarding: React.FC<SecurityOnboardingProps> = ({ onClose 
           <div className="flex items-center justify-between">
             <button
               onClick={handleClose}
-              className="text-xs font-semibold text-[rgba(246,248,248,0.4)] hover:text-[rgba(246,248,248,0.7)] transition-colors px-4 py-2"
+              className="text-xs font-semibold text-text-secondary hover:text-text-secondary transition-colors px-4 py-2"
             >
               SKIP
             </button>
@@ -321,7 +321,7 @@ export const SecurityOnboarding: React.FC<SecurityOnboardingProps> = ({ onClose 
               {step > 0 && (
                 <button
                   onClick={() => setStep(s => s - 1)}
-                  className="h-10 px-4 rounded-full border border-white/10 text-sm font-semibold text-[rgba(246,248,248,0.7)] hover:border-[rgba(19,221,236,0.3)] hover:text-primary transition-colors flex items-center gap-1.5"
+                  className="h-10 px-4 rounded-full border border-white/10 text-sm font-semibold text-text-secondary hover:border-[rgba(19,221,236,0.3)] hover:text-primary transition-colors flex items-center gap-1.5"
                 >
                   <ArrowLeft size={14} />
                   BACK
@@ -329,7 +329,7 @@ export const SecurityOnboarding: React.FC<SecurityOnboardingProps> = ({ onClose 
               )}
               <button
                 onClick={isLast ? handleClose : () => setStep(s => s + 1)}
-                className="h-10 px-5 rounded-full bg-primary text-[#050A0B] text-sm font-bold hover:brightness-110 transition-all flex items-center gap-1.5 shadow-[0_0_5px_rgba(19,221,236,0.4)]"
+                className="h-10 px-5 rounded-full bg-primary text-bg-0 text-sm font-bold hover:brightness-110 transition-all flex items-center gap-1.5 shadow-[0_0_5px_rgba(19,221,236,0.4)]"
               >
                 {isLast ? 'GOT IT' : 'NEXT'}
                 {!isLast && <ArrowRight size={14} />}

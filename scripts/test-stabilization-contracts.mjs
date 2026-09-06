@@ -7,7 +7,7 @@ import { spawnSync } from 'node:child_process';
 import ts from 'typescript';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const sourceRoot = path.join(root, 'src/lib/stabilization');
+const sourceRoot = path.join(root, 'src/lib');
 const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'harmolyn-contracts-'));
 const tests = [];
 async function compile(folder) {
@@ -27,7 +27,8 @@ async function compile(folder) {
   }
 }
 try {
-  await compile(sourceRoot);
+  await compile(path.join(sourceRoot, 'stabilization'));
+  await compile(path.join(sourceRoot, 'appearance'));
   const result = spawnSync(process.execPath, ['--test', ...tests], { stdio: 'inherit' });
   process.exitCode = result.status ?? 1;
 } finally {

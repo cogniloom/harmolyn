@@ -59,7 +59,7 @@ export function VoiceVideoSinks({ channelId }: { channelId?: string | null }) {
     return () => { releaseRegistry(); unsubscribe?.(); };
   }, [channelId, enabled]);
   if (!tiles.length) return null;
-  return <section className="voice-stage" aria-label="Call video">
+  return <section className="voice-stage appearance-media-island" aria-label="Call video">
     <button type="button" className="flex w-full shrink-0 items-center gap-2 px-3 text-sm text-white/90" aria-expanded={!minimized} onClick={() => setMinimized(value => !value)}>
       <VideoIcon size={18} /><span className="flex-1 text-left">Video · {tiles.length}</span><span className="text-xs">{minimized ? 'Show' : 'Minimize'}</span>{minimized ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
     </button>

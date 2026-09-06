@@ -76,7 +76,7 @@ function createFetchStub(routes: Record<string, { status?: number; body: unknown
 }
 
 async function createSignedControlManifest(overrides: Partial<ControlManifestFixture> = {}): Promise<ControlManifestFixture> {
-  const keyPair = await webcrypto.subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"]) as CryptoKeyPair;
+  const keyPair = await webcrypto.subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"]) as unknown as CryptoKeyPair;
   const rawPublicKey = await webcrypto.subtle.exportKey("raw", keyPair.publicKey);
   const manifest: ControlManifestFixture = {
     server_id: "test-server",

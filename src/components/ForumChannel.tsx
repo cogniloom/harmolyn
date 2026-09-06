@@ -40,6 +40,7 @@ type SortMode = 'latest' | 'hot' | 'top';
 interface ForumChannelProps {
   channel: Channel;
   headerControl?: React.ReactNode;
+  users?: typeof USERS;
 }
 
 function formatForumTimestamp(raw?: string): string {
@@ -110,7 +111,7 @@ function normalizeForumUsers(value: unknown): typeof USERS {
   return normalized;
 }
 
-export const ForumChannel: React.FC<ForumChannelProps> = ({ channel, headerControl }) => {
+export const ForumChannel: React.FC<ForumChannelProps> = ({ channel, headerControl, users = USERS }) => {
   const runtimeSnapshot = useRuntimeSnapshot();
   const [storedPosts, setPosts] = usePersistentState<ForumPostData[]>(PREVIEW_STORAGE_KEYS.forum(channel.id), []);
   const [sortMode, setSortMode] = useState<SortMode>('latest');
@@ -123,7 +124,7 @@ export const ForumChannel: React.FC<ForumChannelProps> = ({ channel, headerContr
   const [activeThread, setActiveThread] = useState<ForumPostData | null>(null);
   const [threadReply, setThreadReply] = useState('');
   const posts = useMemo(() => normalizeForumPosts(storedPosts), [storedPosts]);
-  const normalizedUsers = useMemo(() => normalizeForumUsers(USERS), []);
+  const normalizedUsers = useMemo(() => normalizeForumUsers(users), [users]);
 
   useEffect(() => {
     if (!runtimeSnapshot) {

@@ -223,7 +223,7 @@ export class XoreinTransportManager {
         // browser; libp2p still emits peer:disconnect when its connection map is
         // reconciled, and that event is what guarantees the re-reservation loop.
         const onPeerPathChange = (peerId: string | undefined) => {
-          const relayId = this.activeRelay?.split('/').at(-1) ?? this.lastRelayPeerId;
+          const relayId = this.activeRelay?.split('/').slice(-1)[0] ?? this.lastRelayPeerId;
           if (relayId && peerId?.includes(relayId)) {
             this.activeRelay = null;
             this.setState('disconnected');
@@ -256,8 +256,8 @@ export class XoreinTransportManager {
       if (replaceActiveRelay && this.activeRelay && relayList.length > 0) {
         const previousRelay = this.activeRelay;
         const nextRelay = relayList[0];
-        const previousPeer = previousRelay.split('/p2p/').at(-1);
-        const nextPeer = nextRelay.split('/p2p/').at(-1);
+        const previousPeer = previousRelay.split('/p2p/').slice(-1)[0];
+        const nextPeer = nextRelay.split('/p2p/').slice(-1)[0];
         if (previousPeer && nextPeer && previousPeer !== nextPeer) {
           try {
             await this.node.dial(multiaddr(nextRelay), {
@@ -291,7 +291,7 @@ export class XoreinTransportManager {
       }
 
       this.activeRelay = reserved;
-      this.lastRelayPeerId = reserved.split('/p2p/').at(-1) ?? null;
+      this.lastRelayPeerId = reserved.split('/p2p/').slice(-1)[0] ?? null;
       this.setState('connected');
       this.backoff.reset();
     } catch {

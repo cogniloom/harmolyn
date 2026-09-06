@@ -1,100 +1,106 @@
 name: CI
-
 on:
   push:
     branches: [main, staging]
   pull_request:
     branches: [main, staging]
-
 permissions:
   contents: read
-
 concurrency:
   group: harmolyn-ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
-
 jobs:
   quality:
     name: Lint, Test & Build
-    runs-on: ubuntu-22.04
+    runs-on: self-hosted
+    container: node:26-bookworm
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      # Never execute an external fork on a persistent self-hosted runner.
+      - name: Require a trusted repository source
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
+        run: echo "External-fork code requires isolated runner review."; exit 1
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
-
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: 22
-          cache: npm
-
+      - run: node --version && npm --version
       - run: npm ci
       - run: npm run lint
       - run: npm run typecheck
       - run: npm run build
-      - run: npm run test
+      - run: npm test
       - run: npm run test:protocol
+      - run: node scripts/test-stabilization-contracts.mjs
+      - run: npm --prefix website ci
+      - run: npm --prefix website run build
 
   browser-smoke:
     name: Browser Smoke (E2E)
-    runs-on: ubuntu-22.04
+    runs-on: self-hosted
+    container: node:26-bookworm
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      # Never execute an external fork on a persistent self-hosted runner.
+      - name: Require a trusted repository source
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
+        run: echo "External-fork code requires isolated runner review."; exit 1
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
-
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: 22
-          cache: npm
-
+      - run: node --version && npm --version
       - run: npm ci
       - run: npm run build
-
-      - name: Install the lockfile-pinned Chromium runtime
-        run: npx playwright-core install --with-deps chromium
-
+      - name: Install lockfile-pinned Chromium
+        run: npx --no-install playwright-core install --with-deps chromium
       - name: Boot the production bundle in Chromium
         run: npm run test:browser:ci
         env:
           HARMOLYN_REQUIRE_BROWSER: "1"
 
+      - name: Verify all themes and custom colors in the production application
+        run: node scripts/appearance-e2e.mjs
+        env:
+          HARMOLYN_APPEARANCE_EVIDENCE: .generated/appearance-evidence
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: browser-evidence
+          path: |
+            .generated/appearance-evidence/
+            .generated/browser-evidence/
+          if-no-files-found: warn
+          retention-days: 7
+
   tauri:
     name: Tauri Debug Build (Linux)
-    runs-on: ubuntu-22.04
+    runs-on: self-hosted
+    container: node:26-bookworm
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      # Never execute an external fork on a persistent self-hosted runner.
+      - name: Require a trusted repository source
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
+        run: echo "External-fork code requires isolated runner review."; exit 1
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
-
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: 22
-          cache: npm
-
+      - name: Install native build prerequisites in the isolated build container
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev \
+            xdg-utils patchelf libgtk-3-dev libssl-dev pkg-config build-essential
       - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
         with:
           toolchain: stable
-
-      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae
         with:
           workspaces: src-tauri
-          key: ci-linux
-
-      - name: Install Tauri system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev \
-            xdg-utils patchelf libgtk-3-dev libssl-dev
-
+          key: ci-debian-node26
       - run: npm ci
       - run: npm run build
       - run: cargo test --locked --manifest-path src-tauri/Cargo.toml
-
-      - name: Build the native application without a distributable bundle
-        run: npm exec tauri build -- --debug --no-bundle
+      - name: Build native application without a release bundle
+        run: npm exec -- tauri build --debug --no-bundle
         env:
           TAURI_SIGNING_PRIVATE_KEY: ""
