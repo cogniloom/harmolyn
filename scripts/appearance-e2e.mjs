@@ -36,12 +36,24 @@ try {
       await page.waitForFunction(value => document.documentElement.dataset.appearance === value, theme);
       const fits = await page.locator('.appearance-settings').evaluate(el => el.scrollWidth <= el.clientWidth + 1 && document.documentElement.scrollWidth <= window.innerWidth + 1);
       assert.ok(fits, `${theme} overflows at ${width}px`);
+      const homeContrast = await page.getByTestId('server-rail-home').evaluate(el => {
+        const style = getComputedStyle(el);
+        const parse = color => color.match(/[\d.]+/g).map(Number);
+        const luminance = values => values.slice(0, 3).map(value => {
+          const channel = value / 255;
+          return channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
+        }).reduce((sum, value, index) => sum + value * [0.2126, 0.7152, 0.0722][index], 0);
+        const foreground = parse(style.color), background = parse(style.backgroundColor);
+        const a = luminance(foreground), b = luminance(background);
+        return { opaque: background.length === 3 || background[3] >= 0.99, ratio: (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05) };
+      });
+      assert.ok(homeContrast.opaque && homeContrast.ratio >= 4.5, `${theme} active Home button loses contrast`);
       if (['midnight', 'daylight'].includes(theme)) {
         await page.locator('.appearance-heading').scrollIntoViewIfNeeded();
         await page.screenshot({ path: path.join(evidence, `${theme}-${width}.png`) });
       }
     }
-    checks.push(`All ten themes selected, no horizontal overflow at ${width}px`);
+    checks.push(`All ten themes selected, active navigation readable, no horizontal overflow at ${width}px`);
   }
   await page.locator('input[name="harmolyn-theme"][value="midnight"]').locator('..').click();
   await page.getByLabel('Accent', { exact: true }).fill('#88BBCC');

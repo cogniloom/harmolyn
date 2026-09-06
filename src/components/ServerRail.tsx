@@ -135,11 +135,11 @@ export const ServerRail: React.FC<ServerRailProps> = ({ servers, activeServerId,
             aria-label="Home"
             aria-current={activeServerId === 'home' ? 'page' : undefined}
             title="Home"
-            className={`w-[44px] h-[44px] rounded-full group-hover:rounded-r1 transition-all duration-300 flex items-center justify-center bg-white/5 group-hover:bg-primary group-hover:text-bg-0 text-white/40 ${activeServerId === 'home' ? 'rounded-r1 bg-primary text-bg-0 ring-2 ring-primary/40 ring-offset-[3px] ring-offset-bg-0' : ''}`}>
+            className={`w-[44px] h-[44px] rounded-full group-hover:rounded-r1 transition-all duration-300 flex items-center justify-center group-hover:bg-primary group-hover:text-bg-0 ${activeServerId === 'home' ? 'rounded-r1 bg-primary text-bg-0 ring-2 ring-primary/40 ring-offset-[3px] ring-offset-bg-0' : 'bg-white/5 text-white/40'}`}>
            <Home size={20} />
          </motion.button>
          {activeServerId === 'home' && (
-           <div className="absolute -left-5 top-1/2 -translate-y-1/2 w-1.5 h-5 bg-primary rounded-r-full shadow-[0_0_10px_#13DDEC]"></div>
+           <div className="absolute -left-5 top-1/2 -translate-y-1/2 w-1.5 h-5 bg-primary rounded-r-full"></div>
          )}
          {/* Pending friend-request badge: the recipient sees this even before they
              open the Friends panel, so a request is never silently missed. */}
@@ -169,7 +169,7 @@ export const ServerRail: React.FC<ServerRailProps> = ({ servers, activeServerId,
               <img referrerPolicy="no-referrer" src={resolveAvatarSrc(server.icon, server.name)} alt={server.name} className="w-full h-full object-cover transition-opacity duration-150" />
             </motion.button>
             {activeServerId === server.id && (
-              <div className="absolute -left-5 top-1/2 -translate-y-1/2 w-1.5 h-5 bg-primary rounded-r-full shadow-[0_0_10px_#13DDEC]"></div>
+              <div className="absolute -left-5 top-1/2 -translate-y-1/2 w-1.5 h-5 bg-primary rounded-r-full"></div>
             )}
             {totalUnread > 0 && activeServerId !== server.id && (
               <div className="absolute -bottom-0.5 -right-0.5 min-w-[15px] h-[15px] bg-accent-danger rounded-full flex items-center justify-center text-[8px] font-bold text-white border-2 border-bg-0 px-1 shadow-[0_0_6px_rgba(255,42,109,0.5)]">
