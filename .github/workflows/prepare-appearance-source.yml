@@ -1,0 +1,57 @@
+name: Prepare appearance source
+on:
+  workflow_dispatch:
+  push:
+    branches: [codex/harmolyn-stabilization-2026-09-06]
+    paths: [.github/workflows/prepare-appearance-source.yml]
+permissions:
+  contents: read
+jobs:
+  prepare:
+    runs-on: self-hosted
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Prepare exact, source-preserving appearance integration
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+          path = Path('src/components/SettingsScreen.tsx')
+          raw = path.read_bytes()
+          digest = hashlib.sha1(b'blob ' + str(len(raw)).encode() + b'\0' + raw).hexdigest()
+          if digest != '986c3cab716c60d61458948ed718a73edd8eabf4':
+              raise SystemExit('Settings changed; review the migration against the current file first.')
+          source = raw.decode('utf-8')
+          start = source.index('const AppearanceSection: React.FC<{')
+          end = source.index('const CB_FILTERS:', start)
+          replacement = '''const AppearanceSection: React.FC<{
+            messageLayout: MessageLayout;
+            onSetMessageLayout?: (layout: MessageLayout) => void;
+            bgSeed: string;
+            onSetBgSeed?: (seed: string) => void;
+            showFeedback: (tone: FeedbackTone, message: string) => void;
+          }> = ({ messageLayout, onSetMessageLayout }) => (
+            <AppearanceSettings messageLayout={messageLayout} onSetMessageLayout={onSetMessageLayout}>
+              <LanguageSection />
+            </AppearanceSettings>
+          );
+
+          '''
+          source = "import { AppearanceSettings } from '@/components/settings/AppearanceSettings';\n" + source[:start] + replacement + source[end:]
+          source = source.replace('className="absolute inset-0 z-[100] flex min-w-0 flex-col overflow-hidden bg-bg-0 text-white/70 md:flex-row"', 'className="settings-screen absolute inset-0 z-[100] flex min-w-0 flex-col overflow-hidden bg-bg-0 text-white/70 md:flex-row"', 1)
+          source = source.replace('mx-auto max-w-[640px] min-w-0', 'mx-auto max-w-[960px] min-w-0', 1)
+          out = Path('appearance-source')
+          out.mkdir(exist_ok=True)
+          (out / 'SettingsScreen.tsx').write_text(source, encoding='utf-8')
+          print('Prepared SettingsScreen.tsx; all non-appearance sections retained.')
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: appearance-settings-source
+          path: appearance-source/SettingsScreen.tsx
+          if-no-files-found: error
+          retention-days: 1
