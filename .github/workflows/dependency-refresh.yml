@@ -18,7 +18,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
-      - name: Assemble verified candidate and compatibility patch
+      - name: Assemble verified candidate and compatibility patches
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -55,7 +55,10 @@ jobs:
           paths=sorted(set(candidate['expected'])|set(fixes['expected'])|{'package-lock.json','website/package-lock.json','src-tauri/Cargo.lock'})
           out=Path('candidate-evidence');out.mkdir(exist_ok=True)
           (out/'paths.json').write_text(json.dumps(paths))
-          print('Verified',len(paths),'candidate file paths. This job cannot update Git refs.')
+          # The final migration verifies every resulting file against reviewed hashes.
+          clean_env={key:value for key,value in os.environ.items() if key!='GH_TOKEN'}
+          subprocess.run(['python3','-c',blob('6531b00cdc921693bc4f81ed214f0cbd7959302c').decode()],env=clean_env,check=True)
+          print('Assembled reviewed source; this job cannot update Git refs.')
           PY
       - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
         with:
@@ -152,7 +155,7 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
           import hashlib, json, os, urllib.request
-          allowed={'.github/dependabot.yml','.github/workflows/agenthub-ci.yml','.github/workflows/codeql.yml','.github/workflows/release.yml','.nvmrc','package.json','package-lock.json','website/package.json','website/package-lock.json','scripts/test-stabilization-contracts.mjs','scripts/appearance-e2e.mjs','src-tauri/Cargo.toml','src-tauri/Cargo.lock','src-tauri/tauri.conf.json','src/components/ChatArea.tsx','src/components/MediaLightbox.tsx','src/components/ServerRail.tsx','src/components/SettingsScreen.tsx','src/components/settings/AppearanceSettings.tsx','src/components/voice/VoiceVideoSinks.tsx','src/lib/appearance/model.ts','src/lib/appearance/model.test.ts','src/lib/appearance/store.ts','src/lib/appearance/store.test.ts','src/main.tsx','src/styles/appearance.css','src/utils/themeGenerator.ts','tailwind.config.ts','src/components/ChannelRail.tsx','src/components/ChatArea.inbox.test.tsx','src/components/ChatArea.test.tsx','src/components/ForumChannel.tsx','src/components/JoinServerModal.tsx','src/components/MediaEmbed.test.tsx','src/components/MediaLightbox.test.tsx','src/components/SettingsScreen.test.tsx','src/components/auth/RestoreStep.tsx','src/data.ts','src/hooks/runtime/mutations.ts','src/hooks/usePersistentState.test.ts','src/lib/browserMedia.ts','src/lib/browserNavigator.ts','src/lib/stabilization/previews.ts','src/native/delivery/recipientInbox.ts','src/native/engine/engine.ts','src/native/families/streammux.ts','src/native/state/pins.test.ts','src/native/sync/inbound.ts','src/native/sync/invite.signed.test.ts','src/native/sync/peersync.ts','src/native/transport/manager.ts','src/native/transport/node.directTransport.test.ts','src/native/transport/node.ts','src/native/voice/session.roster.test.ts','tsconfig.protocol.json'}
+          allowed={'.github/dependabot.yml','.github/workflows/agenthub-ci.yml','.github/workflows/codeql.yml','.github/workflows/release.yml','.nvmrc','package.json','package-lock.json','website/package.json','website/package-lock.json','scripts/test-stabilization-contracts.mjs','scripts/appearance-e2e.mjs','src-tauri/Cargo.toml','src-tauri/Cargo.lock','src-tauri/tauri.conf.json','src/components/ChatArea.tsx','src/components/MediaLightbox.tsx','src/components/ServerRail.tsx','src/components/SettingsScreen.tsx','src/components/settings/AppearanceSettings.tsx','src/components/voice/VoiceVideoSinks.tsx','src/lib/appearance/model.ts','src/lib/appearance/model.test.ts','src/lib/appearance/store.ts','src/lib/appearance/store.test.ts','src/main.tsx','src/styles/appearance.css','src/utils/themeGenerator.ts','tailwind.config.ts','src/components/ChannelRail.tsx','src/components/ChatArea.inbox.test.tsx','src/components/ChatArea.test.tsx','src/components/ForumChannel.tsx','src/components/JoinServerModal.tsx','src/components/MediaEmbed.test.tsx','src/components/MediaLightbox.test.tsx','src/components/SettingsScreen.test.tsx','src/components/auth/RestoreStep.tsx','src/data.ts','src/hooks/runtime/mutations.ts','src/hooks/usePersistentState.test.ts','src/lib/browserMedia.ts','src/lib/browserNavigator.ts','src/lib/stabilization/previews.ts','src/native/delivery/recipientInbox.ts','src/native/engine/engine.ts','src/native/families/streammux.ts','src/native/state/pins.test.ts','src/native/sync/inbound.ts','src/native/sync/invite.signed.test.ts','src/native/sync/peersync.ts','src/native/transport/manager.ts','src/native/transport/node.directTransport.test.ts','src/native/transport/node.ts','src/native/voice/session.roster.test.ts','tsconfig.protocol.json','src/components/onboarding/ProductTour.tsx','src/components/onboarding/SecurityOnboarding.tsx','vite.config.ts','docs/DEPENDENCY-MAINTENANCE.md'}
           files=json.loads(Path('evidence/files.json').read_text())
           for item in files:
               if item['path'] not in allowed: raise SystemExit('Unreviewed file path')
