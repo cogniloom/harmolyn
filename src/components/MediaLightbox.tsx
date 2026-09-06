@@ -1,86 +1,58 @@
-import React, { useState } from 'react';
-import { X, ZoomIn, ZoomOut } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
+import { X, ZoomIn, ZoomOut, RotateCcw } from 'lucide-react';
 import { resolvePreviewImageSrc } from '@/lib/media';
 import { useEscapeKey } from '@/hooks/useEscapeKey';
+import { trapDialogFocus } from '@/lib/stabilization/interaction';
 
-const MIN_ZOOM = 0.5;
-const MAX_ZOOM = 3;
-
-const clampZoom = (z: number) => Math.min(Math.max(z, MIN_ZOOM), MAX_ZOOM);
-
-interface MediaLightboxProps {
-  src: string;
-  alt?: string;
-  onClose: () => void;
-}
+interface MediaLightboxProps { src: string; alt?: string; onClose: () => void }
 
 export const MediaLightbox: React.FC<MediaLightboxProps> = ({ src, alt = 'Image', onClose }) => {
-  const [zoom, setZoom] = useState(1);
+  const [view, setView] = useState({ src, zoom: 1, failed: false });
+  const zoom = view.src === src ? view.zoom : 1;
+  const failed = view.src === src && view.failed;
+  const root = useRef<HTMLDivElement>(null);
+  const scroller = useRef<HTMLDivElement>(null);
+  const backdropPress = useRef(false);
   const safeSrc = resolvePreviewImageSrc(src);
-
   useEscapeKey(onClose);
-
-  const zoomIn = () => setZoom(z => clampZoom(z + 0.25));
-  const zoomOut = () => setZoom(z => clampZoom(z - 0.25));
-
-  // Scroll-to-zoom: wheel up zooms in, wheel down zooms out (matches the hint text).
-  const handleWheel = (e: React.WheelEvent) => {
-    e.preventDefault();
-    const step = e.deltaY < 0 ? 0.25 : -0.25;
-    setZoom(z => clampZoom(z + step));
-  };
-
-  return (
-    <div
-      className="fixed inset-0 z-[300] flex items-center justify-center"
-      onClick={onClose}
-      onWheel={handleWheel}
-      role="dialog"
-      aria-modal="true"
-      aria-label={alt}
-    >
-      <div className="absolute inset-0 bg-black/90 backdrop-blur-md" />
-
-      {/* Controls */}
-      <div className="absolute top-4 right-4 flex items-center gap-2 z-10">
-        <button aria-label="Zoom out" onClick={(e) => { e.stopPropagation(); zoomOut(); }} className="p-2 glass-card rounded-full text-white/60 hover:text-white transition-colors border border-white/10 focus-ring">
-          <ZoomOut size={18} />
-        </button>
-        <span className="text-white/40 text-xs font-mono min-w-[40px] text-center">{Math.round(zoom * 100)}%</span>
-        <button aria-label="Zoom in" onClick={(e) => { e.stopPropagation(); zoomIn(); }} className="p-2 glass-card rounded-full text-white/60 hover:text-white transition-colors border border-white/10 focus-ring">
-          <ZoomIn size={18} />
-        </button>
-        <button aria-label="Close" onClick={onClose} className="p-2 glass-card rounded-full text-white/60 hover:text-white transition-colors border border-white/10 ml-2 focus-ring">
-          <X size={18} />
-        </button>
+  useEffect(() => root.current ? trapDialogFocus(root.current) : undefined, []);
+  const changeZoom = (delta: number) => setView(current => ({ src, failed: current.src === src && current.failed, zoom: Math.min(3, Math.max(0.5, (current.src === src ? current.zoom : 1) + delta)) }));
+  // Native listener can prevent wheel scrolling when zooming; React's wheel listener may be passive.
+  useEffect(() => {
+    const element = scroller.current;
+    if (!element) return;
+    const wheel = (event: WheelEvent) => {
+      if (!event.ctrlKey && !event.metaKey) return; // Ordinary scrolling pans a magnified image.
+      event.preventDefault();
+      const delta = event.deltaY < 0 ? 0.25 : -0.25;
+      setView(current => ({ src, failed: current.src === src && current.failed, zoom: Math.min(3, Math.max(0.5, (current.src === src ? current.zoom : 1) + delta)) }));
+    };
+    element.addEventListener('wheel', wheel, { passive: false });
+    return () => element.removeEventListener('wheel', wheel);
+  }, [src]);
+  if (typeof document === 'undefined') return null;
+  return createPortal(
+    <div ref={root} className="harmolyn-visible-viewport media-lightbox" role="dialog" aria-modal="true" aria-label={alt || 'Image preview'}
+      onPointerDown={event => { backdropPress.current = event.target === event.currentTarget; }}
+      onClick={event => { if (event.target === event.currentTarget && backdropPress.current) onClose(); backdropPress.current = false; }}>
+      <div className="media-lightbox-toolbar">
+        <button type="button" aria-label="Zoom out" disabled={zoom <= 0.5} onClick={() => changeZoom(-0.25)}><ZoomOut size={20} /></button>
+        <span aria-live="polite" className="min-w-12 text-center text-sm tabular-nums">{Math.round(zoom * 100)}%</span>
+        <button type="button" aria-label="Zoom in" disabled={zoom >= 3} onClick={() => changeZoom(0.25)}><ZoomIn size={20} /></button>
+        <button type="button" aria-label="Reset zoom" onClick={() => setView({ src, zoom: 1, failed })}><RotateCcw size={20} /></button>
+        <button type="button" aria-label="Close image preview" onClick={onClose}><X size={22} /></button>
       </div>
-
-      {/* Image */}
-      <div
-        className="relative max-w-[90vw] max-h-[85vh] overflow-auto no-scrollbar cursor-move"
-        onClick={e => e.stopPropagation()}
-      >
-        {safeSrc ? (
-          <img
-            data-context-image
-            src={safeSrc}
-            alt={alt}
-            referrerPolicy="no-referrer"
-            className="transition-transform duration-200 rounded-r1"
-            style={{ transform: `scale(${zoom})`, transformOrigin: 'center center' }}
-            draggable={false}
-          />
-        ) : (
-          <div className="glass-card rounded-r2 border border-white/10 px-6 py-5 text-sm text-white/70 max-w-md">
-            This image source cannot be previewed safely.
+      <div ref={scroller} className="media-lightbox-content">
+        {safeSrc && !failed ? (
+          <div style={{ width: `${zoom * 100}%`, height: `${zoom * 100}%`, marginInline: 'auto' }}>
+          <img data-context-image src={safeSrc} alt={alt} referrerPolicy="no-referrer" draggable={false} decoding="async"
+            onError={() => setView({ src, zoom, failed: true })}
+            style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
           </div>
-        )}
+        ) : <p role="status" className="p-6 text-sm text-white/80">This image cannot be displayed safely. Close the preview to return to the conversation.</p>}
       </div>
-
-      {/* Bottom hint */}
-      <div className="absolute bottom-4 left-1/2 -translate-x-1/2 text-[9px] text-white/20 font-mono">
-        CLICK OUTSIDE TO CLOSE // SCROLL TO ZOOM
-      </div>
-    </div>
+      <p className="media-lightbox-hint">Use the zoom controls, or Ctrl/⌘ + scroll. Escape closes the preview.</p>
+    </div>, document.body,
   );
 };

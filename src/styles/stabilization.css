@@ -1,0 +1,75 @@
+/* Keep the existing visual language; avoid full-screen GPU filters and hidden controls. */
+.app-viewport { height: 100vh; height: var(--harmolyn-viewport-height, 100dvh); }
+.harmolyn-visible-viewport {
+  position: fixed;
+  top: var(--harmolyn-viewport-top, 0px);
+  left: 0;
+  right: 0;
+  height: 100vh;
+  height: var(--harmolyn-viewport-height, 100dvh);
+  box-sizing: border-box;
+}
+.media-lightbox {
+  z-index: 300;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: max(12px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right)) max(12px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left));
+  background: #050a0b;
+  color: #f6f8f8;
+}
+.media-lightbox-toolbar { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; align-self: stretch; gap: 4px; flex-shrink: 0; }
+.media-lightbox-toolbar button { min-width: 44px; min-height: 44px; display: inline-flex; align-items: center; justify-content: center; border-radius: 8px; background: #172024; }
+.media-lightbox-toolbar button:disabled { opacity: .4; }
+.media-lightbox-content { width: min(100%, 1100px); min-height: 0; flex: 1; overflow: auto; overscroll-behavior: contain; }
+.media-lightbox-content img { display: block; max-width: none; }
+.media-lightbox-hint { flex-shrink: 0; text-align: center; font-size: 12px; color: rgba(255, 255, 255, .65); }
+.message-previews { min-width: 0; max-width: 440px; }
+.remote-preview-placeholder, .remote-preview-link {
+  display: flex; align-items: center; gap: 12px; width: 100%; min-height: 56px; padding: 12px;
+  text-align: start; border: 1px solid rgba(255,255,255,.12); border-radius: 10px; background: #11191b;
+}
+.remote-preview-placeholder > svg { flex-shrink: 0; }
+.remote-preview-card { overflow: hidden; border: 1px solid rgba(255,255,255,.12); border-radius: 10px; background: #11191b; }
+.attachment-card { min-width: 0; overflow-wrap: anywhere; }
+.voice-playback-notice {
+  position: fixed; z-index: 90; left: max(12px, env(safe-area-inset-left)); right: max(12px, env(safe-area-inset-right)); top: calc(var(--harmolyn-viewport-top, 0px) + max(12px, env(safe-area-inset-top)));
+  margin-inline: auto; max-width: 480px; display: flex; align-items: center; gap: 12px; padding: 8px 12px;
+  border: 1px solid rgba(255,255,255,.25); border-radius: 12px; background: #172024; color: #f6f8f8;
+}
+.voice-playback-notice button { min-height: 44px; flex-shrink: 0; padding: 0 12px; border-radius: 8px; background: #24373b; }
+.voice-stage {
+  bottom: calc(6rem + env(safe-area-inset-bottom));
+  max-height: 60vh;
+  position: fixed; z-index: 60; right: max(12px, env(safe-area-inset-right)); bottom: calc(6rem + env(safe-area-inset-bottom) + max(0px, 100dvh - var(--harmolyn-viewport-height, 100dvh) - var(--harmolyn-viewport-top, 0px)));
+  width: min(360px, calc(100vw - 24px - env(safe-area-inset-left) - env(safe-area-inset-right)));
+  max-height: min(60vh, calc(var(--harmolyn-viewport-height, 100dvh) - 9rem));
+  display: flex; flex-direction: column; min-height: 0; overflow: hidden; border: 1px solid rgba(255,255,255,.16); border-radius: 12px; background: #0e1719;
+}
+.voice-stage-body { min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 8px; display: grid; gap: 8px; }
+.voice-stage button { min-height: 44px; min-width: 44px; }
+.media-lightbox button:focus-visible, .message-previews :is(button, a):focus-visible, .voice-stage button:focus-visible, .voice-playback-notice button:focus-visible {
+  outline: 2px solid #13ddec; outline-offset: -3px;
+}
+@media (max-width: 1099px) {
+  .responsive-composer-picker {
+    max-height: calc(var(--harmolyn-viewport-height, 100dvh) - 6rem - env(safe-area-inset-top) - env(safe-area-inset-bottom));
+    bottom: calc(5rem + env(safe-area-inset-bottom) + max(0px, 100dvh - var(--harmolyn-viewport-height, 100dvh) - var(--harmolyn-viewport-top, 0px))) !important;
+  }
+}
+@media (pointer: coarse), (update: slow) {
+  .glass-card, .glass-panel, .glass-realistic { backdrop-filter: none !important; -webkit-backdrop-filter: none !important; }
+  .glass-card { background-color: rgba(17, 23, 24, .96); }
+  .glass-panel, .glass-realistic { background-color: rgba(16, 25, 27, .96); }
+  input, textarea, select { font-size: max(16px, 1em); }
+}
+.perf-mode [class*="backdrop-blur"] { backdrop-filter: none !important; -webkit-backdrop-filter: none !important; }
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  *, *::before, *::after { scroll-behavior: auto !important; animation-iteration-count: 1 !important; }
+}
+@media (forced-colors: active) {
+  .media-lightbox, .remote-preview-card, .remote-preview-placeholder, .remote-preview-link, .voice-stage, .voice-playback-notice { background: Canvas; color: CanvasText; border: 1px solid CanvasText; }
+  button:focus-visible, a:focus-visible { outline: 2px solid Highlight !important; }
+}
