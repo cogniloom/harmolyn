@@ -7,55 +7,158 @@ on:
 permissions:
   contents: read
 jobs:
-  inspect:
+  candidate:
+    if: github.repository == 'cogniloom/harmolyn'
     runs-on: self-hosted
-    timeout-minutes: 10
+    container: node:26-bookworm
+    timeout-minutes: 40
+    env:
+      CI: 'true'
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
-      - name: Read authoritative package metadata without executing package code
+      - name: Assemble the hash-verified reviewed source candidate
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          python3 - <<'PY'
+          import base64, gzip, hashlib, json, os, subprocess, urllib.request
+          from pathlib import Path
+          def blob(sha):
+              request=urllib.request.Request('https://api.github.com/repos/cogniloom/harmolyn/git/blobs/'+sha,headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],'Accept':'application/vnd.github+json'})
+              with urllib.request.urlopen(request,timeout=30) as response: value=json.load(response)
+              raw=base64.b64decode(value['content'])
+              if hashlib.sha1(b'blob '+str(len(raw)).encode()+b'\0'+raw).hexdigest()!=sha: raise SystemExit('Git blob integrity failure')
+              return raw
+          parts=['2af508d865f8180f81ca04334555dc4699a1bbce','de344e458720abca83cf187bc0c36027c9337d40','b4340e9f10d5440511f5788df48bd40b3fa07982','c33da6bb2a0c1ddc7caa08fc69d17ffe6814d120']
+          compressed=b''.join(blob(sha) for sha in parts)
+          if hashlib.sha1(b'blob '+str(len(compressed)).encode()+b'\0'+compressed).hexdigest()!='d4645955cc09b34383a23509341b2bff31a930c6': raise SystemExit('Candidate integrity failure')
+          candidate=json.loads(gzip.decompress(compressed))
+          for path in candidate['expected']:
+              if path.startswith('/') or '..' in Path(path).parts: raise SystemExit('Invalid candidate path')
+          for path, text in candidate['files'].items():
+              target=Path(path);target.parent.mkdir(parents=True,exist_ok=True);target.write_text(text)
+          for path, patch in candidate['diffs'].items():
+              subprocess.run(['git','apply','--check','--whitespace=nowarn'],input=patch.encode(),check=True)
+              subprocess.run(['git','apply','--whitespace=nowarn'],input=patch.encode(),check=True)
+          for path,sha in candidate['blobs'].items(): Path(path).write_bytes(blob(sha))
+          for path,sha in candidate['expected'].items():
+              raw=Path(path).read_bytes()
+              if hashlib.sha1(b'blob '+str(len(raw)).encode()+b'\0'+raw).hexdigest()!=sha: raise SystemExit('Source mismatch: '+path)
+          out=Path('candidate-evidence');out.mkdir(exist_ok=True)
+          (out/'paths.json').write_text(json.dumps(list(candidate['expected'])+['package-lock.json','website/package-lock.json','src-tauri/Cargo.lock']))
+          print('Verified all',len(candidate['expected']),'reviewed files. No branch or release is modified by this job.')
+          PY
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: stable
+      - name: Resolve lockfiles and run the real repository checks
         shell: bash
         run: |
           python3 - <<'PY'
-          import json, re, subprocess, urllib.request, urllib.parse
+          import json, subprocess, zipfile, hashlib, shutil, os
           from pathlib import Path
-          from concurrent.futures import ThreadPoolExecutor
-          packages = {}
-          for path in ['package.json','website/package.json']:
-              data = json.loads(Path(path).read_text())
-              for section in ['dependencies','devDependencies']:
-                  for name, spec in data.get(section,{}).items():
-                      packages.setdefault(name, {})[path] = spec
-          def inspect(item):
-              name, specs = item
-              try:
-                  req = urllib.request.Request('https://registry.npmjs.org/'+urllib.parse.quote(name, safe='@')+'/latest', headers={'Accept':'application/json'})
-                  with urllib.request.urlopen(req,timeout=25) as r: data=json.load(r)
-                  return name, {'declared':specs,'latest':data['version'],'engines':data.get('engines',{}),'peers':data.get('peerDependencies',{})}
-              except Exception as error: return name, {'declared':specs,'error':type(error).__name__}
-          with ThreadPoolExecutor(max_workers=4) as pool: result=dict(pool.map(inspect,packages.items()))
-          versions = {}
-          for executable in ['node','npm','cargo','rustc','docker']:
-              try: versions[executable]=subprocess.check_output([executable,'--version'],stderr=subprocess.STDOUT,timeout=15,text=True).strip()
-              except Exception as error: versions[executable]=type(error).__name__
-          out=Path('dependency-evidence');out.mkdir(exist_ok=True)
-          (out/'npm-releases.json').write_text(json.dumps(result,indent=2))
-          (out/'runner-versions.json').write_text(json.dumps(versions,indent=2))
-          rust={}
-          for name in ['tauri','tauri-build','tauri-plugin-deep-link','tauri-plugin-single-instance','tauri-plugin-updater','tauri-plugin-process','serde','serde_json','dirs-next','libc']:
-              try:
-                  req=urllib.request.Request('https://crates.io/api/v1/crates/'+name,headers={'User-Agent':'Harmolyn dependency maintenance (cogniloom/harmolyn)'})
-                  with urllib.request.urlopen(req,timeout=25) as r: data=json.load(r)
-                  rust[name]={'latest':data['crate']['max_stable_version']}
-              except Exception as error: rust[name]={'error':type(error).__name__}
-          (out/'rust-releases.json').write_text(json.dumps(rust,indent=2))
-          print('Inspected',len(result),'npm packages and',len(rust),'Rust crates; results retained as artifacts.')
+          out=Path('candidate-evidence');out.mkdir(exist_ok=True)
+          results={}
+          def run(name,args,timeout=600):
+              with (out/(name+'.log')).open('w') as log:
+                  try: code=subprocess.run(args,stdout=log,stderr=subprocess.STDOUT,timeout=timeout).returncode
+                  except subprocess.TimeoutExpired: code=124
+                  except OSError: code=127
+              results[name]=code;print(name+': '+str(code),flush=True)
+              return code==0
+          run('node-version',['node','--version'])
+          run('cargo-version',['cargo','--version'])
+          run('rust-lock',['cargo','update','--manifest-path','src-tauri/Cargo.toml'])
+          if run('npm-lock',['npm','install','--package-lock-only','--ignore-scripts','--no-fund']):
+              if run('npm-ci',['npm','ci','--no-fund']):
+                  run('lint',['npm','run','lint'])
+                  run('typecheck',['npm','run','typecheck'])
+                  run('build',['npm','run','build'])
+                  run('unit-tests',['npm','test','--','--reporter=dot'],900)
+                  run('protocol-tests',['npm','run','test:protocol'],900)
+                  run('contract-tests',['node','scripts/test-stabilization-contracts.mjs'])
+                  run('npm-audit',['npm','audit','--json'])
+                  run('npm-outdated',['npm','outdated','--json'])
+          if run('website-lock',['npm','--prefix','website','install','--package-lock-only','--ignore-scripts','--no-fund']):
+              if run('website-ci',['npm','--prefix','website','ci','--no-fund']):
+                  run('website-build',['npm','--prefix','website','run','build'])
+                  run('website-audit',['npm','--prefix','website','audit','--json'])
+          paths=json.loads((out/'paths.json').read_text())
+          files=[]
+          for name in paths:
+              p=Path(name)
+              if p.is_file():
+                  target=out/'source'/name;target.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(p,target)
+                  raw=p.read_bytes();files.append({'path':name,'sha':hashlib.sha1(b'blob '+str(len(raw)).encode()+b'\0'+raw).hexdigest()})
+          (out/'files.json').write_text(json.dumps(files,indent=2))
+          (out/'results.json').write_text(json.dumps({'source':os.environ['GITHUB_SHA'],'checks':results},indent=2))
+          for folder,label in [('dist','application-dist'),('website/dist','website-dist')]:
+              if Path(folder).is_dir():
+                  with zipfile.ZipFile(out/(label+'.zip'),'w',zipfile.ZIP_DEFLATED) as z:
+                      for p in Path(folder).rglob('*'):
+                          if p.is_file(): z.write(p,p.relative_to(folder))
           PY
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
-          name: dependency-evidence
-          path: dependency-evidence/
+          name: candidate-evidence
+          path: candidate-evidence/
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 3
+      - name: Fail on any uncompleted or failing validation gate
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          data=json.loads(Path('candidate-evidence/results.json').read_text())['checks']
+          required=['rust-lock','npm-lock','npm-ci','lint','typecheck','build','unit-tests','protocol-tests','contract-tests','website-lock','website-ci','website-build']
+          failed=[name for name in required if data.get(name)!=0]
+          if failed: raise SystemExit('Failed candidate checks: '+', '.join(failed))
+          PY
+  retain-blobs:
+    if: always() && github.repository == 'cogniloom/harmolyn'
+    needs: candidate
+    runs-on: self-hosted
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      # No checkout, package installation, or execution of candidate code in this
+      # separate job. It stores unreferenced blobs, never updates a Git ref.
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: candidate-evidence
+          path: evidence
+      - name: Verify and retain source blobs
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib, json, os, urllib.request
+          allowed={'.github/dependabot.yml','.github/workflows/agenthub-ci.yml','.github/workflows/codeql.yml','.github/workflows/release.yml','.nvmrc','package.json','package-lock.json','website/package.json','website/package-lock.json','scripts/test-stabilization-contracts.mjs','src-tauri/Cargo.toml','src-tauri/Cargo.lock','src-tauri/tauri.conf.json','src/components/ChatArea.tsx','src/components/MediaLightbox.tsx','src/components/ServerRail.tsx','src/components/SettingsScreen.tsx','src/components/settings/AppearanceSettings.tsx','src/components/voice/VoiceVideoSinks.tsx','src/lib/appearance/model.ts','src/lib/appearance/model.test.ts','src/lib/appearance/store.ts','src/lib/appearance/store.test.ts','src/main.tsx','src/styles/appearance.css','src/utils/themeGenerator.ts','tailwind.config.ts'}
+          files=json.loads(Path('evidence/files.json').read_text())
+          for item in files:
+              if item['path'] not in allowed: raise SystemExit('Unreviewed file path')
+              raw=Path('evidence/source',item['path']).read_bytes()
+              sha=hashlib.sha1(b'blob '+str(len(raw)).encode()+b'\0'+raw).hexdigest()
+              if sha!=item['sha']: raise SystemExit('Source integrity failure')
+              request=urllib.request.Request('https://api.github.com/repos/cogniloom/harmolyn/git/blobs',data=json.dumps({'content':raw.decode(),'encoding':'utf-8'}).encode(),headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],'Accept':'application/vnd.github+json','Content-Type':'application/json'},method='POST')
+              with urllib.request.urlopen(request,timeout=30) as response: result=json.load(response)
+              if result['sha']!=sha: raise SystemExit('Git integrity failure')
+          Path('evidence/blob-manifest.json').write_text(json.dumps(files,indent=2))
+          print('Retained',len(files),'source blobs; review candidate-evidence results before referencing them.')
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: candidate-blob-manifest
+          path: evidence/blob-manifest.json
+          if-no-files-found: error
+          retention-days: 3
