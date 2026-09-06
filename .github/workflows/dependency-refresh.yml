@@ -1,0 +1,61 @@
+name: Dependency refresh
+on:
+  workflow_dispatch:
+  push:
+    branches: [codex/harmolyn-stabilization-2026-09-06]
+    paths: [.github/workflows/dependency-refresh.yml]
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: self-hosted
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Read authoritative package metadata without executing package code
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json, re, subprocess, urllib.request, urllib.parse
+          from pathlib import Path
+          from concurrent.futures import ThreadPoolExecutor
+          packages = {}
+          for path in ['package.json','website/package.json']:
+              data = json.loads(Path(path).read_text())
+              for section in ['dependencies','devDependencies']:
+                  for name, spec in data.get(section,{}).items():
+                      packages.setdefault(name, {})[path] = spec
+          def inspect(item):
+              name, specs = item
+              try:
+                  req = urllib.request.Request('https://registry.npmjs.org/'+urllib.parse.quote(name, safe='@')+'/latest', headers={'Accept':'application/json'})
+                  with urllib.request.urlopen(req,timeout=25) as r: data=json.load(r)
+                  return name, {'declared':specs,'latest':data['version'],'engines':data.get('engines',{}),'peers':data.get('peerDependencies',{})}
+              except Exception as error: return name, {'declared':specs,'error':type(error).__name__}
+          with ThreadPoolExecutor(max_workers=4) as pool: result=dict(pool.map(inspect,packages.items()))
+          versions = {}
+          for executable in ['node','npm','cargo','rustc','docker']:
+              try: versions[executable]=subprocess.check_output([executable,'--version'],stderr=subprocess.STDOUT,timeout=15,text=True).strip()
+              except Exception as error: versions[executable]=type(error).__name__
+          out=Path('dependency-evidence');out.mkdir(exist_ok=True)
+          (out/'npm-releases.json').write_text(json.dumps(result,indent=2))
+          (out/'runner-versions.json').write_text(json.dumps(versions,indent=2))
+          rust={}
+          for name in ['tauri','tauri-build','tauri-plugin-deep-link','tauri-plugin-single-instance','tauri-plugin-updater','tauri-plugin-process','serde','serde_json','dirs-next','libc']:
+              try:
+                  req=urllib.request.Request('https://crates.io/api/v1/crates/'+name,headers={'User-Agent':'Harmolyn dependency maintenance (cogniloom/harmolyn)'})
+                  with urllib.request.urlopen(req,timeout=25) as r: data=json.load(r)
+                  rust[name]={'latest':data['crate']['max_stable_version']}
+              except Exception as error: rust[name]={'error':type(error).__name__}
+          (out/'rust-releases.json').write_text(json.dumps(rust,indent=2))
+          print('Inspected',len(result),'npm packages and',len(rust),'Rust crates; results retained as artifacts.')
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: dependency-evidence
+          path: dependency-evidence/
+          if-no-files-found: error
+          retention-days: 7
