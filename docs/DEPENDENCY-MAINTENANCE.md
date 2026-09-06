@@ -48,3 +48,27 @@ unit tests, production browser smoke, and native tests blocking. Browser checks
 are not proof of real-WAN calls, iOS WebView behavior, signed native distribution,
 or absence of all information/memory leaks. Cryptographic wire formats and
 updater trust roots must not change as part of dependency maintenance.
+
+## Native CI and connection-policy compatibility
+
+The Linux CI job uses the single `self-hosted` label required by the available
+runner pool; its observed runners are Linux. Build prerequisites remain inside
+the Debian job container. Do not add unavailable labels merely because the
+release workflow declares a separate macOS target. A mixed-OS pool sharing this
+label would need an explicitly configured Linux runner group before container
+jobs can be scheduled reliably.
+
+CI compiles the actual Tauri application with `--debug --no-bundle --no-sign`.
+It receives no signing key and publishes no installers or updater artifacts.
+The release workflow, checked-in updater public key, HTTPS update endpoint and
+mandatory release signing are unchanged. Successful CI is not a signed release.
+
+The native CSP permits HTTP/WS connection schemes because it cannot express
+arbitrary private IPv4/IPv6 CIDR ranges. Application-controlled support URLs
+still reject credentials in URLs and require HTTPS for public Internet origins;
+HTTP is accepted only for validated literal private/loopback addresses. Local
+control bearer tokens are not attached to remote browser-gateway requests.
+Identity backup/restore remains native-bridge-only. Peer data uses Noise/E2EE,
+including on explicitly configured private-network transports. This is not a
+claim that plaintext LAN support metadata is confidential, nor that a CSP alone
+can prevent all network exfiltration. Use HTTPS on untrusted LANs as well.

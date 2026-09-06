@@ -40,5 +40,52 @@ describe('shared preferences', () => {
       channel.set(false); assert.equal(channel.getSnapshot(), false); release();
     });
   });
+  it('enriches a narrow reader with editor defaults without writes or render-time notifications', async () => {
+    const f = storageFixture(); await withGlobals({ window: f.win }, () => {
+      const sink = preferenceChannel<Record<string, unknown>>('test-pref-av', {});
+      let notified = 0;
+      const releaseSink = sink.subscribe(() => notified++);
+      const defaults = { speakerDevice: 'default', speakerVolume: 100, micVolume: 80, noiseSuppression: true };
+      const editor = preferenceChannel('test-pref-av', defaults);
+      assert.deepEqual(editor.getSnapshot(), defaults);
+      assert.strictEqual(editor.getSnapshot(), editor.getSnapshot());
+      assert.equal(notified, 0); assert.equal(f.writes(), 0);
+      const releaseEditor = editor.subscribe(() => {});
+      assert.equal(notified, 1);
+      editor.set(value => ({ ...value, speakerVolume: 25 }));
+      assert.equal(sink.getSnapshot().speakerVolume, 25);
+      assert.equal(editor.getSnapshot().micVolume, 80);
+      assert.equal(f.writes(), 1);
+      releaseEditor(); releaseSink();
+    });
+  });
+  it('fills missing legacy settings without replacing explicit mute or disabled options', async () => {
+    const f = storageFixture(); await withGlobals({ window: f.win }, () => {
+      f.data.set('test-pref-partial', JSON.stringify({ speakerVolume: 0, noiseSuppression: false }));
+      const sink = preferenceChannel<Record<string, unknown>>('test-pref-partial', {});
+      const releaseSink = sink.subscribe(() => {});
+      const editor = preferenceChannel('test-pref-partial', { speakerDevice: 'default', speakerVolume: 100, noiseSuppression: true });
+      const releaseEditor = editor.subscribe(() => {});
+      assert.deepEqual(editor.getSnapshot(), { speakerDevice: 'default', speakerVolume: 0, noiseSuppression: false });
+      assert.equal(f.writes(), 0);
+      f.data.clear(); f.win.dispatchEvent(event('storage', { key: null, storageArea: f.storage }));
+      assert.deepEqual(editor.getSnapshot(), { speakerDevice: 'default', speakerVolume: 100, noiseSuppression: true });
+      releaseEditor(); releaseSink();
+    });
+  });
+  it('preserves a volatile mute when later readers add defaults', async () => {
+    const f = storageFixture(); f.storage.setItem = () => { throw new Error('quota'); };
+    await withGlobals({ window: f.win }, () => {
+      const sink = preferenceChannel<Record<string, unknown>>('test-pref-volatile', {});
+      const releaseSink = sink.subscribe(() => {});
+      sink.set({ speakerVolume: 0 });
+      const editor = preferenceChannel('test-pref-volatile', { speakerVolume: 100, speakerDevice: 'default' });
+      const releaseEditor = editor.subscribe(() => {});
+      assert.deepEqual(editor.getSnapshot(), { speakerVolume: 0, speakerDevice: 'default' });
+      assert.equal(f.writes(), 0);
+      releaseEditor(); releaseSink();
+    });
+  });
+
 });
 

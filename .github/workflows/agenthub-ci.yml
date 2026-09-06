@@ -112,5 +112,4 @@ jobs:
           esac
           # Debug validation produces no updater artifacts and receives no signing key.
           # Signed release configuration and its mandatory keys remain unchanged.
-          npm exec -- tauri build --debug --no-bundle --target "$target" \
-            --config '{"bundle":{"createUpdaterArtifacts":false}}' -- --locked
+          npm exec -- tauri build --debug --no-bundle --no-sign --target "$target" -- --locked
