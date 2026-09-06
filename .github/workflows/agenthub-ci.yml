@@ -100,16 +100,10 @@ jobs:
       - run: npm ci
       - run: npm run build
       - run: cargo test --locked --manifest-path src-tauri/Cargo.toml
-      - name: Build native application without a release bundle
+      - name: Compile native application with embedded production frontend
         shell: bash
         run: |
-          # Use Rust's canonical host triple instead of the CLI's architecture
-          # inference (which rejects feature-suffixed architectures such as x64+ssse3).
-          target="$(rustc -vV | sed -n 's/^host: //p')"
-          case "$target" in
-            x86_64-unknown-linux-gnu|aarch64-unknown-linux-gnu) ;;
-            *) echo "Unsupported or missing Linux Rust host triple" >&2; exit 1 ;;
-          esac
-          # Debug validation produces no updater artifacts and receives no signing key.
-          # Signed release configuration and its mandatory keys remain unchanged.
-          npm exec -- tauri build --debug --no-bundle --no-sign --target "$target" -- --locked
+          # This gate checks the real native binary without invoking the CLI's
+          # installer/updater signing phase. Release signing stays mandatory.
+          cargo build --locked --manifest-path src-tauri/Cargo.toml \
+            --features tauri/custom-protocol

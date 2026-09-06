@@ -28,6 +28,8 @@ try {
   assert.equal(await page.locator('vite-error-overlay').count(), 0);
   assert.equal(await page.locator('input[name="harmolyn-theme"]').count(), 10);
   checks.push('Production app → browse as guest → Settings → Appearance');
+  // Exercise ordinary animation settings too; color safety must not depend on reduced motion.
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
   const themes = ['midnight','graphite','oled','ocean','forest','ember','rose','violet','daylight','sand'];
   for (const width of [1440, 768, 390, 320]) {
     await page.setViewportSize({ width, height: width >= 768 ? 1000 : 844 });
@@ -48,9 +50,10 @@ try {
           }).reduce((sum, value, index) => sum + value * [0.2126, 0.7152, 0.0722][index], 0);
           const foreground = parse(style.color), background = parse(style.backgroundColor);
           const a = luminance(foreground), b = luminance(background);
-          return { opaque: background.length === 3 || background[3] >= 0.99, ratio: (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05) };
+          return { transition: style.transitionProperty, foreground: style.color, background: style.backgroundColor, opaque: background.length === 3 || background[3] >= 0.99, ratio: (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05) };
         });
-        assert.ok(homeContrast.opaque && homeContrast.ratio >= 4.5, `${theme} active Home button loses contrast`);
+        assert.ok(!/(?:^|,\s*)(?:all|color|background(?:-color)?)(?:,|$)/.test(homeContrast.transition), `${theme} must not interpolate foreground and background independently`);
+        assert.ok(homeContrast.opaque && homeContrast.ratio >= 4.5, `${theme} active Home button loses contrast: ${JSON.stringify(homeContrast)}`);
       }
       if (['midnight', 'daylight'].includes(theme)) {
         await page.locator('.appearance-heading').scrollIntoViewIfNeeded();

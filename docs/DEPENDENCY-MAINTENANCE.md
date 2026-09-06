@@ -58,7 +58,9 @@ release workflow declares a separate macOS target. A mixed-OS pool sharing this
 label would need an explicitly configured Linux runner group before container
 jobs can be scheduled reliably.
 
-CI compiles the actual Tauri application with `--debug --no-bundle --no-sign`.
+CI compiles the actual Tauri application with Cargo and the
+`tauri/custom-protocol` dependency feature, embedding the production frontend.
+This skips the CLI installer/updater packaging phase, not native compilation.
 It receives no signing key and publishes no installers or updater artifacts.
 The release workflow, checked-in updater public key, HTTPS update endpoint and
 mandatory release signing are unchanged. Successful CI is not a signed release.
