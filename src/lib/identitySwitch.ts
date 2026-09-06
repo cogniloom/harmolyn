@@ -10,11 +10,25 @@ import {
 import { isEncryptedSyncBlob, type EncryptedSyncBlob } from '@/native/state/stateSync';
 
 const NATIVE_STATE_KEY = 'harmolyn:native:state';
+const BACKUP_URL_REVOKE_DELAY_MS = 30_000;
+
+/**
+ * Unlock failures cross a crypto/storage trust boundary. Callers must not surface
+ * raw exception text because browser/native errors can contain implementation
+ * details, paths, serialized values, or provider-specific diagnostics.
+ */
+export class IdentityUnlockError extends Error {
+  constructor(message = 'Could not unlock this account. Check the password and try again.') {
+    super(message);
+    this.name = 'IdentityUnlockError';
+  }
+}
 
 /**
  * Unlock a vault identity with its passphrase, make it the active identity, and
- * reload so the native engine starts with it. Throws on a wrong passphrase or a
- * corrupt blob (the caller surfaces the error and stays put — no reload).
+ * reload so the native engine starts with it. Throws a stable, user-safe error on
+ * decryption/activation failure; internal crypto/storage diagnostics never cross
+ * into UI strings.
  *
  * Switching always requires a reload: the engine resolves its identity once in
  * start(); there is no hot identity-swap. `onBeforeReload` fires AFTER decryption
@@ -27,15 +41,22 @@ export async function unlockAndActivateVaultIdentity(
   passphrase: string,
   onBeforeReload?: () => void,
 ): Promise<void> {
-  if (!passphrase.trim()) throw new Error('Enter the password for this account.');
-  // Use the passphrase exactly as entered — trimming would break accounts whose
-  // password legitimately contains leading/trailing whitespace.
-  const identity = await decryptIdentity(entry.blob, passphrase);
-  await activateFromVault(entry.peerId);
-  // Seed the native state with this identity's profile so the engine restores the
-  // display_name on the next load. Without this the engine's peer-id mismatch
-  // detection wipes the store and the display_name is lost, making the
-  // "Viewing as guest" banner reappear after a successful unlock.
+  if (!passphrase.trim()) throw new IdentityUnlockError('Enter the password for this account.');
+
+  let identity: Awaited<ReturnType<typeof decryptIdentity>>;
+  try {
+    // Use the passphrase exactly as entered — trimming would break accounts whose
+    // password legitimately contains leading/trailing whitespace.
+    identity = await decryptIdentity(entry.blob, passphrase);
+    await activateFromVault(entry.peerId);
+  } catch {
+    // Deliberately collapse wrong-password, corrupt-vault, and platform crypto
+    // errors into one stable message. The UI does not need internal diagnostics.
+    throw new IdentityUnlockError();
+  }
+
+  // Seed the native state with this identity's public profile so the engine restores
+  // the display_name on the next load. Never place private key material here.
   try {
     const peerId = identity.peerId ?? entry.peerId;
     localStorage.setItem(NATIVE_STATE_KEY, JSON.stringify({
@@ -43,6 +64,7 @@ export async function unlockAndActivateVaultIdentity(
     }));
     sessionStorage.removeItem(NATIVE_STATE_KEY);
   } catch { /* best effort */ }
+
   onBeforeReload?.();
   // Defer the reload so React can paint the switching overlay first.
   await new Promise<void>((resolve) => { setTimeout(resolve, 60); });
@@ -66,8 +88,18 @@ export function downloadIdentityBackup(blob: VaultEntry['blob'], peerId: string,
   const a = document.createElement('a');
   a.href = url;
   a.download = `harmolyn-identity-${peerId.slice(0, 12)}.json`;
-  a.click();
-  URL.revokeObjectURL(url);
+  a.rel = 'noopener';
+  a.style.display = 'none';
+  document.body.appendChild(a);
+  try {
+    a.click();
+  } finally {
+    a.remove();
+    // Safari/WebKit can consume the blob URL after the synthetic click returns.
+    // Revoking immediately can produce a zero-byte/missing backup. Keep the
+    // encrypted URL briefly, then release it deterministically.
+    window.setTimeout(() => URL.revokeObjectURL(url), BACKUP_URL_REVOKE_DELAY_MS);
+  }
 }
 
 /**
