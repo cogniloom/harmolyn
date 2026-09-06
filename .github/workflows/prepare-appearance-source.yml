@@ -8,8 +8,11 @@ permissions:
   contents: read
 jobs:
   prepare:
+    if: github.repository == 'cogniloom/harmolyn'
     runs-on: self-hosted
     timeout-minutes: 5
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -49,9 +52,31 @@ jobs:
           (out / 'SettingsScreen.tsx').write_text(source, encoding='utf-8')
           print('Prepared SettingsScreen.tsx; all non-appearance sections retained.')
           PY
+          git archive --format=zip HEAD -o appearance-source/repository-source.zip
+      # This isolated job does not install packages or execute repository code.
+      # It writes an unreferenced Git blob, never a branch, tag or release.
+      - name: Store the reviewed source as an unreferenced Git blob
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib, json, os, urllib.request
+          raw = Path('appearance-source/SettingsScreen.tsx').read_bytes()
+          expected = hashlib.sha1(b'blob ' + str(len(raw)).encode() + b'\0' + raw).hexdigest()
+          request = urllib.request.Request('https://api.github.com/repos/cogniloom/harmolyn/git/blobs',
+              data=json.dumps({'content':raw.decode('utf-8'),'encoding':'utf-8'}).encode(),
+              headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],'Accept':'application/vnd.github+json','Content-Type':'application/json'}, method='POST')
+          with urllib.request.urlopen(request, timeout=30) as response:
+              result = json.load(response)
+          if result['sha'] != expected: raise SystemExit('Blob digest mismatch')
+          Path('appearance-source/blob.json').write_text(json.dumps({'path':'src/components/SettingsScreen.tsx','sha':expected,'base':os.environ['GITHUB_SHA']}))
+          print('Settings source blob:', expected)
+          PY
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: appearance-settings-source
-          path: appearance-source/SettingsScreen.tsx
+          path: appearance-source/
           if-no-files-found: error
           retention-days: 1
