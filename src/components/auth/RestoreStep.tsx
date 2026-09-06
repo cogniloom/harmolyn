@@ -6,6 +6,7 @@ import { useNativeEngine } from '@/native/engine/provider';
 import { RECOVERY_DELIVERED_EVENT, type RecoveryDelivery } from '@/native/recovery/recovery';
 import { isEncryptedSyncBlob, PENDING_STATE_KEY, type EncryptedSyncBlob } from '@/native/state/stateSync';
 import { SecurityNote } from '@/components/SecurityNote';
+import { useEscapeKey } from '@/hooks/useEscapeKey';
 
 interface RestoreStepProps {
   /** The engine is starting with the restored identity — close the auth flow. */
@@ -40,6 +41,11 @@ export const RestoreStep: React.FC<RestoreStepProps> = ({ onRestored, onBack, on
   const [ownerId, setOwnerId] = useState('');
   const [friendStatus, setFriendStatus] = useState<'idle' | 'waiting' | 'received' | 'error'>('idle');
   const [friendError, setFriendError] = useState<string | null>(null);
+  // Keep delivered encrypted account state in memory until restore succeeds. An
+  // abandoned recovery attempt must not leave stale material in localStorage.
+  const [deliveredState, setDeliveredState] = useState<EncryptedSyncBlob | undefined>(undefined);
+
+  useEscapeKey(onClose, !busy);
 
   // When a guardian approves, the backup arrives here — drop it into the backup
   // field and let the user finish with their password (the normal restore path).
@@ -49,25 +55,23 @@ export const RestoreStep: React.FC<RestoreStepProps> = ({ onRestored, onBack, on
       if (!d) return;
       if (d.state !== undefined && !isEncryptedSyncBlob(d.state)) {
         setFriendStatus('error');
-        setFriendError('Your friend sent an invalid account-state backup; the identity blob was not imported.');
+        setFriendError('Your friend sent an invalid account-state backup; nothing was imported.');
         return;
       }
-      // Stash the encrypted account-state snapshot (servers/DMs/profile). The
-      // engine decrypts + applies it on start once the identity is recovered.
-      try {
-        if (d.state) localStorage.setItem(PENDING_STATE_KEY, JSON.stringify(d.state));
-      } catch { /* non-fatal */ }
+      if (d.state) setDeliveredState(d.state);
       // A chunk set can complete before or after the smaller identity packet.
       // State-only completion must not erase an identity that already arrived.
       if (d.blob === undefined) return;
       setBackupText(JSON.stringify(d.blob));
       setFriendStatus('received');
+      setFriendError(null);
     };
     window.addEventListener(RECOVERY_DELIVERED_EVENT, handler);
     return () => window.removeEventListener(RECOVERY_DELIVERED_EVENT, handler);
   }, []);
 
   const handleFriendRequest = async () => {
+    if (busy || friendStatus === 'waiting') return;
     setFriendError(null);
     const guardian = guardianId.trim();
     const owner = ownerId.trim();
@@ -77,7 +81,7 @@ export const RestoreStep: React.FC<RestoreStepProps> = ({ onRestored, onBack, on
     try {
       const res = await engine.requestRecovery(guardian, owner);
       if (res.pending || res.queued) {
-        setFriendStatus('waiting'); // waiting for the friend's manual approval
+        setFriendStatus('waiting');
       } else {
         setFriendStatus('error');
         setFriendError(res.error === 'no_custody' ? 'That friend doesn’t hold a backup for this account.' : 'Your friend couldn’t be reached. Check the ID and that they’re online.');
@@ -91,18 +95,28 @@ export const RestoreStep: React.FC<RestoreStepProps> = ({ onRestored, onBack, on
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     e.currentTarget.value = '';
-    if (!file) return;
+    if (!file || busy) return;
+    setError(null);
     if (file.size > MAX_IDENTITY_BACKUP_BYTES) {
       setError('That identity backup is too large.');
       return;
     }
     const reader = new FileReader();
-    reader.onload = (event) => setBackupText(String(event.target?.result ?? ''));
+    reader.onload = (event) => {
+      const value = String(event.target?.result ?? '');
+      if (!value.trim()) {
+        setError('That backup file is empty.');
+        return;
+      }
+      setBackupText(value);
+    };
+    reader.onerror = () => setError('Could not read that backup file. Try selecting it again.');
     reader.readAsText(file);
   };
 
   const handleRestore = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (busy) return;
     setError(null);
     const backup = backupText.trim();
     const name = displayName.trim();
@@ -117,10 +131,9 @@ export const RestoreStep: React.FC<RestoreStepProps> = ({ onRestored, onBack, on
     try {
       // A v2 backup wraps the identity with an encrypted account-state snapshot:
       // { v:2, identity, state }. Unwrap it (importToVault wants the raw identity
-      // blob) and stash the state so the engine restores servers/DMs/profile on
-      // start. A raw identity blob (older backups / friend delivery) is used as-is.
+      // blob) and keep the state in memory until identity validation succeeds.
       let identityJson = backup;
-      let pendingState: EncryptedSyncBlob | undefined;
+      let pendingState: EncryptedSyncBlob | undefined = deliveredState;
       let parsed: unknown;
       try {
         parsed = JSON.parse(backup) as unknown;
@@ -130,42 +143,62 @@ export const RestoreStep: React.FC<RestoreStepProps> = ({ onRestored, onBack, on
       if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)
         && (parsed as { v?: unknown }).v === 2) {
         const wrapped = parsed as { identity?: unknown; state?: unknown };
-        if (!wrapped.identity) throw new Error('Identity backup is missing its encrypted identity.');
+        if (!wrapped.identity) {
+          setError('That backup file is incomplete.');
+          setBusy(false);
+          return;
+        }
         identityJson = JSON.stringify(wrapped.identity);
         if (wrapped.state !== undefined) {
-          if (!isEncryptedSyncBlob(wrapped.state)) throw new Error('Identity backup account state is not encrypted.');
+          if (!isEncryptedSyncBlob(wrapped.state)) {
+            setError('That backup contains invalid account-state data.');
+            setBusy(false);
+            return;
+          }
           pendingState = wrapped.state;
         }
       }
+
       // Decrypts the blob (validates the password) and saves it to the vault, then
-      // promotes it to the active 'local' identity. Throws on a wrong password.
-      // Use passphrase exactly as entered — trimming would break accounts whose
-      // password legitimately contains leading/trailing whitespace.
+      // promotes it to the active identity. Use the passphrase exactly as entered.
       const entry = await importToVault(identityJson, passphrase);
       await activateFromVault(entry.peerId);
+
+      // Persistence starts only after the encrypted identity has authenticated.
       if (pendingState) {
         try { localStorage.setItem(PENDING_STATE_KEY, JSON.stringify(pendingState)); } catch { /* best effort */ }
       }
-      // The backup carries no nickname — seed the chosen one so the engine restores
-      // it and the "guest" banner stays gone after the engine picks the identity up.
       try {
         localStorage.setItem(NATIVE_STATE_KEY, JSON.stringify({
           identity: { peer_id: entry.peerId, id: entry.peerId, profile: { display_name: name } },
         }));
         sessionStorage.removeItem(NATIVE_STATE_KEY);
       } catch { /* best effort */ }
-      // Restart the engine with this identity (the provider re-runs on a new
-      // passphrase and decrypts the now-active blob) — no page reload needed.
+
+      // The engine provider needs this passphrase only to unlock the newly-active
+      // encrypted vault entry. Do not expose it anywhere else.
       setPassphrase(passphrase);
+      setBackupText('');
+      setDeliveredState(undefined);
       onRestored();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not restore — check the file and password.');
+    } catch {
+      // Do not render raw crypto/storage diagnostics into the auth UI.
+      setPassphraseInput('');
+      setError('Could not restore this account. Check the backup and password, then try again.');
       setBusy(false);
     }
   };
 
+  const formReady = Boolean(backupText.trim() && passphrase && displayName.trim());
+
   return (
-    <div className="fixed inset-0 z-[200] bg-bg-0 flex items-center justify-center overflow-auto">
+    <div
+      className="fixed inset-0 z-[200] bg-bg-0 flex items-center justify-center overflow-auto"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="restore-account-title"
+      aria-busy={busy}
+    >
       <div className="absolute inset-0 bg-gradient-to-b from-bg-0 via-bg-2 to-bg-0" />
       <div className="absolute inset-0" style={{ background: 'radial-gradient(circle at 50% 0%, rgba(19,221,236,0.08) 0%, transparent 60%)' }} />
       <div className="absolute inset-0 grid-overlay opacity-30" />
@@ -173,8 +206,9 @@ export const RestoreStep: React.FC<RestoreStepProps> = ({ onRestored, onBack, on
       <button
         type="button"
         onClick={onClose}
+        disabled={busy}
         aria-label="Close"
-        className="absolute top-5 right-5 z-20 p-2 rounded-full text-text-tertiary hover:text-text-primary hover:bg-white/5 transition-all"
+        className="absolute top-5 right-5 z-20 p-2 rounded-full text-text-tertiary hover:text-text-primary hover:bg-white/5 transition-all disabled:opacity-40 disabled:cursor-wait"
       >
         <X size={20} />
       </button>
@@ -184,7 +218,7 @@ export const RestoreStep: React.FC<RestoreStepProps> = ({ onRestored, onBack, on
           <div className="inline-flex items-center justify-center w-16 h-16 rounded-r2 bg-primary/10 border border-primary/20 mb-5 shadow-glow">
             <Shield size={28} className="text-primary" />
           </div>
-          <h1 className="text-display-l font-bold text-text-primary font-display tracking-tight">Restore from backup</h1>
+          <h1 id="restore-account-title" className="text-display-l font-bold text-text-primary font-display tracking-tight">Restore from backup</h1>
           <p className="text-body text-text-secondary mt-2">Bring an account onto this device from its backup file.</p>
         </div>
 
@@ -195,7 +229,6 @@ export const RestoreStep: React.FC<RestoreStepProps> = ({ onRestored, onBack, on
             </div>
           )}
 
-          {/* Recover with a trusted friend (no file needed) */}
           <div className="space-y-2 rounded-r2 border border-primary/15 bg-primary/[0.04] p-4">
             <div className="flex items-center gap-2">
               <Users size={15} className="text-primary" />
@@ -205,28 +238,38 @@ export const RestoreStep: React.FC<RestoreStepProps> = ({ onRestored, onBack, on
               If you set up recovery contacts, ask one of them to release your backup. They’ll get a prompt to approve — then it arrives here automatically.
             </p>
             {friendStatus === 'received' ? (
-              <div className="flex items-center gap-2 text-caption text-accent-success"><Check size={14} /> Backup received — enter your password below to finish.</div>
+              <div className="flex items-center gap-2 text-caption text-accent-success" role="status"><Check size={14} /> Backup received — enter your password below to finish.</div>
             ) : (
               <>
                 <input
                   type="text"
+                  name="recovery-owner-id"
                   value={ownerId}
                   onChange={(e) => setOwnerId(e.target.value)}
+                  disabled={busy || friendStatus === 'waiting'}
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  spellCheck={false}
                   placeholder="Your account ID (the one you’re recovering)"
-                  className="w-full h-11 px-4 rounded-full bg-surface-dark border border-stroke-subtle text-text-primary text-caption font-mono placeholder:text-text-disabled focus:border-stroke-primary focus:outline-none transition-colors"
+                  className="w-full h-11 px-4 rounded-full bg-surface-dark border border-stroke-subtle text-text-primary text-caption font-mono placeholder:text-text-disabled focus:border-stroke-primary focus:outline-none transition-colors disabled:opacity-60"
                 />
                 <input
                   type="text"
+                  name="recovery-guardian-id"
                   value={guardianId}
                   onChange={(e) => setGuardianId(e.target.value)}
+                  disabled={busy || friendStatus === 'waiting'}
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  spellCheck={false}
                   placeholder="Your friend’s account ID (the guardian)"
-                  className="w-full h-11 px-4 rounded-full bg-surface-dark border border-stroke-subtle text-text-primary text-caption font-mono placeholder:text-text-disabled focus:border-stroke-primary focus:outline-none transition-colors"
+                  className="w-full h-11 px-4 rounded-full bg-surface-dark border border-stroke-subtle text-text-primary text-caption font-mono placeholder:text-text-disabled focus:border-stroke-primary focus:outline-none transition-colors disabled:opacity-60"
                 />
-                {friendError && <div className="text-[11px] text-accent-danger">{friendError}</div>}
+                {friendError && <div role="alert" className="text-[11px] text-accent-danger">{friendError}</div>}
                 <button
                   type="button"
                   onClick={() => void handleFriendRequest()}
-                  disabled={friendStatus === 'waiting'}
+                  disabled={busy || friendStatus === 'waiting' || !ownerId.trim() || !guardianId.trim()}
                   className="w-full h-11 rounded-full border border-primary/30 text-primary font-bold text-xs hover:bg-primary/10 transition-all disabled:opacity-60 flex items-center justify-center gap-2"
                 >
                   {friendStatus === 'waiting'
@@ -244,42 +287,58 @@ export const RestoreStep: React.FC<RestoreStepProps> = ({ onRestored, onBack, on
           </div>
 
           <div className="space-y-1.5">
-            <label className="micro-label text-text-tertiary">Encrypted backup</label>
+            <label htmlFor="restore-backup" className="micro-label text-text-tertiary">Encrypted backup</label>
             <textarea
+              id="restore-backup"
+              name="encrypted-backup"
               value={backupText}
               onChange={(e) => setBackupText(e.target.value)}
               rows={4}
+              disabled={busy}
+              spellCheck={false}
+              autoCorrect="off"
+              autoCapitalize="none"
               placeholder="Paste your backup here…"
-              className="w-full px-5 py-4 rounded-r2 bg-surface-dark border border-stroke-subtle text-text-primary text-caption font-mono placeholder:text-text-disabled focus:border-stroke-primary focus:outline-none transition-colors resize-none"
+              className="w-full px-5 py-4 rounded-r2 bg-surface-dark border border-stroke-subtle text-text-primary text-caption font-mono placeholder:text-text-disabled focus:border-stroke-primary focus:outline-none transition-colors resize-none disabled:opacity-60"
             />
-            <label className="flex items-center gap-3 cursor-pointer px-1 py-2 rounded-r2 border border-dashed border-stroke hover:border-primary/40 transition-colors">
+            <label className={`flex items-center gap-3 px-1 py-2 rounded-r2 border border-dashed border-stroke transition-colors ${busy ? 'cursor-not-allowed opacity-50' : 'cursor-pointer hover:border-primary/40'}`}>
               <Upload size={16} className="text-primary flex-shrink-0" />
               <span className="text-caption text-text-secondary">Upload backup file</span>
-              <input type="file" accept=".json,.txt,.bak" className="sr-only" onChange={handleFileUpload} />
+              <input type="file" accept=".json,.txt,.bak,application/json,text/plain" disabled={busy} className="sr-only" onChange={handleFileUpload} />
             </label>
           </div>
 
           <div className="space-y-1.5">
-            <label className="micro-label text-text-tertiary">Password</label>
+            <label htmlFor="restore-password" className="micro-label text-text-tertiary">Password</label>
             <input
+              id="restore-password"
+              name="current-password"
               type="password"
               value={passphrase}
               onChange={(e) => setPassphraseInput(e.target.value)}
+              disabled={busy}
               placeholder="The password used to create this backup"
               autoComplete="current-password"
-              className="w-full h-12 px-5 rounded-full bg-surface-dark border border-stroke-subtle text-text-primary text-caption placeholder:text-text-disabled focus:border-stroke-primary focus:outline-none transition-colors"
+              autoCapitalize="none"
+              autoCorrect="off"
+              spellCheck={false}
+              className="w-full h-12 px-5 rounded-full bg-surface-dark border border-stroke-subtle text-text-primary text-caption placeholder:text-text-disabled focus:border-stroke-primary focus:outline-none transition-colors disabled:opacity-60"
             />
           </div>
 
           <div className="space-y-1.5">
-            <label className="micro-label text-text-tertiary">Nickname on this device</label>
+            <label htmlFor="restore-nickname" className="micro-label text-text-tertiary">Nickname on this device</label>
             <input
+              id="restore-nickname"
+              name="nickname"
               type="text"
               value={displayName}
               onChange={(e) => setDisplayName(e.target.value)}
+              disabled={busy}
               placeholder="e.g. Sam"
               maxLength={64}
-              className="w-full h-12 px-5 rounded-full bg-surface-dark border border-stroke-subtle text-text-primary text-caption placeholder:text-text-disabled focus:border-stroke-primary focus:outline-none transition-colors"
+              autoComplete="nickname"
+              className="w-full h-12 px-5 rounded-full bg-surface-dark border border-stroke-subtle text-text-primary text-caption placeholder:text-text-disabled focus:border-stroke-primary focus:outline-none transition-colors disabled:opacity-60"
             />
           </div>
 
@@ -290,7 +349,7 @@ export const RestoreStep: React.FC<RestoreStepProps> = ({ onRestored, onBack, on
 
           <button
             type="submit"
-            disabled={busy}
+            disabled={busy || !formReady}
             className="w-full h-14 rounded-full bg-primary text-bg-0 font-bold text-body-strong flex items-center justify-center gap-2 hover:shadow-glow transition-all disabled:opacity-50"
           >
             {busy ? (
@@ -304,11 +363,11 @@ export const RestoreStep: React.FC<RestoreStepProps> = ({ onRestored, onBack, on
             )}
           </button>
 
-          <div className="flex items-center justify-between text-caption text-text-tertiary">
-            <button type="button" onClick={onBack} className="inline-flex items-center gap-1 hover:text-text-secondary transition-colors">
+          <div className="flex items-center justify-between gap-3 text-caption text-text-tertiary">
+            <button type="button" disabled={busy} onClick={onBack} className="inline-flex items-center gap-1 hover:text-text-secondary transition-colors disabled:opacity-40">
               <ArrowLeft size={13} /> Device accounts
             </button>
-            <button type="button" onClick={onCreate} className="text-primary hover:underline font-semibold">
+            <button type="button" disabled={busy} onClick={onCreate} className="text-primary hover:underline font-semibold disabled:opacity-40">
               Create a new account
             </button>
           </div>
