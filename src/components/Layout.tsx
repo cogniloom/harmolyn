@@ -1716,10 +1716,16 @@ function buildVoiceControlState(input: {
 }
 
 function formatVoiceActionError(error: unknown): string {
-  if (error instanceof Error && error.message.trim()) {
-    return error.message.trim();
+  // Native/network errors may contain endpoints, device identifiers, or credentials.
+  // Expose only bounded, actionable text, never the underlying diagnostic message.
+  const name = error instanceof Error ? error.name : '';
+  if (name === 'NotAllowedError' || name === 'SecurityError') {
+    return 'Microphone or camera access was denied. Review your system permissions and try again.';
   }
-  return 'The local voice action failed.';
+  if (name === 'NotFoundError') return 'No media device was found. Connect a microphone or camera and try again.';
+  if (name === 'NotReadableError') return 'Your media device is unavailable. Close other apps using it and try again.';
+  if (name === 'AbortError') return 'The voice action was cancelled. Try again when you are ready.';
+  return 'Voice action failed. Check your audio permissions and connection, then try again.';
 }
 
 function firstTextChannelId(server: NonNullable<ReturnType<typeof readShellRuntimeData>['runtimeSnapshot']>['servers'][number]): string {

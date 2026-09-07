@@ -315,17 +315,20 @@ describe('ChannelRail status picker', () => {
     // While expanded, the channel list wrapper is not hidden.
     const listWhenOpen = screen.getByText('lobby').closest('div.space-y-0\\.5');
     expect(listWhenOpen).not.toBeNull();
-    expect(listWhenOpen).not.toHaveClass('hidden');
+    expect(listWhenOpen).not.toHaveAttribute('hidden');
+    expect(screen.getByText('lobby')).toBeVisible();
 
     await user.click(toggle);
 
     const expandToggle = screen.getByRole('button', { name: /expand general/i });
     expect(expandToggle).toHaveAttribute('aria-expanded', 'false');
-    // The channel button stays mounted but its wrapper gets the `hidden` class.
-    // (Tailwind's stylesheet is not loaded in jsdom, so we assert on the class
-    // rather than computed visibility.)
+    // Semantic hiding removes collapsed destinations from visual and keyboard navigation.
     const listWhenCollapsed = screen.getByText('lobby').closest('div.space-y-0\\.5');
-    expect(listWhenCollapsed).toHaveClass('hidden');
+    expect(listWhenCollapsed).toHaveAttribute('hidden');
+    expect(screen.getByText('lobby')).not.toBeVisible();
+    expect(screen.queryByRole('button', { name: 'lobby' })).toBeNull();
+    await user.click(expandToggle);
+    expect(screen.getByText('lobby')).toBeVisible();
   });
 
   it('offers a receive-only watch action when a member is streaming video', async () => {

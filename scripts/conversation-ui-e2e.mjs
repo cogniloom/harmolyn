@@ -14,7 +14,20 @@ const evidence = path.join(root, '.generated/conversation-evidence');
 await fs.mkdir(evidence, { recursive: true });
 await fs.writeFile(path.join(temp, 'index.html'), '<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Harmolyn conversation UI verification</title></head><body style="margin:0"><div id="root"></div><script type="module" src="/scripts/fixtures/conversation.tsx"></script></body></html>');
 let server, browser, page;
-const errors = [], warnings = [], requests = [], checks = [];
+const errors = [], warnings = [], requests = [], checks = [], failures = [];
+async function assertPalette(state) {
+const palette = await page.evaluate(() => {
+  const root = getComputedStyle(document.documentElement);
+  const asRgb = name => { const hex = root.getPropertyValue(name).trim(); return [1,3,5].map(i => parseInt(hex.slice(i,i+2),16)); };
+  const color = (selector, property) => getComputedStyle(document.querySelector(selector))[property].match(/[\d.]+/g).slice(0,3).map(Number);
+  return { expectedText: asRgb('--appearance-text'), expectedBackground: asRgb('--appearance-background'),
+    title: color('.chat-title', 'color'), input: color('.chat-compose-input', 'color'),
+    background: color('.chat-composer', 'backgroundColor') };
+});
+assert.deepEqual(palette.title, palette.expectedText, `Title palette drift: ${state}: ${JSON.stringify(palette)}`);
+assert.deepEqual(palette.input, palette.expectedText, `Composer palette drift: ${state}: ${JSON.stringify(palette)}`);
+assert.deepEqual(palette.background, palette.expectedBackground, `Background palette drift: ${state}: ${JSON.stringify(palette)}`);
+}
 try {
   await build({ configFile: false, root, plugins: [react()], logLevel: 'error',
     resolve: { alias: { '@': path.join(root, 'src') } }, define: { __APP_VERSION__: JSON.stringify('ui-test') },
@@ -45,17 +58,7 @@ try {
         const fits = await page.locator(selector).evaluate(el => el.scrollWidth <= el.clientWidth + 1);
         assert.ok(fits, `${selector} overflow, ${width}, ${theme}`);
       }
-      const palette = await page.evaluate(() => {
-        const root = getComputedStyle(document.documentElement);
-        const asRgb = name => { const hex = root.getPropertyValue(name).trim(); return [1,3,5].map(i => parseInt(hex.slice(i,i+2),16)); };
-        const color = (selector, property) => getComputedStyle(document.querySelector(selector))[property].match(/[\d.]+/g).slice(0,3).map(Number);
-        return { expectedText: asRgb('--appearance-text'), expectedBackground: asRgb('--appearance-background'),
-          title: color('.chat-title', 'color'), input: color('.chat-compose-input', 'color'),
-          background: color('.chat-composer', 'backgroundColor') };
-      });
-      assert.deepEqual(palette.title, palette.expectedText, `Title palette drift: ${theme}: ${JSON.stringify(palette)}`);
-      assert.deepEqual(palette.input, palette.expectedText, `Composer palette drift: ${theme}: ${JSON.stringify(palette)}`);
-      assert.deepEqual(palette.background, palette.expectedBackground, `Background palette drift: ${theme}: ${JSON.stringify(palette)}`);
+      await assertPalette(`${width}px / ${theme}`);
       const input = page.getByRole('textbox', { name: 'Message Input' });
       await input.fill('A multiline draft\nwith a second line\nand a third line.');
       const boxes = await page.locator('.chat-compose-row').evaluate(el => {
@@ -83,6 +86,17 @@ try {
     }
     checks.push(`Ten themes at ${width}px: matching text/background palette, no composer overlap, unobscured message viewport`);
   }
+  // App accessibility/performance preferences must not turn static colors into fades.
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
+  for (const preference of ['reduce-motion', 'perf-mode']) {
+    await page.evaluate(preference => document.documentElement.classList.add(preference), preference);
+    for (const theme of ['daylight', 'midnight', 'sand']) {
+      await page.getByRole('combobox', { name: 'Test theme' }).selectOption(theme);
+      await assertPalette(`${preference} / ${theme}`);
+    }
+    await page.evaluate(preference => document.documentElement.classList.remove(preference), preference);
+  }
+  checks.push('OS reduced motion and app reduced-motion/performance modes apply coherent palettes without fades');
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.getByRole('button', { name: 'Toggle narrow chat' }).click();
   await page.getByRole('button', { name: 'More chat tools', exact: true }).click();
@@ -163,9 +177,10 @@ try {
   await context.close();
 } catch (error) {
   process.exitCode = 1; console.error(error);
+  failures.push(error instanceof Error ? error.message : String(error));
   await page?.screenshot({ path: path.join(evidence, 'failure.png') }).catch(() => {});
   if (page) await fs.writeFile(path.join(evidence, 'failure-dom.txt'), await page.locator('body').innerText().catch(() => 'unavailable'));
 } finally {
-  await fs.writeFile(path.join(evidence, 'results.json'), JSON.stringify({ fixture: 'real UI components; synthetic local data; no network engine', checks, errors, warnings, requests }, null, 2));
+  await fs.writeFile(path.join(evidence, 'results.json'), JSON.stringify({ fixture: 'real UI components; synthetic local data; no network engine', passed: failures.length === 0, checks, failures, errors, warnings, requests }, null, 2));
   await browser?.close(); await server?.close(); await fs.rm(temp, { recursive: true, force: true });
 }
