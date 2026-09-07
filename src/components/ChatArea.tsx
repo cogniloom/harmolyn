@@ -400,7 +400,7 @@ interface InboxItem {
   read: boolean;
 }
 
-interface SubmissionOwner { active: boolean; pending: boolean }
+interface SubmissionOwner { active: boolean; pending: boolean; scopeKey: string; cancelRead?: () => void }
 interface RetryableSubmission {
   owner: SubmissionOwner;
   channelId: string;
@@ -408,8 +408,10 @@ interface RetryableSubmission {
   isDM: boolean;
   content: string;
   replyToId?: string;
-  draftRevision: number;
-  replyRevision: number;
+  media?: XoreinAttachment[];
+  // Auxiliary sends must not clear an unrelated composer draft or reply.
+  draftRevision?: number;
+  replyRevision?: number;
 }
 
 interface ComposerFeedback {
@@ -433,7 +435,7 @@ const formatAttachmentLabel = (file: File) => {
 
 const POLL_CONTENT_PREFIX = '🗳️ POLL:';
 
-/** Parse a poll message body (`🗳️ POLL:{"q":…,"o":[…]}`). Null when not a poll / malformed. */
+/** Parse a poll message body (`🗳️ POLL:{"q":…, "o":[…]}`). Null when not a poll / malformed. */
 function parsePollContent(content: string): { q: string; o: string[] } | null {
   if (typeof content !== 'string' || !content.startsWith(POLL_CONTENT_PREFIX)) return null;
   try {
@@ -531,7 +533,8 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
     updateInputValue(value);
   }, []);
   const [isSending, setIsSending] = useState(false);
-  const sendOwnerRef = useRef<SubmissionOwner>({ active: true, pending: false });
+  const submissionScopeKey = JSON.stringify([channel?.id, Boolean(isDM), liveShellData.runtimeSnapshot?.identity?.peer_id]);
+  const sendOwnerRef = useRef<SubmissionOwner>({ active: true, pending: false, scopeKey: submissionScopeKey });
   // One recoverable submission, held in memory only. Resolve it before sending
   // another so repeated failures cannot silently replace data or grow a queue.
   const failedSubmissionRef = useRef<RetryableSubmission | null>(null);
@@ -547,13 +550,21 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
 
   // A completion belongs only to the conversation and identity that started it.
   useEffect(() => {
-    const owner = { active: true, pending: false };
+    const owner: SubmissionOwner = { active: true, pending: false, scopeKey: submissionScopeKey };
     sendOwnerRef.current = owner;
     setIsSending(false);
     failedSubmissionRef.current = null;
     setFailedSubmission(null);
-    return () => { owner.active = false; failedSubmissionRef.current = null; };
-  }, [channel?.id, isDM, liveShellData.runtimeSnapshot?.identity?.peer_id]);
+    setShowPollCreator(false);
+    setForwardingContent(null);
+    setThreadMessage(null);
+    setShowStickerPicker(false);
+    return () => {
+      owner.active = false;
+      owner.cancelRead?.();
+      failedSubmissionRef.current = null;
+    };
+  }, [submissionScopeKey]);
 
   useEffect(() => {
     if (showMobileTools && chatToolsRef.current) return trapDialogFocus(chatToolsRef.current);
@@ -570,6 +581,26 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
       if (shouldRestore && opener?.isConnected) opener.focus({ preventScroll: true });
     };
   }, [showPinned]);
+  const sendDisabledReason = isSending
+    ? 'Sending a message. You can keep editing your draft.'
+    : activeFailedSubmission ? 'Retry or discard the unsent message in this conversation first.' : undefined;
+  // Read the ref at activation time too: disabled controls alone cannot guard
+  // already-open dialogs, queued callbacks, or two activations in one render.
+  const isMessageSendBlocked = useCallback(() => {
+    const owner = sendOwnerRef.current;
+    return !owner.active || owner.scopeKey !== submissionScopeKey || owner.pending || Boolean(failedSubmissionRef.current);
+  }, [submissionScopeKey]);
+  const beginMessageAction = useCallback(() => {
+    if (isMessageSendBlocked()) return null;
+    const owner = sendOwnerRef.current;
+    owner.pending = true;
+    setIsSending(true);
+    return owner;
+  }, [isMessageSendBlocked]);
+  const finishMessageAction = useCallback((owner: SubmissionOwner) => {
+    owner.pending = false;
+    if (owner.active && owner === sendOwnerRef.current) setIsSending(false);
+  }, []);
   const [showSlashCommands, setShowSlashCommands] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
@@ -787,8 +818,9 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
     // only treat disappearances as deletions while OTHER live messages remain.
     if (incomingMessages.length > 0) {
       for (const [id, lastSeen] of seen) {
-        if (!incomingIds.has(id) && !tombstones.has(id)) {
-          tombstones.set(id, { ...lastSeen, content: '', deletedAt: new Date().toISOString() });
+        if (!incomingIds.has(id)) {
+          // Persist the first observed disappearance, not each subsequent render.
+          if (!tombstones.has(id)) tombstones.set(id, { ...lastSeen, content: '', deletedAt: new Date().toISOString() });
         }
       }
     }
@@ -949,15 +981,16 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
 
   const submitRemoteMessage = async (submission: RetryableSubmission) => {
     const { owner, content, channelId, replyToId } = submission;
-    if (!owner.active || owner !== sendOwnerRef.current || owner.pending || chatSupport.mode === 'offline') return;
+    if (!owner.active || owner !== sendOwnerRef.current || owner.scopeKey !== submissionScopeKey || owner.pending || chatSupport.mode === 'offline'
+      || (failedSubmissionRef.current && failedSubmissionRef.current !== submission)) return;
     owner.pending = true;
     setIsSending(true);
     nativeStopTyping();
     try {
       if (submission.isDM) {
-        await sendDmMutation.mutateAsync({ dmId: channelId, content });
+        await sendDmMutation.mutateAsync({ dmId: channelId, content, ...(submission.media ? { media: submission.media } : {}) });
       } else {
-        await sendChannelMutation.mutateAsync({ channelId, content, ...(replyToId ? { replyTo: replyToId } : {}) });
+        await sendChannelMutation.mutateAsync({ channelId, content, ...(replyToId ? { replyTo: replyToId } : {}), ...(submission.media ? { media: submission.media } : {}) });
       }
       if (owner.active) {
         // A retry sends the captured request, never the newer composer contents.
@@ -976,8 +1009,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
         showFeedback('error', 'Message could not be sent. Your current draft is unchanged.', 'system');
       }
     } finally {
-      owner.pending = false;
-      if (owner.active) setIsSending(false);
+      finishMessageAction(owner);
     }
   };
 
@@ -991,7 +1023,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
 
   const handleSendMessage = async () => {
     const trimmed = inputValue.trim();
-    if (!trimmed || sendOwnerRef.current.pending || failedSubmissionRef.current) return;
+    if (!trimmed || isMessageSendBlocked()) return;
 
     if (trimmed.startsWith('/')) {
       const [command, ...rest] = trimmed.slice(1).split(/\s+/);
@@ -1063,18 +1095,14 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   };
 
   const handleSendSticker = async (sticker: string) => {
+    if (isMessageSendBlocked()) return;
     setShowStickerPicker(false);
-    setReplyingTo(null);
     if (chatSupport.mode !== 'offline' && channel?.id) {
-      try {
-        if (isDM) {
-          await sendDmMutation.mutateAsync({ dmId: channel.id, content: sticker });
-        } else {
-          await sendChannelMutation.mutateAsync({ channelId: channel.id, content: sticker });
-        }
-      } catch (error) {
-        showFeedback('error', error instanceof Error ? error.message : 'Failed to send sticker.', 'system');
-      }
+      await submitRemoteMessage({
+        owner: sendOwnerRef.current, channelId: channel.id,
+        identityId: liveShellData.runtimeSnapshot?.identity?.peer_id,
+        isDM: Boolean(isDM), content: sticker,
+      });
     } else {
       const nextMessages = [...messagesState, createLocalMessage(sticker, { sticker: true })];
       setMessagesState(nextMessages);
@@ -1082,12 +1110,10 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
     }
   };
 
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     e.currentTarget.value = '';
-    if (!file) {
-      return;
-    }
+    if (!file || !channel?.id || isMessageSendBlocked()) return;
     if (!chatSupport.canAttemptAttachments) {
       showFeedback('error', 'Attachments are disabled while the local xorein runtime is offline.', 'system');
       return;
@@ -1097,37 +1123,49 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
       return;
     }
 
-    const reader = new FileReader();
-    reader.onerror = () => showFeedback('error', 'Could not read the selected file.', 'system');
-    reader.onload = async () => {
-      const buffer = reader.result instanceof ArrayBuffer ? new Uint8Array(reader.result) : null;
-      if (!buffer || buffer.length === 0) {
-        showFeedback('error', 'Could not read the selected file.', 'system');
-        return;
-      }
+    const owner = beginMessageAction();
+    if (!owner) return;
+    const channelId = channel.id;
+    const identityId = liveShellData.runtimeSnapshot?.identity?.peer_id;
+    try {
+      // Reserve the same send slot before reading, not after encryption. An
+      // identity/scope switch cancels the read and invalidates later completion.
+      const buffer = await new Promise<Uint8Array>((resolve, reject) => {
+        const reader = new FileReader();
+        const cleanup = () => {
+          reader.onload = reader.onerror = reader.onabort = null;
+          owner.cancelRead = undefined;
+        };
+        owner.cancelRead = () => { reader.abort(); cleanup(); reject(new Error('File read cancelled')); };
+        reader.onerror = reader.onabort = () => { cleanup(); reject(new Error('File read failed')); };
+        reader.onload = () => {
+          const result = reader.result;
+          cleanup();
+          if (result instanceof ArrayBuffer && result.byteLength > 0) resolve(new Uint8Array(result));
+          else reject(new Error('File is empty or unreadable'));
+        };
+        try { reader.readAsArrayBuffer(file); } catch (error) { cleanup(); reject(error); }
+      });
+      if (!owner.active || owner !== sendOwnerRef.current) return;
       showFeedback('info', `Encrypting & distributing ${file.name}…`, 'system');
-      try {
-        // Encrypt client-side, prefer the selected node, and also distribute
-        // content-addressed ciphertext fragments among authenticated members.
-        // The decryption key travels only inside the E2EE message.
-        const attachment = await uploadEncryptedAttachment(
-          buffer, file.name, file.type || 'application/octet-stream', channel?.id,
-        );
-        const sizeKb = Math.max(1, Math.round(attachment.size / 1024));
-        const caption = `📎 ${attachment.name} (${sizeKb} KB)`;
-        if (channel?.id) {
-          if (isDM) {
-            await sendDmMutation.mutateAsync({ dmId: channel.id, content: caption, media: [attachment] });
-          } else {
-            await sendChannelMutation.mutateAsync({ channelId: channel.id, content: caption, media: [attachment] });
-          }
-        }
-        showFeedback('success', `Shared ${attachment.name} (${sizeKb} KB), end-to-end encrypted.`, 'message');
-      } catch (error) {
-        showFeedback('error', error instanceof Error ? error.message : 'Upload failed.', 'system');
+      // Only ciphertext is distributed. The descriptor/key is sent inside E2EE.
+      const attachment = await uploadEncryptedAttachment(buffer, file.name, file.type || 'application/octet-stream', channelId);
+      if (!owner.active || owner !== sendOwnerRef.current) return;
+      const sizeKb = Math.max(1, Math.round(attachment.size / 1024));
+      // Hand off synchronously to the same slot; there is no intervening await.
+      owner.pending = false;
+      await submitRemoteMessage({
+        owner, channelId, identityId, isDM: Boolean(isDM),
+        content: `📎 ${attachment.name} (${sizeKb} KB)`, media: [attachment],
+      });
+    } catch {
+      if (owner.active && owner === sendOwnerRef.current) {
+        showFeedback('error', 'The attachment could not be prepared. Select the file and try again.', 'system');
       }
-    };
-    reader.readAsArrayBuffer(file);
+    } finally {
+      owner.cancelRead = undefined;
+      finishMessageAction(owner);
+    }
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -1564,52 +1602,61 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   }, [showFeedback]);
 
   const handleForwardMessage = useCallback(async (destinations: ForwardDestination[], note: string) => {
-    const body = forwardingContent ?? '';
-    const content = `${note.trim() ? `${note.trim()}\n\n` : ''}↪ **Forwarded message${channel ? ` from #${channel.name}` : ''}:** ${body}`;
-    setForwardingContent(null);
-    let successCount = 0;
-    let failCount = 0;
-    for (const destination of destinations) {
-      try {
-        if (chatSupport.mode !== 'offline') {
-          if (destination.type === 'dm') {
-            await sendDmMutation.mutateAsync({ dmId: destination.id, content });
+    if (!destinations.length) return;
+    const owner = beginMessageAction();
+    if (!owner) return;
+    try {
+      const body = forwardingContent ?? '';
+      const content = `${note.trim() ? `${note.trim()}\n\n` : ''}↪ **Forwarded message${channel ? ` from #${channel.name}` : ''}:** ${body}`;
+      setForwardingContent(null);
+      let successCount = 0;
+      let failCount = 0;
+      for (const destination of destinations) {
+        if (!owner.active || owner !== sendOwnerRef.current) return;
+        try {
+          if (chatSupport.mode !== 'offline') {
+            if (destination.type === 'dm') {
+              await sendDmMutation.mutateAsync({ dmId: destination.id, content });
+            } else {
+              await sendChannelMutation.mutateAsync({ channelId: destination.id, content });
+            }
           } else {
-            await sendChannelMutation.mutateAsync({ channelId: destination.id, content });
-          }
-        } else {
-          const persisted = readPersistedChatScopeState(destination.id);
-          const forwardedMessage: Message = {
-            id: createCollisionResistantId(`${MESSAGE_ID_PREFIX.slice(0, -1)}-forward-${destination.id}`),
-            userId: 'me',
-            timestamp: formatTimestamp(),
-            content,
-          };
-          writePersistedChatScopeState(destination.id, {
-            ...persisted,
-            messages: [...persisted.messages, forwardedMessage],
-          });
-          if (destination.id === channel?.id) {
-            setMessagesState(prev => {
-              const next = [...prev, forwardedMessage];
-              persistScopeState({ messages: next });
-              return next;
+            const persisted = readPersistedChatScopeState(destination.id);
+            const forwardedMessage: Message = {
+              id: createCollisionResistantId(`${MESSAGE_ID_PREFIX.slice(0, -1)}-forward-${destination.id}`),
+              userId: 'me',
+              timestamp: formatTimestamp(),
+              content,
+            };
+            writePersistedChatScopeState(destination.id, {
+              ...persisted,
+              messages: [...persisted.messages, forwardedMessage],
             });
+            if (destination.id === channel?.id) {
+              setMessagesState(prev => {
+                const next = [...prev, forwardedMessage];
+                persistScopeState({ messages: next });
+                return next;
+              });
+            }
           }
+          successCount++;
+        } catch {
+          failCount++;
         }
-        successCount++;
-      } catch {
-        failCount++;
       }
+      if (!owner.active || owner !== sendOwnerRef.current) return;
+      if (failCount === 0) {
+        showFeedback('success', `Forwarded to ${successCount} destination${successCount === 1 ? '' : 's'}.`, 'message');
+      } else if (successCount > 0) {
+        showFeedback('info', `Forwarded to ${successCount}; ${failCount} failed.`, 'message');
+      } else {
+        showFeedback('error', 'Failed to forward message.', 'message');
+      }
+    } finally {
+      finishMessageAction(owner);
     }
-    if (failCount === 0) {
-      showFeedback('success', `Forwarded to ${successCount} destination${successCount === 1 ? '' : 's'}.`, 'message');
-    } else if (successCount > 0) {
-      showFeedback('info', `Forwarded to ${successCount}; ${failCount} failed.`, 'message');
-    } else {
-      showFeedback('error', 'Failed to forward message.', 'message');
-    }
-  }, [channel, chatSupport.mode, forwardingContent, persistScopeState, sendChannelMutation, sendDmMutation, showFeedback]);
+  }, [beginMessageAction, finishMessageAction, channel, chatSupport.mode, forwardingContent, persistScopeState, sendChannelMutation, sendDmMutation, showFeedback]);
 
   const filteredMessages = useMemo(() => messagesState.filter(msg =>
     msg.content.toLowerCase().includes(normalizedSearch) && !mutedUsers.has(msg.userId)
@@ -2432,16 +2479,16 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                 <div className="chat-compose-attachments order-2 flex items-center min-[600px]:order-none">
                   {hasFileUploads && (
                   <>
-                    <input type="file" ref={fileInputRef} className="hidden" onChange={handleFileUpload} />
+                    <input type="file" ref={fileInputRef} className="hidden" disabled={Boolean(sendDisabledReason)} onChange={handleFileUpload} />
                     <button
                       onClick={() => fileInputRef.current?.click()}
                       className="compact-touch-target flex items-center justify-center text-white/30 hover:text-primary transition-colors"
-                      aria-label="Add attachment"
+                      disabled={Boolean(sendDisabledReason)} title={sendDisabledReason} aria-label="Add attachment"
                     ><PlusCircle size={20} /></button>
                   </>
                   )}
                   {hasPolls && (
-                  <button onClick={() => setShowPollCreator(!showPollCreator)} className={`compact-touch-target flex items-center justify-center transition-colors ${showPollCreator ? 'text-primary' : 'text-white/30 hover:text-primary'}`} aria-label="Create Poll">
+                  <button onClick={() => setShowPollCreator(!showPollCreator)} className={`compact-touch-target flex items-center justify-center transition-colors ${showPollCreator ? 'text-primary' : 'text-white/30 hover:text-primary'}`} disabled={Boolean(sendDisabledReason)} title={sendDisabledReason} aria-label="Create Poll">
                     <BarChart3 size={18} />
                   </button>
                   )}
@@ -2463,7 +2510,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                 <div className="chat-compose-actions order-3 ml-auto flex items-center gap-1 px-1.5 min-[600px]:order-none min-[600px]:gap-2.5">
                     {hasStickers && (
                       <div className="relative">
-                          <button onClick={() => { setShowStickerPicker(prev => !prev); setShowEmojiPicker(false); }} className={`compact-touch-target flex items-center justify-center transition-all ${showStickerPicker ? 'text-primary' : 'text-white/40 hover:text-primary'}`} aria-label="Stickers"><Sticker size={18} /></button>
+                          <button onClick={() => { setShowStickerPicker(prev => !prev); setShowEmojiPicker(false); }} className={`compact-touch-target flex items-center justify-center transition-all ${showStickerPicker ? 'text-primary' : 'text-white/40 hover:text-primary'}`} disabled={Boolean(sendDisabledReason)} title={sendDisabledReason} aria-label="Stickers"><Sticker size={18} /></button>
                           {showStickerPicker && (
                             <StickerPicker
                               onSelect={handleSendSticker}
@@ -2504,14 +2551,16 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
 
       {/* Poll Creator */}
       {showPollCreator && hasPolls && (
-          <PollCreator
+        <PollCreator
+          sendDisabledReason={sendDisabledReason || (chatSupport.mode === 'offline' ? 'Reconnect before sending a poll.' : undefined)}
           onSubmit={(question, options) => {
-            const body = `🗳️ POLL:${JSON.stringify({ q: question, o: options })}`;
-            if (channel?.id && !isDM) {
-              void sendChannelMutation.mutateAsync({ channelId: channel.id, content: body });
-            } else if (isDM && channel?.id) {
-              void sendDmMutation.mutateAsync({ dmId: channel.id, content: body });
-            }
+            if (isMessageSendBlocked() || !channel?.id || chatSupport.mode === 'offline') return;
+            const content = `🗳️ POLL:${JSON.stringify({ q: question, o: options })}`;
+            void submitRemoteMessage({
+              owner: sendOwnerRef.current, channelId: channel.id,
+              identityId: liveShellData.runtimeSnapshot?.identity?.peer_id,
+              isDM: Boolean(isDM), content,
+            });
             setShowPollCreator(false);
           }}
           onClose={() => setShowPollCreator(false)}
@@ -2522,6 +2571,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
       {forwardingContent !== null && hasForwarding && (
         <ForwardMessageModal
           messageContent={forwardingContent}
+          sendDisabledReason={sendDisabledReason}
           destinations={forwardDestinations}
           onForward={handleForwardMessage}
           onClose={() => setForwardingContent(null)}
@@ -2564,14 +2614,17 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
             parentUser={getUser(threadMessage.userId)}
             allUsers={normalizedUsers}
             replies={allReplies}
+            sendDisabledReason={sendDisabledReason || (chatSupport.mode === 'offline' && !threadMessage.id.startsWith(MESSAGE_ID_PREFIX) ? 'Reconnect before sending a thread reply.' : undefined)}
             onSend={(content) => {
+              if (isMessageSendBlocked()) return false;
               // Send as a real message with reply_to so it propagates P2P.
               if (channel?.id && !threadMessage.id.startsWith(MESSAGE_ID_PREFIX)) {
-                if (isDM) {
-                  void sendDmMutation.mutateAsync({ dmId: channel.id, content });
-                } else {
-                  void sendChannelMutation.mutateAsync({ channelId: channel.id, content, replyTo: threadMessage.id });
-                }
+                if (chatSupport.mode === 'offline') return false;
+                void submitRemoteMessage({
+                  owner: sendOwnerRef.current, channelId: channel.id,
+                  identityId: liveShellData.runtimeSnapshot?.identity?.peer_id,
+                  isDM: Boolean(isDM), content, ...(!isDM ? { replyToId: threadMessage.id } : {}),
+                });
               } else {
                 // Offline/local: keep in component state only.
                 const nextThreadReplies = {

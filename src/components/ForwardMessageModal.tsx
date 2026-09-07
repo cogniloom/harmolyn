@@ -7,6 +7,7 @@ interface ForwardMessageModalProps {
   destinations: Destination[];
   onForward: (destinations: Destination[], note: string) => void;
   onClose: () => void;
+  sendDisabledReason?: string;
 }
 
 interface Destination {
@@ -62,7 +63,7 @@ function normalizeDestinations(value: unknown): Destination[] {
   return normalized;
 }
 
-export const ForwardMessageModal: React.FC<ForwardMessageModalProps> = ({ messageContent, destinations, onForward, onClose }) => {
+export const ForwardMessageModal: React.FC<ForwardMessageModalProps> = ({ messageContent, destinations, onForward, onClose, sendDisabledReason }) => {
   const [query, setQuery] = useState('');
   const [selected, setSelected] = useState<Destination[]>([]);
   const [note, setNote] = useState('');
@@ -100,6 +101,7 @@ export const ForwardMessageModal: React.FC<ForwardMessageModalProps> = ({ messag
   };
 
   const handleForward = () => {
+    if (sendDisabledReason || selected.length === 0) return;
     onForward(selected, note);
     onClose();
   };
@@ -126,6 +128,7 @@ export const ForwardMessageModal: React.FC<ForwardMessageModalProps> = ({ messag
         </div>
 
         <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+          {sendDisabledReason && <p role="status" className="px-4 pt-3 text-xs theme-text-dim">{sendDisabledReason}</p>}
           {/* Forwarded message */}
           <div className="mx-4 mt-3 rounded-r1 border border-white/5 bg-white/5 p-3">
             <div className="micro-label text-white/30 mb-1">MESSAGE</div>
@@ -219,7 +222,7 @@ export const ForwardMessageModal: React.FC<ForwardMessageModalProps> = ({ messag
           </button>
           <button
             onClick={handleForward}
-            disabled={selected.length === 0}
+            disabled={Boolean(sendDisabledReason) || selected.length === 0}
             className="compact-touch-target flex items-center gap-1.5 rounded-full bg-primary px-5 py-2 text-xs font-bold text-bg-0 shadow-glow-sm transition-all hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-30"
           >
             <Send size={12} /> Forward ({selected.length})

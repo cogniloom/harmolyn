@@ -8,9 +8,10 @@ const OPTION_MAX = 100;
 interface PollCreatorProps {
   onSubmit: (question: string, options: string[]) => void;
   onClose: () => void;
+  sendDisabledReason?: string;
 }
 
-export const PollCreator: React.FC<PollCreatorProps> = ({ onSubmit, onClose }) => {
+export const PollCreator: React.FC<PollCreatorProps> = ({ onSubmit, onClose, sendDisabledReason }) => {
   const [question, setQuestion] = useState('');
   const [options, setOptions] = useState(['', '']);
   const questionRef = useRef<HTMLInputElement>(null);
@@ -35,7 +36,7 @@ export const PollCreator: React.FC<PollCreatorProps> = ({ onSubmit, onClose }) =
     setOptions(copy);
   };
 
-  const canSubmit = normalizeQuestion(question).length > 0 && normalizeOptions(options).length >= 2;
+  const canSubmit = !sendDisabledReason && normalizeQuestion(question).length > 0 && normalizeOptions(options).length >= 2;
 
   return (
     <div
@@ -55,6 +56,7 @@ export const PollCreator: React.FC<PollCreatorProps> = ({ onSubmit, onClose }) =
       </div>
 
       <div className="min-h-0 space-y-3 overflow-y-auto overscroll-contain p-4">
+        {sendDisabledReason && <p role="status" className="text-xs theme-text-dim">{sendDisabledReason}</p>}
         <div>
           <div className="flex items-center justify-between mb-1">
             <label htmlFor="poll-question" className="micro-label text-white/40">QUESTION</label>
@@ -110,6 +112,7 @@ export const PollCreator: React.FC<PollCreatorProps> = ({ onSubmit, onClose }) =
         </button>
           <button
             onClick={() => {
+              if (!canSubmit) return;
               const normalizedQuestion = normalizeQuestion(question);
               const normalizedOptions = normalizeOptions(options);
               if (normalizedQuestion && normalizedOptions.length >= 2) {
