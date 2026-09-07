@@ -239,7 +239,7 @@ describe("ChatArea reply references", () => {
     fireEvent.click(screen.getByRole("button", { name: "Reply" }));
 
     // The composer must show the reply preview bar before sending.
-    expect(screen.getByText(/REPLYING TO \/\/ NOVA/)).toBeTruthy();
+    expect(screen.getByText(/Replying to Nova/i)).toBeTruthy();
 
     await user.type(screen.getByLabelText("Message Input"), "the actual reply{enter}");
 

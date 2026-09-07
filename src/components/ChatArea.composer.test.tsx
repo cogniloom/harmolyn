@@ -2,6 +2,8 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ChatArea } from './ChatArea';
+import { ContextMenuProvider } from './GlobalContextMenu';
+import type { Message } from '@/types';
 
 const { send } = vi.hoisted(() => ({ send: vi.fn() }));
 vi.mock('@/hooks/runtime/useRuntimeMutations', () => ({
@@ -15,11 +17,11 @@ vi.mock('@/native/state/mutations', async () => ({
   ...await vi.importActual<typeof import('@/native/state/mutations')>('@/native/state/mutations'),
   nativeStopTyping: vi.fn(), nativeNotifyTyping: vi.fn(),
 }));
-function view(id = 'composer-test') {
+function view(id = 'composer-test', messages: Message[] = []) {
   return <QueryClientProvider client={new QueryClient({ defaultOptions: { mutations: { retry: false } } })}>
-    <ChatArea channel={{ id, name: 'design-review', type: 'text', categoryId: 'cat' }} messages={[]} users={[]}
+    <ContextMenuProvider><ChatArea channel={{ id, name: 'design-review', type: 'text', categoryId: 'cat' }} messages={messages} users={[]}
       mobileMenuOpen={false} onToggleMobileMenu={() => {}} onToggleMemberList={() => {}}
-      isDM={false} messageLayout="modern" onToggleLayout={() => {}} hasIdentity />
+      isDM={false} messageLayout="modern" onToggleLayout={() => {}} hasIdentity /></ContextMenuProvider>
   </QueryClientProvider>;
 }
 function type(text: string) { fireEvent.change(screen.getByLabelText('Message Input'), { target: { value: text } }); }
@@ -53,6 +55,30 @@ describe('chat composer submission', () => {
     await act(async () => { pending.resolve(); await pending.promise; });
     await waitFor(() => expect(screen.getByRole('button', { name: 'Send Message' })).not.toBeDisabled());
     expect(screen.getByLabelText('Message Input')).toHaveValue('a new draft');
+  });
+  it('preserves newer edits even when they return to the submitted text', async () => {
+    const pending = deferred(); send.mockReturnValue(pending.promise);
+    render(view()); type('repeat this');
+    fireEvent.click(screen.getByRole('button', { name: 'Send Message' }));
+    await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+    type(''); type('repeat this');
+    await act(async () => { pending.resolve(); await pending.promise; });
+    expect(screen.getByLabelText('Message Input')).toHaveValue('repeat this');
+  });
+  it('preserves a reply cancelled and reselected during a pending send', async () => {
+    const pending = deferred(); send.mockReturnValue(pending.promise);
+    render(view('reply-test', [{ id: 'source', userId: 'peer', content: 'Reply source', timestamp: '09:24' }]));
+    const selectReply = () => {
+      fireEvent.contextMenu(screen.getByText('Reply source'));
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Reply' }));
+    };
+    selectReply(); type('pending reply');
+    fireEvent.click(screen.getByRole('button', { name: 'Send Message' }));
+    await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel reply' }));
+    selectReply();
+    await act(async () => { pending.resolve(); await pending.promise; });
+    expect(screen.getByRole('button', { name: 'Cancel reply' })).toBeInTheDocument();
   });
   it('clears only an unchanged draft after successful submission', async () => {
     send.mockResolvedValue(undefined); render(view()); type('hello');

@@ -482,7 +482,7 @@ describe('ChannelRail local navigation filter', () => {
       { id: 'lounge', name: 'lounge', type: 'voice', categoryId: 'voice' },
     ] }] };
   function navigation() {
-    return <ChannelRail server={space} activeChannelId="design" currentUser={currentUser} users={[]}
+    return <ChannelRail server={space} activeChannelId="general" currentUser={currentUser} users={[]}
       directMessages={[]} connectionState={connectionState} connectedVoiceChannelId={null}
       collapsed={false} onToggleCollapse={() => {}} onSelectChannel={() => {}}
       onJoinVoice={() => {}} onOpenSettings={() => {}} />;
@@ -494,6 +494,9 @@ describe('ChannelRail local navigation filter', () => {
     await user.type(screen.getByRole('searchbox', { name: 'Filter channels' }), 'DESIGN');
     expect(screen.getByText('design-review')).toBeInTheDocument();
     expect(screen.queryByText('general')).toBeNull();
+    const category = screen.getByRole('button', { name: 'Discussion (filtered results)' });
+    expect(category).toBeDisabled();
+    await user.click(category);
     await user.click(screen.getByRole('button', { name: 'Clear navigation filter' }));
     expect(screen.queryByText('design-review')).toBeNull();
   });

@@ -118,6 +118,19 @@ describe('QuickSwitcher keyboard navigation', () => {
     await user.clear(input);
     expect(input).toHaveAttribute('aria-activedescendant', 'quick-switcher-option-0');
   });
+  it('moves immediately after a live update removes most destinations', async () => {
+    const user = userEvent.setup();
+    const space = (count: number) => [{ id: 'live', name: 'Live Space', icon: '', ownerId: 'me', members: [],
+      categories: [{ id: 'cat', name: 'Channels', channels: Array.from({ length: count }, (_, index) =>
+        ({ id: `channel-${index}`, name: `channel-${index}`, type: 'text' as const, categoryId: 'cat' })) }] }];
+    const props = { users: [], directMessages: [], onClose: vi.fn(), onNavigate: vi.fn() };
+    const mounted = render(<QuickSwitcher {...props} servers={space(8)} />);
+    await user.keyboard('{ArrowDown}{ArrowDown}{ArrowDown}{ArrowDown}{ArrowDown}{ArrowDown}{ArrowDown}');
+    mounted.rerender(<QuickSwitcher {...props} servers={space(2)} />);
+    expect(screen.getByRole('combobox')).toHaveAttribute('aria-activedescendant', 'quick-switcher-option-1');
+    await user.keyboard('{ArrowUp}');
+    expect(screen.getByRole('combobox')).toHaveAttribute('aria-activedescendant', 'quick-switcher-option-0');
+  });
   it('does not navigate when Enter confirms composition', async () => {
     const { fireEvent } = await import('@testing-library/react');
     const navigate = vi.fn();

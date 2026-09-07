@@ -510,7 +510,12 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   const [hoveredMessageId, setHoveredMessageId] = useState<string | null>(null);
   const [reactionMenuMsgId, setReactionMenuMsgId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
-  const [inputValue, setInputValue] = useState('');
+  const draftRevisionRef = useRef(0);
+  const [inputValue, updateInputValue] = useState('');
+  const setInputValue = useCallback((value: React.SetStateAction<string>) => {
+    draftRevisionRef.current += 1;
+    updateInputValue(value);
+  }, []);
   const [isSending, setIsSending] = useState(false);
   const sendOwnerRef = useRef({ active: true, pending: false });
   const chatToolsRef = useRef<HTMLDivElement>(null);
@@ -532,7 +537,12 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   const inputAreaRef = useRef<HTMLDivElement>(null);
   const [inputAreaHeight, setInputAreaHeight] = useState(128);
   const COMPOSER_MAX_HEIGHT = 160;
-  const [replyingTo, setReplyingTo] = useState<Message | null>(null);
+  const replyRevisionRef = useRef(0);
+  const [replyingTo, updateReplyingTo] = useState<Message | null>(null);
+  const setReplyingTo = useCallback((value: React.SetStateAction<Message | null>) => {
+    replyRevisionRef.current += 1;
+    updateReplyingTo(value);
+  }, []);
   const [editingMsgId, setEditingMsgId] = useState<string | null>(null);
   const [editValue, setEditValue] = useState('');
   const [composerFeedback, setComposerFeedback] = useState<ComposerFeedback | null>(null);
@@ -955,6 +965,8 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
       const replyTarget = replyingTo;
       const replyToId = replyTarget && !replyTarget.id.startsWith(MESSAGE_ID_PREFIX) ? replyTarget.id : undefined;
       const owner = sendOwnerRef.current;
+      const draftRevision = draftRevisionRef.current;
+      const replyRevision = replyRevisionRef.current;
       owner.pending = true;
       setIsSending(true);
       nativeStopTyping();
@@ -965,9 +977,9 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
           await sendChannelMutation.mutateAsync({ channelId: channel.id, content, ...(replyToId ? { replyTo: replyToId } : {}) });
         }
         if (owner.active) {
-          // Keep edits made while sending. Never roll an old draft over a new one.
-          setInputValue(current => current === content ? '' : current);
-          setReplyingTo(current => current === replyTarget ? null : current);
+          // Revisions distinguish an untouched draft from edits returning to the same value.
+          if (draftRevisionRef.current === draftRevision) updateInputValue('');
+          if (replyRevisionRef.current === replyRevision) updateReplyingTo(null);
         }
       } catch {
         if (owner.active) showFeedback('error', 'Message could not be sent. Your draft is still here; try again.', 'system');

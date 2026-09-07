@@ -242,6 +242,7 @@ export const ChannelRail: React.FC<ChannelRailProps> = ({
   const isOwner = Boolean(server) && !!myPeerId && myPeerId === serverOwnerPeerId;
 
   const toggleCategoryCollapsed = (categoryId: string) => {
+    if (needle) return;
     setCollapsedCategories(prev => ({ ...prev, [categoryId]: !prev[categoryId] }));
   };
 
@@ -520,9 +521,11 @@ export const ChannelRail: React.FC<ChannelRailProps> = ({
                     <div onContextMenu={e => showCategoryContextMenu(e, cat.id)} className="flex items-center justify-between micro-label theme-text-dim mb-2.5 px-2 group/cat">
                         <button
                           onClick={() => toggleCategoryCollapsed(cat.id)}
+                          disabled={Boolean(needle)}
+                          title={needle ? 'Matching channels stay visible while filtering' : undefined}
                           className="compact-touch-target flex items-center gap-1 min-w-0 flex-1 text-left hover:text-primary transition-colors focus-ring rounded"
                           aria-expanded={!isCollapsed}
-                          aria-label={`${isCollapsed ? 'Expand' : 'Collapse'} ${cat.name}`}
+                          aria-label={needle ? `${cat.name} (filtered results)` : `${isCollapsed ? 'Expand' : 'Collapse'} ${cat.name}`}
                         >
                           {isCollapsed ? <ChevronRight size={10} className="flex-shrink-0" /> : <ChevronDown size={10} className="flex-shrink-0" />}
                           <span className="truncate">{cat.name}</span>

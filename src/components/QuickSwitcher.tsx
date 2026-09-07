@@ -229,6 +229,9 @@ export const QuickSwitcher: React.FC<QuickSwitcherProps> = ({ onClose, onNavigat
 
   const activeIndex = Math.min(selectedIndex, Math.max(0, results.length - 1));
   useEffect(() => {
+    setSelectedIndex(index => Math.min(index, Math.max(0, results.length - 1)));
+  }, [results.length]);
+  useEffect(() => {
     listRef.current?.querySelector('[aria-selected="true"]')?.scrollIntoView?.({ block: 'nearest' });
   }, [activeIndex, query]);
 
@@ -245,7 +248,7 @@ export const QuickSwitcher: React.FC<QuickSwitcherProps> = ({ onClose, onNavigat
       setSelectedIndex(i => Math.min(i + 1, Math.max(0, results.length - 1)));
     } else if (e.key === 'ArrowUp') {
       e.preventDefault();
-      setSelectedIndex(i => Math.max(i - 1, 0));
+      setSelectedIndex(i => Math.max(Math.min(i, results.length - 1) - 1, 0));
     } else if (e.key === 'Enter' && results[activeIndex]) {
       e.preventDefault();
       selectResult(results[activeIndex]);
