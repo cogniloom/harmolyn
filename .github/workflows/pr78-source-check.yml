@@ -1,11 +1,11 @@
-name: PR78 source snapshot
+name: PR78 verified source assembly
 on:
   push:
     branches: [codex/harmolyn-pr78-source-check]
 permissions:
-  contents: read
+  contents: write
 jobs:
-  snapshot:
+  assemble:
     runs-on: self-hosted
     container: node:26-bookworm
     timeout-minutes: 5
@@ -14,15 +14,64 @@ jobs:
         with:
           ref: da9b5475ff8fd5c5fc5a8ebbadf39816f8756ad3
           persist-credentials: false
-      - name: Export only tracked source from the verified PR head
+      - name: Verify reviewed patch and publish immutable blobs only
+        env:
+          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
-          mkdir -p "$RUNNER_TEMP/pr78-source"
-          git -c safe.directory="$GITHUB_WORKSPACE" archive --format=zip HEAD > "$RUNNER_TEMP/pr78-source/source.zip"
-          git -c safe.directory="$GITHUB_WORKSPACE" rev-parse HEAD > "$RUNNER_TEMP/pr78-source/commit.txt"
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import path from 'node:path';
+          import assert from 'node:assert/strict';
+          import { createHash } from 'node:crypto';
+          import { gunzipSync } from 'node:zlib';
+          import { execFileSync } from 'node:child_process';
+          const api = 'https://api.github.com/repos/cogniloom/harmolyn/git/blobs';
+          const headers = { Authorization: `Bearer ${process.env.GH_TOKEN}`, Accept: 'application/vnd.github+json', 'Content-Type': 'application/json', 'X-GitHub-Api-Version': '2022-11-28' };
+          const hash = bytes => createHash('sha256').update(bytes).digest('hex');
+          const blobHash = bytes => createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex');
+          const response = await fetch(api + '/7c39e769498c8a53662de247ba65b7eb926eace4', { headers });
+          assert.ok(response.ok, `Patch fetch failed: ${response.status}`);
+          const blob = await response.json();
+          const compressed = Buffer.from(blob.content, 'base64');
+          assert.equal(blobHash(compressed), '7c39e769498c8a53662de247ba65b7eb926eace4');
+          const patch = gunzipSync(compressed, { maxOutputLength: 100000 });
+          assert.equal(hash(patch), 'e36c7c04a017a8970b753e214ef1a9690ce7882afa72af2b48924ba2193da12d');
+          const patchPath = path.join(process.env.RUNNER_TEMP, 'reviewed.patch');
+          fs.writeFileSync(patchPath, patch);
+          const git = args => execFileSync('git', ['-c', `safe.directory=${process.env.GITHUB_WORKSPACE}`, ...args], { encoding: 'utf8' });
+          assert.equal(git(['rev-parse', 'HEAD']).trim(), 'da9b5475ff8fd5c5fc5a8ebbadf39816f8756ad3');
+          git(['apply', '--check', patchPath]);
+          git(['apply', patchPath]);
+          const expected = {
+            'scripts/conversation-ui-e2e.mjs': '66e6754a2acae9d1b916b657b7346ef13d07d2b4a8494e161ce86d7c59d3ce75',
+            'src/components/ChannelRail.test.tsx': 'eb07271546b4160396daf9a7e1541338e295f8b9a37076eb38f8803a63cc262b',
+            'src/components/ChannelRail.tsx': '6aefd28a964058a57732f4e821ae484490dd69d0e11f3633b741047c198cad34',
+            'src/components/ChatArea.tsx': 'ce04a98d9292b0a8a4c2ad416061be82ab0a618c813332b3ff05a1b1c1a06621',
+            'src/components/Layout.quickNavigate.test.tsx': '84b0bc068d4e5c7f44f50a7f6f27754a6a0bd329c0b075babe983fb25ced4bab',
+            'src/components/Layout.tsx': '8635df0e0e68594c873117dc4075d184b2f8ad89ae1371667074ca5aacdd1c43',
+            'src/components/QuickSwitcher.tsx': 'bb314ea47e90ef8015074c9389124b3258bad2ef8a5d0034cfcab1b4dd9fb1aa',
+            'src/styles/conversation.css': '6dfa3db1041394f49b46b9d8090e8b623d1387c690b4559d83accac0f566158a'
+          };
+          const changed = [...git(['diff', '--name-only']).trim().split('\n'), ...git(['ls-files', '--others', '--exclude-standard']).trim().split('\n')].filter(Boolean).sort();
+          assert.deepEqual(changed, Object.keys(expected).sort());
+          git(['diff', '--check']);
+          const entries = [];
+          for (const [file, sha256] of Object.entries(expected)) {
+            const bytes = fs.readFileSync(file);
+            assert.equal(hash(bytes), sha256, file);
+            const published = await fetch(api, { method: 'POST', headers, body: JSON.stringify({ encoding: 'base64', content: bytes.toString('base64') }) });
+            assert.ok(published.ok, `Blob publish failed: ${published.status}`);
+            const result = await published.json();
+            assert.equal(result.sha, blobHash(bytes), file);
+            entries.push({ path: file, mode: '100644', type: 'blob', sha: result.sha });
+          }
+          console.log('VERIFIED_TREE_ENTRIES=' + JSON.stringify(entries));
+          fs.writeFileSync(path.join(process.env.RUNNER_TEMP, 'pr78-blobs.json'), JSON.stringify(entries, null, 2));
+          NODE
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: pr78-verified-source
-          path: ${{ runner.temp }}/pr78-source/
+          name: pr78-verified-blobs
+          path: ${{ runner.temp }}/pr78-blobs.json
           retention-days: 1
           if-no-files-found: error
