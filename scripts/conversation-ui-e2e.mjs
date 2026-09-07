@@ -122,7 +122,13 @@ try {
     const bounds = await menu.boundingBox();
     assert.ok(bounds.x >= 0 && bounds.x + bounds.width <= width + 1 && bounds.y > 20 && bounds.y + bounds.height <= 845, 'Keyboard menu is detached or clipped');
     await page.keyboard.press('End');
-    assert.ok(await menu.getByRole('menuitem').last().evaluate(el => el === document.activeElement));
+    const focusState = await page.evaluate(() => {
+      const menu = document.querySelector('[role="menu"][aria-label="Context menu"]');
+      const items = menu?.querySelectorAll('[role="menuitem"]:not(:disabled)');
+      return { open: !!menu, lastFocused: !!items?.length && items[items.length - 1] === document.activeElement,
+        active: document.activeElement?.outerHTML.slice(0, 500), scrollY, menuScroll: menu?.scrollTop };
+    });
+    assert.ok(focusState.open && focusState.lastFocused, `End lost menu focus at ${width}: ${JSON.stringify(focusState)}`);
     await page.screenshot({ path: path.join(evidence, `message-menu-${width}.png`) });
     await page.keyboard.press('Escape');
     assert.equal(await menu.count(), 0);

@@ -157,8 +157,17 @@ export const ContextMenuProvider: React.FC<{ children: React.ReactNode }> = ({ c
       : event.key === 'ArrowUp' ? (index - 1 + items.length) % items.length : null;
     if (next !== null && items[next]) {
       event.preventDefault(); event.stopPropagation();
-      items[next].focus({ preventScroll: true });
-      items[next].scrollIntoView?.({ block: 'nearest' });
+      const item = items[next];
+      item.focus({ preventScroll: true });
+      // scrollIntoView may also move the page/ancestors, whose scroll handler
+      // dismisses this menu. Only scroll this menu's own viewport.
+      const viewport = event.currentTarget;
+      const outer = viewport.getBoundingClientRect();
+      const inner = item.getBoundingClientRect();
+      const top = inner.top - outer.top - 4;
+      const bottom = inner.bottom - outer.top - viewport.clientHeight + 4;
+      if (top < 0) viewport.scrollTop += top;
+      else if (bottom > 0) viewport.scrollTop += bottom;
     } else if (event.key === 'Tab') {
       // Leave the menu through its invoker, never cycle through hidden actions.
       event.preventDefault(); closeMenu();
@@ -169,10 +178,24 @@ export const ContextMenuProvider: React.FC<{ children: React.ReactNode }> = ({ c
   useEffect(() => {
     if (!menu) return;
     const handleClick = () => closeMenu();
+    // A focus-induced scroll can be queued before the menu opens and delivered
+    // afterwards. Dismiss only when its position changed since opening.
+    const openingScroll = new WeakMap<EventTarget, readonly [number, number]>();
+    for (let ancestor = openerRef.current; ancestor; ancestor = ancestor.parentElement) {
+      openingScroll.set(ancestor, [ancestor.scrollLeft, ancestor.scrollTop]);
+    }
+    openingScroll.set(document, [window.scrollX, window.scrollY]);
+    openingScroll.set(window, [window.scrollX, window.scrollY]);
     const handleScroll = (event: Event) => {
       // The menu itself can scroll on short viewports. Only outside scrolling
       // should dismiss it.
       if (event.target instanceof Node && menuRef.current?.contains(event.target)) return;
+      const before = event.target ? openingScroll.get(event.target) : undefined;
+      if (before) {
+        const left = event.target instanceof Element ? event.target.scrollLeft : window.scrollX;
+        const top = event.target instanceof Element ? event.target.scrollTop : window.scrollY;
+        if (left === before[0] && top === before[1]) return;
+      }
       closeMenu();
     };
     window.addEventListener('click', handleClick);

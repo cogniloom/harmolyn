@@ -1,5 +1,5 @@
 import React from 'react';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { ContextMenuProvider } from './GlobalContextMenu';
@@ -34,6 +34,38 @@ describe('context menu keyboard access', () => {
     expect(screen.getByRole('menuitem', { name: 'Last action' })).toHaveFocus();
     await user.keyboard('{Home}');
     expect(screen.getByRole('menuitem', { name: 'First action' })).toHaveFocus();
+  });
+  it('scrolls only the menu when moving to an offscreen action', async () => {
+    const user = userEvent.setup(); render(view());
+    await user.click(screen.getByRole('button', { name: 'Message actions' }));
+    const menu = screen.getByRole('menu');
+    const last = screen.getByRole('menuitem', { name: 'Last action' });
+    const scrollIntoView = vi.fn();
+    Object.defineProperty(last, 'scrollIntoView', { configurable: true, value: scrollIntoView });
+    Object.defineProperty(menu, 'clientHeight', { configurable: true, value: 100 });
+    vi.spyOn(menu, 'getBoundingClientRect').mockReturnValue({ top: 50, bottom: 150 } as DOMRect);
+    vi.spyOn(last, 'getBoundingClientRect').mockReturnValue({ top: 220, bottom: 260 } as DOMRect);
+    await user.keyboard('{End}');
+    expect(menu.scrollTop).toBe(114);
+    expect(last).toHaveFocus();
+    expect(scrollIntoView).not.toHaveBeenCalled();
+    fireEvent.scroll(menu);
+    expect(screen.getByRole('menu')).toBeInTheDocument();
+    // Actual scrolling elsewhere still dismisses the menu.
+    fireEvent.scroll(screen.getByRole('textbox', { name: 'Outside field' }));
+    expect(screen.queryByRole('menu')).toBeNull();
+  });
+  it('ignores an already-applied focus scroll but dismisses for new ancestor scrolling', async () => {
+    const user = userEvent.setup();
+    render(<div data-testid="scroll-parent">{view()}</div>);
+    const parent = screen.getByTestId('scroll-parent');
+    parent.scrollTop = 30;
+    await user.click(screen.getByRole('button', { name: 'Message actions' }));
+    fireEvent.scroll(parent);
+    expect(screen.getByRole('menu')).toBeInTheDocument();
+    parent.scrollTop = 31;
+    fireEvent.scroll(parent);
+    expect(screen.queryByRole('menu')).toBeNull();
   });
   it('closes only the topmost overlay and restores the invoking button', async () => {
     const user = userEvent.setup(), parent = vi.fn(); render(view(parent));
