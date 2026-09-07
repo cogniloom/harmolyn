@@ -110,11 +110,33 @@ export const ContextMenuProvider: React.FC<{ children: React.ReactNode }> = ({ c
   const [menu, setMenu] = useState<ContextMenuState | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const openerRef = useRef<HTMLElement | null>(null);
+  const originRef = useRef<Element | null>(null);
+  const activationRef = useRef<Event | null>(null);
+  const openingEventRef = useRef<Event | null>(null);
+
+  useEffect(() => {
+    // Capture the actual target before component handlers run. A right-click
+    // does not necessarily focus its target; keyboard clicks do have a target.
+    const capture = (event: Event) => {
+      activationRef.current = event;
+      queueMicrotask(() => { if (activationRef.current === event) activationRef.current = null; });
+    };
+    document.addEventListener('click', capture, true);
+    document.addEventListener('contextmenu', capture, true);
+    return () => {
+      document.removeEventListener('click', capture, true);
+      document.removeEventListener('contextmenu', capture, true);
+      activationRef.current = null;
+    };
+  }, []);
 
   const showMenu = useCallback((x: number, y: number, sections: ContextMenuSection[]) => {
     if (!menuRef.current?.contains(document.activeElement)) {
       openerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     }
+    openingEventRef.current = activationRef.current;
+    originRef.current = activationRef.current?.target instanceof Element
+      ? activationRef.current.target : openerRef.current;
     // Clamp to viewport so menu doesn't overflow offscreen
     const menuW = 200;
     const menuH = sections.reduce((h, s) => h + s.items.length * 44 + 9, 8);
@@ -177,11 +199,15 @@ export const ContextMenuProvider: React.FC<{ children: React.ReactNode }> = ({ c
   // Close on outside clicks and scrolling; Escape belongs to the overlay stack.
   useEffect(() => {
     if (!menu) return;
-    const handleClick = () => closeMenu();
+    const handleClick = (event: MouseEvent) => {
+      // React may publish the menu before the opening click reaches window.
+      if (event === openingEventRef.current) return;
+      closeMenu();
+    };
     // A focus-induced scroll can be queued before the menu opens and delivered
     // afterwards. Dismiss only when its position changed since opening.
     const openingScroll = new WeakMap<EventTarget, readonly [number, number]>();
-    for (let ancestor = openerRef.current; ancestor; ancestor = ancestor.parentElement) {
+    for (let ancestor = originRef.current; ancestor; ancestor = ancestor.parentElement) {
       openingScroll.set(ancestor, [ancestor.scrollLeft, ancestor.scrollTop]);
     }
     openingScroll.set(document, [window.scrollX, window.scrollY]);
@@ -191,6 +217,9 @@ export const ContextMenuProvider: React.FC<{ children: React.ReactNode }> = ({ c
       // should dismiss it.
       if (event.target instanceof Node && menuRef.current?.contains(event.target)) return;
       const before = event.target ? openingScroll.get(event.target) : undefined;
+      // Another pane may auto-scroll for a message or resize. It did not move
+      // this menu's anchor and must not dismiss an unrelated open menu.
+      if (!before) return;
       if (before) {
         const left = event.target instanceof Element ? event.target.scrollLeft : window.scrollX;
         const top = event.target instanceof Element ? event.target.scrollTop : window.scrollY;
