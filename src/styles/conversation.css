@@ -107,7 +107,7 @@ html.reduce-motion .chat-send-button .animate-spin { animation: none; }
 
 /* Recovery scrolls with history; its actions stay visible while reading the copy. */
 .chat-failed-submission { margin-bottom: .5rem; padding: .5rem .75rem; border: 1px solid var(--appearance-border); border-radius: 10px; color: var(--appearance-text); background: var(--appearance-surface); }
-.chat-failed-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: .25rem .5rem; font-size: .8rem; }
+.chat-failed-heading { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: .5rem; font-size: .8rem; }
 .chat-failed-heading button { min-height: 44px; min-width: 44px; padding-inline: .6rem; border-radius: 8px; color: var(--appearance-accent); }
 .chat-failed-heading button:disabled { opacity: .6; }
 .chat-failed-content { max-height: 4.5rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: .875rem; line-height: 1.5; }
@@ -115,3 +115,8 @@ html.reduce-motion .chat-send-button .animate-spin { animation: none; }
 .pinned-messages-drawer { padding-block: env(safe-area-inset-top) env(safe-area-inset-bottom); }
 
 .chat-failed-heading { position: sticky; top: 0; z-index: 1; background: var(--appearance-surface); }
+
+/* Keep the history and recovery actions usable above a virtual keyboard. Only
+   the editable text scrolls; attachment controls and the send action stay visible. */
+.chat-composer[data-short-viewport="true"] .chat-compose-input { max-height: 44px; overflow-y: auto !important; }
+.chat-composer[data-short-viewport="true"] .chat-composer-hint { display: none; }

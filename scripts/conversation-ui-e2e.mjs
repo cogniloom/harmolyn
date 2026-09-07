@@ -227,6 +227,11 @@ try {
   const recovery = page.getByRole('region', { name: 'Unsent message' });
   for (const width of [1440, 390, 320]) {
     await page.setViewportSize({ width, height: width === 320 ? 568 : 844 });
+    if (width === 320) {
+      // A reply adds another fixed composer row: test the most constrained path.
+      await page.locator('.compact-message-trigger').first().click();
+      await page.getByRole('menuitem', { name: 'Reply', exact: true }).click();
+    }
     const original = `Retained submission at ${width}px. ` + 'A longer message remains selectable and scrollable. '.repeat(6);
     await draft.fill(original);
     await page.getByRole('button', { name: 'Send Message', exact: true }).click();
@@ -241,7 +246,7 @@ try {
     for (const action of ['Retry unsent message', 'Discard unsent message']) {
       const box = await recovery.getByRole('button', { name: action, exact: true }).boundingBox();
       assert.ok(box.x >= 0 && box.y >= 0 && box.x + box.width <= width + 1 && box.y + box.height <= (width === 320 ? 569 : 845), `Unreachable ${action} at ${width}`);
-      assert.ok(box.y >= recoveryToolbar.y + recoveryToolbar.height && box.y + box.height <= recoveryComposer.y, `Recovery action covered by fixed controls at ${width}`);
+      assert.ok(box.y >= recoveryToolbar.y + recoveryToolbar.height && box.y + box.height <= recoveryComposer.y, `Recovery action covered at ${width}: ${JSON.stringify({box, recoveryToolbar, recoveryComposer})}`);
       assert.ok(await recovery.getByRole('button', { name: action, exact: true }).evaluate(button => {
         const rect = button.getBoundingClientRect();
         return button.contains(document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2));

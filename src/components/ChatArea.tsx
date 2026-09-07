@@ -1289,8 +1289,14 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
     const inputArea = inputAreaRef.current;
     if (!inputArea) return;
 
+    const workspace = inputArea.parentElement;
     let frame: number | null = null;
     const measureAndAnchor = () => {
+      // Use the actual pane height (including native keyboard/viewport resizing),
+      // not the browser width or a guessed device class.
+      const height = workspace?.getBoundingClientRect().height ?? 0;
+      const short = String(height > 0 && height < 440);
+      if (inputArea.dataset.shortViewport !== short) inputArea.dataset.shortViewport = short;
       const nextHeight = Math.ceil(inputArea.getBoundingClientRect().height);
       setInputAreaHeight((current) => current === nextHeight ? current : nextHeight);
       if (!isScrolledUp) {
@@ -1302,6 +1308,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
     measureAndAnchor();
     const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(measureAndAnchor);
     observer?.observe(inputArea);
+    if (workspace) observer?.observe(workspace);
     window.addEventListener('resize', measureAndAnchor);
     return () => {
       observer?.disconnect();

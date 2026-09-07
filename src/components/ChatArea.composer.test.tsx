@@ -37,6 +37,22 @@ describe('chat composer submission', () => {
     expect(screen.getByPlaceholderText('Message #design-review')).toBeInTheDocument();
     expect(screen.getByLabelText('Message Input')).toHaveAccessibleDescription(/Shift\+Enter/);
   });
+  it('adapts to the actual short pane and restores normal sizing after resize', () => {
+    render(view()); type('one\ntwo\nthree');
+    const input = screen.getByLabelText('Message Input');
+    const composer = input.closest<HTMLElement>('.chat-composer')!;
+    const workspace = composer.parentElement!;
+    const geometry = vi.spyOn(workspace, 'getBoundingClientRect');
+    geometry.mockReturnValue({ height: 366 } as DOMRect);
+    fireEvent(window, new Event('resize'));
+    expect(composer).toHaveAttribute('data-short-viewport', 'true');
+    expect(input).toHaveValue('one\ntwo\nthree');
+    geometry.mockReturnValue({ height: 800 } as DOMRect);
+    fireEvent(window, new Event('resize'));
+    expect(composer).toHaveAttribute('data-short-viewport', 'false');
+    expect(input).toHaveValue('one\ntwo\nthree');
+    geometry.mockRestore();
+  });
   it('does not send when Enter confirms an IME selection', () => {
     render(view()); type('こんにちは');
     fireEvent.keyDown(screen.getByLabelText('Message Input'), { key: 'Enter', isComposing: true });
