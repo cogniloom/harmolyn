@@ -472,3 +472,41 @@ describe('ChannelRail channel creation (owner)', () => {
     expect(screen.getByRole('button', { name: /text/i })).toBeTruthy();
   });
 });
+
+describe('ChannelRail local navigation filter', () => {
+  const space: Server = { id: 'filter-space', name: 'Design studio', icon: '', ownerId: 'someone-else', members: [],
+    categories: [{ id: 'discussion', name: 'Discussion', channels: [
+      { id: 'design', name: 'design-review', type: 'text', categoryId: 'discussion' },
+      { id: 'general', name: 'general', type: 'text', categoryId: 'discussion' },
+    ] }, { id: 'voice', name: 'Voice', channels: [
+      { id: 'lounge', name: 'lounge', type: 'voice', categoryId: 'voice' },
+    ] }] };
+  function navigation() {
+    return <ChannelRail server={space} activeChannelId="design" currentUser={currentUser} users={[]}
+      directMessages={[]} connectionState={connectionState} connectedVoiceChannelId={null}
+      collapsed={false} onToggleCollapse={() => {}} onSelectChannel={() => {}}
+      onJoinVoice={() => {}} onOpenSettings={() => {}} />;
+  }
+  it('finds channels inside collapsed categories and restores the collapsed state on clear', async () => {
+    const user = userEvent.setup(); renderRail(navigation());
+    await user.click(screen.getByRole('button', { name: 'Collapse Discussion' }));
+    expect(screen.queryByText('design-review')).toBeNull();
+    await user.type(screen.getByRole('searchbox', { name: 'Filter channels' }), 'DESIGN');
+    expect(screen.getByText('design-review')).toBeInTheDocument();
+    expect(screen.queryByText('general')).toBeNull();
+    await user.click(screen.getByRole('button', { name: 'Clear navigation filter' }));
+    expect(screen.queryByText('design-review')).toBeNull();
+  });
+  it('matches category names and provides recovery for an empty result', async () => {
+    const user = userEvent.setup(); renderRail(navigation());
+    const input = screen.getByRole('searchbox', { name: 'Filter channels' });
+    await user.type(input, 'discussion');
+    expect(screen.getByText('design-review')).toBeInTheDocument();
+    expect(screen.getByText('general')).toBeInTheDocument();
+    expect(screen.queryByText('lounge')).toBeNull();
+    await user.clear(input); await user.type(input, 'no-channel');
+    expect(screen.getByText('No channels found.')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Clear filter', exact: true }));
+    expect(screen.getByText('lounge')).toBeInTheDocument();
+  });
+});

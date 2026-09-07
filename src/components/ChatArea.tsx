@@ -36,9 +36,11 @@ import {
   readPersistedChatScopeState,
   writePersistedChatScopeState,
 } from '@/protocol/client';
-import { Hash, Bell, Pin, Users, Search, MoreHorizontal, MessageSquare, AtSign, Smile, Sticker, PlusCircle, X, Send, LayoutTemplate, Menu, Trash2, MicOff, Image, FileText, Reply, CornerUpRight, Pencil, Check, PanelRightClose, Forward, BarChart3, Link2, ArrowDown, MessageCircle, Inbox, Star, Lock, AlertTriangle, Clock, WifiOff, Flag, SlidersHorizontal } from 'lucide-react';
+import { Hash, Bell, Pin, Users, Search, MoreHorizontal, MessageSquare, AtSign, Smile, Sticker, PlusCircle, X, Send, LayoutTemplate, Menu, Trash2, MicOff, Image, FileText, Reply, CornerUpRight, Pencil, Check, PanelRightClose, Forward, BarChart3, Link2, ArrowDown, MessageCircle, Inbox, Star, Lock, AlertTriangle, Clock, WifiOff, Flag, SlidersHorizontal, LoaderCircle } from 'lucide-react';
 import { useEscapeKey } from '@/hooks/useEscapeKey';
 import { usePersistentState } from '@/hooks/usePersistentState';
+import { isComposingKey } from '@/lib/composerKeys';
+import { trapDialogFocus } from '@/lib/stabilization/interaction';
 import { PREVIEW_STORAGE_KEYS } from '@/config/storageKeys';
 import { DonorBadge } from '@/components/DonorBadge';
 import { resolveAvatarSrc } from '@/lib/avatar';
@@ -509,6 +511,21 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   const [reactionMenuMsgId, setReactionMenuMsgId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [inputValue, setInputValue] = useState('');
+  const [isSending, setIsSending] = useState(false);
+  const sendOwnerRef = useRef({ active: true, pending: false });
+  const chatToolsRef = useRef<HTMLDivElement>(null);
+
+  // A completion belongs only to the conversation and identity that started it.
+  useEffect(() => {
+    const owner = { active: true, pending: false };
+    sendOwnerRef.current = owner;
+    setIsSending(false);
+    return () => { owner.active = false; };
+  }, [channel?.id, liveShellData.runtimeSnapshot?.identity?.peer_id]);
+
+  useEffect(() => {
+    if (showMobileTools && chatToolsRef.current) return trapDialogFocus(chatToolsRef.current);
+  }, [showMobileTools]);
   const [showSlashCommands, setShowSlashCommands] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
@@ -880,7 +897,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
 
   const handleSendMessage = async () => {
     const trimmed = inputValue.trim();
-    if (!trimmed) return;
+    if (!trimmed || sendOwnerRef.current.pending) return;
 
     if (trimmed.startsWith('/')) {
       const [command, ...rest] = trimmed.slice(1).split(/\s+/);
@@ -935,8 +952,9 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
       // targets only exist on this device, so never reference them remotely).
       const replyTarget = replyingTo;
       const replyToId = replyTarget && !replyTarget.id.startsWith(MESSAGE_ID_PREFIX) ? replyTarget.id : undefined;
-      setInputValue('');
-      setReplyingTo(null);
+      const owner = sendOwnerRef.current;
+      owner.pending = true;
+      setIsSending(true);
       nativeStopTyping();
       try {
         if (isDM) {
@@ -944,10 +962,16 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
         } else {
           await sendChannelMutation.mutateAsync({ channelId: channel.id, content, ...(replyToId ? { replyTo: replyToId } : {}) });
         }
-      } catch (error) {
-        setInputValue(content);
-        setReplyingTo(replyTarget);
-        showFeedback('error', error instanceof Error ? error.message : 'Failed to send message.', 'system');
+        if (owner.active) {
+          // Keep edits made while sending. Never roll an old draft over a new one.
+          setInputValue(current => current === content ? '' : current);
+          setReplyingTo(current => current === replyTarget ? null : current);
+        }
+      } catch {
+        if (owner.active) showFeedback('error', 'Message could not be sent. Your draft is still here; try again.', 'system');
+      } finally {
+        owner.pending = false;
+        if (owner.active) setIsSending(false);
       }
     } else {
       const nextMessages = [...messagesState, createLocalMessage(inputValue)];
@@ -1028,6 +1052,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.defaultPrevented || isComposingKey(e.nativeEvent)) return;
     // Enter sends; Shift+Enter inserts a newline (matches every major chat app).
     // When the mention dropdown is open it owns Enter (selecting a member), so we
     // defer to it rather than sending a half-typed @mention.
@@ -1492,14 +1517,15 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
     }
   }, [channel, chatSupport.mode, forwardingContent, persistScopeState, sendChannelMutation, sendDmMutation, showFeedback]);
 
-  const filteredMessages = messagesState.filter(msg => 
-    msg.content.toLowerCase().includes(searchQuery.toLowerCase()) && !mutedUsers.has(msg.userId)
-  );
+  const normalizedSearch = searchQuery.trim().toLowerCase();
+  const filteredMessages = useMemo(() => messagesState.filter(msg =>
+    msg.content.toLowerCase().includes(normalizedSearch) && !mutedUsers.has(msg.userId)
+  ), [messagesState, normalizedSearch, mutedUsers]);
 
   if (!channel) return <div className="flex-1 bg-bg-2 flex items-center justify-center text-white/20 micro-label">Awaiting // Selection</div>;
 
   return (
-    <div className="flex-1 h-full relative z-0 overflow-hidden">
+    <div className="chat-workspace flex-1 min-w-0 h-full relative z-0 overflow-hidden" data-chat-workspace>
       <div 
         className="absolute inset-0 z-[-1] transition-all duration-1000 ease-in-out"
         style={{ backgroundImage: 'var(--theme-bg-image)' }}
@@ -1507,7 +1533,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
       <div className="absolute inset-0 grid-overlay opacity-30 z-[-1]"></div>
       
       {/* Header */}
-      <div className="absolute top-0 left-0 right-0 h-[52px] flex items-center justify-between px-3 min-[1100px]:px-6 border-b theme-border glass-realistic z-20">
+      <div className="chat-toolbar absolute top-0 left-0 right-0 h-[52px] flex items-center justify-between px-3 min-[1100px]:px-6 border-b theme-border glass-realistic z-20">
         <div className="flex min-w-0 flex-1 items-center gap-2.5 overflow-hidden">
           <button onClick={onToggleMobileMenu} className="min-[1100px]:hidden text-primary/80 hover:text-primary transition-colors p-2 min-w-[44px] min-h-[44px] flex items-center justify-center" aria-label="Open Menu">
             <Menu size={22} />
@@ -1517,11 +1543,11 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
              {isDM ? <AtSign size={18} /> : <Hash size={18} />}
           </div>
           <div className="flex flex-col min-w-0">
-            <span className="font-bold theme-text tracking-wide text-base font-display uppercase truncate max-w-[120px] md:max-w-xs">{channel.name}</span>
+            <span className="chat-title font-bold theme-text text-base font-display truncate" title={channel.name}>{channel.name}</span>
             <button
               type="button"
               onClick={() => setShowSecuritySummary((prev) => !prev)}
-              className={`micro-label tracking-widest text-[7px] hidden min-[1100px]:flex items-center gap-1 focus-ring rounded-r1 hover:brightness-125 transition-all ${securityBadge.className}`}
+              className={`chat-security-toggle chat-toolbar-desktop hidden min-[1100px]:flex items-center gap-1 focus-ring rounded-r1 ${securityBadge.className}`}
               title="View this conversation's security mode"
               aria-haspopup="dialog"
               aria-expanded={showSecuritySummary}
@@ -1532,22 +1558,22 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
           </div>
         </div>
 
-        <div className="flex shrink-0 items-center gap-0.5 sm:gap-1.5 min-[1100px]:gap-5">
-           <div className="hidden min-[1100px]:block">{headerControl}</div>
+        <div className="chat-toolbar-actions flex shrink-0 items-center gap-0.5 sm:gap-1.5 min-[1100px]:gap-5">
+           <div className="chat-toolbar-desktop hidden min-[1100px]:block">{headerControl}</div>
            {channelFollowingEnabled && !isDM && (
              <button
                onClick={toggleFollowChannel}
                aria-label={isFollowingChannel ? 'Unfollow channel' : 'Follow channel'}
                aria-pressed={isFollowingChannel}
                title={isFollowingChannel ? 'Following' : 'Follow channel'}
-               className={`hidden min-[1100px]:inline-flex p-1.5 transition-colors ${isFollowingChannel ? 'text-accent-warning' : 'text-white/40 hover:text-primary'}`}
+               className={`chat-toolbar-desktop hidden min-[1100px]:inline-flex p-1.5 transition-colors ${isFollowingChannel ? 'text-accent-warning' : 'text-white/40 hover:text-primary'}`}
              >
                <Star size={16} fill={isFollowingChannel ? 'currentColor' : 'none'} />
              </button>
            )}
            <button
              onClick={onToggleLayout} 
-             className="hidden min-[1100px]:inline-flex text-white/40 hover:text-primary transition-colors p-1.5"
+             className="chat-toolbar-desktop hidden min-[1100px]:inline-flex text-white/40 hover:text-primary transition-colors p-1.5"
              title={`Change View: ${messageLayout}`}
              aria-label="Change Chat View"
            >
@@ -1555,14 +1581,14 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
            </button>
 
            {/* Member Toggle - Mobile & Tablet */}
-           <button onClick={onToggleMemberList} className="min-[1100px]:hidden text-white/40 hover:text-primary transition-colors p-2 min-w-[44px] min-h-[44px] flex items-center justify-center" aria-label="Member List">
+           <button onClick={onToggleMemberList} className="chat-toolbar-compact min-[1100px]:hidden text-white/40 hover:text-primary transition-colors p-2 min-w-[44px] min-h-[44px] flex items-center justify-center" aria-label="Member List">
                <Users size={20} />
            </button>
 
            <button
              type="button"
              onClick={() => setShowMobileTools((open) => !open)}
-             className={`min-[1100px]:hidden touch-target flex items-center justify-center rounded-r1 transition-colors ${showMobileTools ? 'bg-primary/10 text-primary' : 'text-white/60 active:bg-white/10'}`}
+             className={`chat-toolbar-compact min-[1100px]:hidden touch-target flex items-center justify-center rounded-r1 transition-colors ${showMobileTools ? 'bg-primary/10 text-primary' : 'text-white/60 active:bg-white/10'}`}
              aria-label="More chat tools"
              aria-haspopup="dialog"
              aria-expanded={showMobileTools}
@@ -1570,7 +1596,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
              <MoreHorizontal size={21} />
            </button>
 
-          <div className="hidden min-[1100px]:flex items-center gap-4 text-white/40">
+          <div className="chat-toolbar-desktop hidden min-[1100px]:flex items-center gap-4 text-white/40">
              {hasInbox && (
                 <button aria-label="Inbox" onClick={() => setShowInbox(!showInbox)} className={`transition-colors relative ${showInbox ? 'text-primary' : 'hover:text-primary'}`}>
                   <Inbox size={16} />
@@ -1591,11 +1617,11 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                  </button>
               </div>
              <button aria-label="Member List" onClick={onToggleMemberList} className="hover:text-primary transition-colors"><Users size={16} /></button>
-             <div className="relative group">
+             <div className="chat-search relative group">
                 <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-white/20 group-focus-within:text-primary transition-colors" />
                 <input
                     type="text"
-                    placeholder="Search..."
+                    placeholder="Filter messages"
                     className="bg-bg-0/50 border border-white/5 rounded-full px-10 py-1.5 text-xs focus:outline-none focus:border-primary/50 focus:w-52 transition-all w-40 font-mono text-white placeholder-white/40"
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
@@ -1622,7 +1648,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
         <>
           <button
             type="button"
-            className="absolute inset-0 z-30 bg-black/45 min-[1100px]:hidden"
+            className="chat-tools-backdrop absolute inset-0 z-30 bg-black/45"
             onClick={() => setShowMobileTools(false)}
             aria-label="Close chat tools"
           />
@@ -1630,7 +1656,8 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
             role="dialog"
             aria-modal="true"
             aria-label="Chat tools"
-            className="absolute right-3 top-[58px] z-40 flex max-h-[calc(100%-70px)] w-[min(22rem,calc(100%-1.5rem))] flex-col overflow-hidden rounded-r2 border border-white/10 bg-bg-0/95 shadow-2xl min-[1100px]:hidden"
+            ref={chatToolsRef}
+            className="chat-tools-dialog absolute right-3 top-[58px] z-40 flex max-h-[calc(100%-70px)] w-[min(22rem,calc(100%-1.5rem))] flex-col overflow-hidden rounded-r2 border border-white/10 bg-bg-0/95 shadow-2xl"
           >
             <div className="flex items-center justify-between border-b border-white/5 px-4 py-3">
               <div>
@@ -1743,7 +1770,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
 
       {/* Messages Area */}
       <div
-        className={`absolute inset-x-0 top-0 overflow-y-auto px-3 md:px-10 pt-20 pb-4 ${
+        className={`chat-message-list absolute inset-x-0 top-0 overflow-y-auto px-3 md:px-10 pt-20 pb-4 ${
           messageLayout === 'terminal' ? 'space-y-0.5 font-mono' : 
           messageLayout === 'bubbles' ? 'space-y-2.5' : 
           'space-y-6'
@@ -1771,7 +1798,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
         )}
 
         {messageLayout !== 'terminal' && !searchQuery && (
-             <div className="pb-10 border-b border-white/5 mb-6">
+             <div className="chat-conversation-start pb-10 border-b border-white/5 mb-6">
                 <div className="w-20 h-20 rounded-2xl bg-gradient-to-br from-primary/30 to-transparent flex items-center justify-center mb-6 shadow-glow border border-primary/20 relative group">
                     <div className="absolute inset-0 grid-overlay opacity-30"></div>
                     {isDM ? <AtSign size={40} className="text-primary group-hover:scale-110 transition-transform" /> : <Hash size={40} className="text-primary group-hover:scale-110 transition-transform" />}
@@ -1784,7 +1811,8 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
         {filteredMessages.length === 0 && searchQuery && (
              <div className="flex flex-col items-center justify-center h-full text-white/30">
                  <Search size={40} className="mb-3 opacity-50" />
-                 <p className="font-mono text-base">NO MATCHES FOUND</p>
+                 <p className="text-base font-semibold">No matching messages</p>
+                 <button type="button" onClick={() => setSearchQuery('')} className="chat-clear-filter">Clear filter</button>
              </div>
         )}
 
@@ -1844,7 +1872,8 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                     </div>
                   )}
                   <div 
-                     id={buildMessageElementId(msg.id)}
+                     data-message-row
+                id={buildMessageElementId(msg.id)}
                      onContextMenu={(e) => handleContextMenu(e, msg.id)}
                      className="flex items-start text-xs hover:bg-white/5 px-1.5 -mx-1.5 py-0.5 rounded font-mono"
                   >
@@ -1881,7 +1910,8 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                     </div>
                   )}
                     <div  
-                         id={buildMessageElementId(msg.id)}
+                         data-message-row
+                id={buildMessageElementId(msg.id)}
                          onMouseEnter={(e) => { if (!e.buttons) setHoveredMessageId(msg.id); }}
                          onMouseLeave={(e) => { if (!e.buttons && !reactionMenuMsgId) setHoveredMessageId(null); }}
                          onContextMenu={(e) => handleContextMenu(e, msg.id)}
@@ -2007,6 +2037,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
               </div>
             )}
             <div 
+                data-message-row
                 id={buildMessageElementId(msg.id)}
                  onMouseEnter={(e) => { if (!e.buttons) setHoveredMessageId(msg.id); }}
                  onMouseLeave={(e) => { if (!e.buttons && !reactionMenuMsgId) setHoveredMessageId(null); }}
@@ -2051,7 +2082,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                   {user.role === 'Bot' && (
                     <span className="bg-primary/20 text-primary text-[7px] px-1.5 py-[2px] rounded-full font-bold micro-label tracking-tight border border-primary/30">Bot</span>
                   )}
-                  <span className="opacity-0 group-hover:opacity-100 transition-all duration-300 translate-x-[-5px] group-hover:translate-x-0">
+                  <span className="chat-message-timestamp">
                     <span className="px-1.5 py-0.5 rounded-full bg-white/5 border theme-border text-[7px] font-mono theme-text-dim tracking-widest shadow-sm">
                         {msg.timestamp}
                     </span>
@@ -2176,7 +2207,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
           <div className="absolute top-0 right-0 bottom-0 w-[288px] max-w-full bg-bg-0 border-l border-white/10 z-40 flex flex-col animate-in slide-in-from-right duration-300 shadow-2xl">
             <div className="h-[52px] px-5 flex items-center justify-between border-b border-white/5 shrink-0">
               <div>
-                <h3 className="font-bold text-white text-xs font-display">PINNED // MESSAGES</h3>
+                <h3 className="font-bold text-white text-xs font-display">Pinned messages</h3>
                 <span className="micro-label text-white/30 text-[8px]">ARCHIVE // {messagesState.filter(m => m.pinned).length} ENTRIES</span>
               </div>
               <button onClick={() => setShowPinned(false)} className="compact-touch-target flex items-center justify-center text-white/40 hover:text-primary transition-colors rounded-full hover:bg-white/5" aria-label="Close pinned messages">
@@ -2221,7 +2252,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
 
 
       {/* Input Area */}
-      <div ref={inputAreaRef} className="absolute bottom-0 left-0 right-0 p-3 md:p-6 pt-0 z-10">
+      <div ref={inputAreaRef} className="chat-composer absolute bottom-0 left-0 right-0 p-3 md:p-6 pt-0 z-10">
         {showSlashCommands && (
             <div className="absolute bottom-20 left-6 w-52 bg-bg-0 border border-white/10 rounded-r2 shadow-2xl z-50 glass-card overflow-hidden animate-in slide-in-from-bottom-2">
                 <div className="micro-label text-primary/60 px-3 py-1.5 bg-white/5">COMMANDS</div>
@@ -2249,7 +2280,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
           </button>
         ) : (
           <>
-            <div className="mb-2 px-1 flex items-center justify-between gap-2 text-[9px] font-mono tracking-[0.18em] uppercase">
+            <div className="chat-composer-status mb-2 px-1 flex items-center justify-between gap-2" role="status">
               <span className={`${chatTransportState === 'disconnected' || chatSupport.mode === 'offline' ? 'text-accent-danger/80' : chatTransportState === 'connecting' ? 'text-accent-warning/80' : 'text-primary/70'}`}>
                 {chatTransportLabel}
               </span>
@@ -2261,7 +2292,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
               <div className="glass-card rounded-t-r2 border border-white/10 border-b-0 px-3 py-2.5 flex items-center gap-2.5 animate-in slide-in-from-bottom-2">
                 <div className="w-[2px] h-6 bg-primary rounded-full flex-shrink-0"></div>
                 <div className="flex-1 min-w-0">
-                  <div className="micro-label text-primary mb-0.5">REPLYING TO // {getUser(replyingTo.userId).username.toUpperCase()}</div>
+                  <div className="micro-label text-primary mb-0.5">Replying to {getUser(replyingTo.userId).username}</div>
                   <div className="text-[10px] text-white/50 truncate">{messagePreviewText(replyingTo.content)}</div>
                 </div>
                 <button onClick={() => setReplyingTo(null)} className="compact-touch-target flex items-center justify-center text-white/30 hover:text-white hover:bg-white/10 rounded-full transition-colors" aria-label="Cancel reply">
@@ -2270,7 +2301,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
               </div>
             )}
 
-            <div className={`glass-realistic ${replyingTo ? 'rounded-b-r2 rounded-t-none' : 'rounded-r2'} flex flex-wrap items-end p-1.5 min-[600px]:flex-nowrap focus-within:border-primary/50 transition-all shadow-2xl relative overflow-visible group`}>
+            <div className={`chat-compose-row glass-realistic ${replyingTo ? 'rounded-b-r2 rounded-t-none' : 'rounded-r2'} flex flex-wrap items-end p-1.5 min-[600px]:flex-nowrap focus-within:border-primary/50 transition-all shadow-2xl relative overflow-visible group`}>
                 <div className="absolute inset-0 grid-overlay opacity-5 group-focus-within:opacity-10 pointer-events-none"></div>
 
                 {/* Mention Autocomplete */}
@@ -2307,10 +2338,12 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                 <textarea
                     ref={composerRef}
                     rows={1}
-                    placeholder={`INPUT // ${isDM ? '@' : '#'}${channel.name.toUpperCase()}`}
-                    className="order-1 min-h-[44px] w-full min-w-0 flex-1 bg-transparent border-none focus:outline-none text-white px-3 py-2 font-mono text-xs placeholder-white/40 focus-ring rounded-r1 resize-none leading-relaxed min-[600px]:order-none min-[600px]:w-auto"
+                    placeholder={`Message ${isDM ? '@' : '#'}${channel.name}`}
+                    className="chat-compose-input order-1 min-h-[44px] w-full min-w-0 flex-1 bg-transparent border-none focus:outline-none text-white px-3 py-2 font-mono text-xs placeholder-white/40 focus-ring rounded-r1 resize-none leading-relaxed min-[600px]:order-none min-[600px]:w-auto"
                     aria-label="Message Input"
                     aria-multiline="true"
+                    aria-describedby="chat-composer-hint"
+                    autoComplete="off"
                     value={inputValue}
                     onChange={handleInputChange}
                     onKeyDown={handleKeyDown}
@@ -2338,16 +2371,21 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                     </div>
                     <button
                       onClick={handleSendMessage}
-                      disabled={!inputValue.trim()}
-                      className={`touch-target rounded-full flex items-center justify-center transition-all btn-press focus-ring ${
+                      disabled={!inputValue.trim() || isSending}
+                      className={`chat-send-button touch-target rounded-full flex items-center justify-center transition-all btn-press focus-ring ${
                         inputValue.trim()
                           ? 'bg-primary text-bg-0 shadow-glow hover:scale-105 group-focus-within:shadow-[0_0_20px_#13DDEC] cursor-pointer'
                           : 'bg-white/10 text-white/30 cursor-not-allowed'
                       }`}
                       aria-label="Send Message"
-                    ><Send size={18} /></button>
+                      aria-busy={isSending}
+                      title={isSending ? 'Sending message…' : 'Send message'}
+                    >{isSending ? <LoaderCircle size={18} className="animate-spin" aria-hidden="true" /> : <Send size={18} aria-hidden="true" />}</button>
                 </div>
             </div>
+            <p id="chat-composer-hint" className="chat-composer-hint">
+              {isSending ? 'Sending… You can keep editing your draft.' : 'Enter to send · Shift+Enter for a new line'}
+            </p>
           </>
         )}
       </div>
@@ -2382,10 +2420,11 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
       {hasJumpToPresent && isScrolledUp && (
         <button
           onClick={scrollToBottom}
-          className="absolute bottom-32 left-1/2 -translate-x-1/2 z-20 glass-card bg-bg-0/80 border border-white/10 rounded-full px-4 py-2 flex items-center gap-2 shadow-2xl hover:border-primary/30 transition-all animate-in fade-in slide-in-from-bottom-2 btn-press hover-lift"
+          style={{ bottom: inputAreaHeight + 12 }}
+          className="absolute left-1/2 -translate-x-1/2 z-20 glass-card bg-bg-0/80 border border-white/10 rounded-full px-4 py-2 flex items-center gap-2 shadow-2xl hover:border-primary/30 transition-all animate-in fade-in slide-in-from-bottom-2 btn-press hover-lift"
         >
           <ArrowDown size={14} className="text-primary" />
-          <span className="text-[10px] text-white/60 font-mono font-bold">JUMP TO PRESENT</span>
+          <span className="text-[10px] text-white/60 font-mono font-bold">Latest messages</span>
         </button>
       )}
 

@@ -190,7 +190,7 @@ async function smokeCreateAndJoin(page) {
 
 async function smokeSendAndPersistMessage(page) {
   const messageLocator = page.getByText(new RegExp(`^${HAPPY_CHAT_MESSAGE}$`)).first();
-  await page.getByPlaceholder('INPUT // #GENERAL').fill(HAPPY_CHAT_MESSAGE);
+  await page.getByRole('textbox', { name: 'Message Input', exact: true }).fill(HAPPY_CHAT_MESSAGE);
   await page.getByRole('button', { name: 'Send Message' }).click();
   await messageLocator.waitFor({ state: 'visible' });
   await page.reload();

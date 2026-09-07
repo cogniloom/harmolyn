@@ -1232,7 +1232,7 @@ export const Layout: React.FC = () => {
           />
         )}
         {showQuickSwitcher && hasQuickSwitcher && (
-          <QuickSwitcher key="quickswitcher" onClose={() => setShowQuickSwitcher(false)} onNavigate={handleQuickNavigate} />
+          <QuickSwitcher key="quickswitcher" servers={servers} users={users} directMessages={directMessages} onClose={() => setShowQuickSwitcher(false)} onNavigate={handleQuickNavigate} />
         )}
         {showKeyboardShortcuts && hasKeyboardShortcuts && (
           <KeyboardShortcutsOverlay key="shortcuts" onClose={() => setShowKeyboardShortcuts(false)} />

@@ -1,7 +1,7 @@
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Channel, ConnectionState, DirectMessageChannel, Server, User, UserStatus } from '@/types';
-import { ChevronDown, ChevronRight, Hash, Megaphone, Volume2, Mic, MicOff, Video, MonitorUp, Headphones, HeadphoneOff, Settings, X, LogOut, Radio, PanelLeftClose, ArrowUpDown, FileText, Heart, Plus, Check, Pencil, Trash2, Copy, BellOff, MoreHorizontal } from 'lucide-react';
+import { Search, ChevronDown, ChevronRight, Hash, Megaphone, Volume2, Mic, MicOff, Video, MonitorUp, Headphones, HeadphoneOff, Settings, X, LogOut, Radio, PanelLeftClose, ArrowUpDown, FileText, Heart, Plus, Check, Pencil, Trash2, Copy, BellOff, MoreHorizontal } from 'lucide-react';
 import { StatusPicker } from '@/components/StatusPicker';
 import { AccountSwitcher } from '@/components/AccountSwitcher';
 import { ConnectionActivityPill } from '@/components/ConnectionActivityPill';
@@ -195,6 +195,19 @@ export const ChannelRail: React.FC<ChannelRailProps> = ({
   onShowFriends,
   friendRequestBadge = 0,
 }) => {
+  const [filter, setFilter] = useState('');
+  const needle = filter.trim().toLocaleLowerCase();
+  // Filter names locally. This never publishes queries or requests peer data.
+  useEffect(() => { setFilter(''); }, [server?.id, isHome]);
+  const visibleCategories = useMemo(() => {
+    const categories = server?.categories ?? [];
+    if (!needle) return categories;
+    return categories.map(category => ({
+      ...category,
+      channels: category.name.toLocaleLowerCase().includes(needle) ? category.channels
+        : category.channels.filter(channel => channel.name.toLocaleLowerCase().includes(needle)),
+    })).filter(category => category.channels.length > 0);
+  }, [server?.categories, needle]);
   const connectivityEnabled = connectionState.canUseConnectivityActions;
   const voiceDisabledReason = voiceControlState?.canInteract ? undefined : voiceControlState?.statusDetail;
   const voiceControlBarEnabled = useFeature('voiceControlBar');
@@ -202,6 +215,11 @@ export const ChannelRail: React.FC<ChannelRailProps> = ({
   const normalizedCurrentUser = React.useMemo(() => normalizeRailUser(currentUser, 'me'), [currentUser]);
   const normalizedUsers = React.useMemo(() => normalizeRailUsers(users), [users]);
   const normalizedDirectMessages = useMemo(() => normalizeRailDirectMessages(directMessages), [directMessages]);
+
+  const usersById = useMemo(() => new Map(normalizedUsers.map(user => [user.id, user])), [normalizedUsers]);
+  const visibleDirectMessages = useMemo(() => normalizedDirectMessages.filter(dm =>
+    !needle || (usersById.get(dm.userId)?.username ?? 'Unknown User').toLocaleLowerCase().includes(needle)
+  ), [normalizedDirectMessages, usersById, needle]);
 
   const createChannelMutation = useCreateChannel();
   const updateChannelMutation = useUpdateChannel();
@@ -392,7 +410,7 @@ export const ChannelRail: React.FC<ChannelRailProps> = ({
   return (
     <div 
         className={`
-            w-full min-w-[224px] glass-realistic flex flex-col h-full transition-transform duration-300 ease-in-out
+            channel-navigation w-full min-w-[224px] glass-realistic flex flex-col h-full transition-transform duration-300 ease-in-out
             ${collapsed ? '-translate-x-full' : 'translate-x-0'}
             ${isHome ? 'border-r border-white/5' : ''}
         `}
@@ -430,7 +448,7 @@ export const ChannelRail: React.FC<ChannelRailProps> = ({
             </button>
           ) : (
             <div className="min-w-0">
-              <h2 className="font-bold theme-text truncate micro-label text-xs tracking-widest">{isHome ? 'System Hub' : server?.name}</h2>
+              <h2 className="font-bold theme-text truncate micro-label text-xs tracking-widest">{isHome ? 'Messages' : server?.name}</h2>
               <div className="text-[9px] theme-text-dim truncate tracking-[0.24em]">{connectionState.label}</div>
             </div>
           )}
@@ -447,20 +465,37 @@ export const ChannelRail: React.FC<ChannelRailProps> = ({
         </div>
       </div>
 
-      <div className="flex-1 min-h-0 overflow-y-auto px-3 py-5 space-y-6 no-scrollbar">
+      <div className="rail-filter">
+        <Search size={15} aria-hidden="true" />
+        <input type="search" value={filter} maxLength={128}
+          onChange={event => setFilter(event.target.value)}
+          placeholder={isHome ? 'Find a conversation' : 'Find a channel'}
+          aria-label={isHome ? 'Filter conversations' : 'Filter channels'}
+          autoComplete="off" spellCheck={false}
+        />
+        {filter && <button type="button" onClick={() => setFilter('')} aria-label="Clear navigation filter"><X size={14} /></button>}
+      </div>
+      <div className="flex-1 min-h-0 overflow-y-auto px-3 py-3 space-y-6">
+        {needle && (isHome ? visibleDirectMessages.length : visibleCategories.length) === 0 && (
+          <div className="rail-empty" role="status">
+            <p>No {isHome ? 'conversations' : 'channels'} found.</p>
+            <button type="button" onClick={() => setFilter('')}>Clear filter</button>
+          </div>
+        )}
         {isHome ? (
             <section>
                 <button onClick={onShowFriends} className="compact-touch-target micro-label theme-text-dim mb-3 px-2 hover:text-primary transition-colors cursor-pointer w-full text-left flex items-center justify-between" aria-label={friendRequestBadge > 0 ? `Friends, ${friendRequestBadge} pending request${friendRequestBadge === 1 ? '' : 's'}` : 'Friends'}>
-                  <span>Direct Communications</span>
+                  <span>Friends & direct messages</span>
                   {friendRequestBadge > 0 && <span className="min-w-4 h-4 px-1 rounded-full bg-accent-danger text-[9px] leading-4 text-white text-center font-bold" aria-label={`${friendRequestBadge} pending friend request${friendRequestBadge === 1 ? '' : 's'}`}>{friendRequestBadge > 99 ? '99+' : friendRequestBadge}</span>}
                 </button>
                 <div className="space-y-1.5">
-                    {normalizedDirectMessages.map(dm => {
-                        const user = normalizedUsers.find(u => u.id === dm.userId) ?? getUnknownRailUser();
+                    {visibleDirectMessages.map(dm => {
+                        const user = usersById.get(dm.userId) ?? getUnknownRailUser();
                         const active = activeChannelId === dm.id;
                         return (
                             <button 
-                                key={dm.id} 
+                                key={dm.id}
+                                aria-current={active ? 'page' : undefined}
                                 disabled={!connectivityEnabled}
                                 onClick={() => onSelectChannel(dm.id)}
                                 title={!connectivityEnabled ? connectionState.detail : user.username}
@@ -478,8 +513,8 @@ export const ChannelRail: React.FC<ChannelRailProps> = ({
                 </div>
             </section>
         ) : (
-            server?.categories.map(cat => {
-                const isCollapsed = Boolean(collapsedCategories[cat.id]);
+            visibleCategories.map(cat => {
+                const isCollapsed = !needle && Boolean(collapsedCategories[cat.id]);
                 return (
                 <section key={cat.id}>
                     <div onContextMenu={e => showCategoryContextMenu(e, cat.id)} className="flex items-center justify-between micro-label theme-text-dim mb-2.5 px-2 group/cat">
