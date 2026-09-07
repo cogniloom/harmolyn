@@ -390,6 +390,7 @@ export const Layout: React.FC = () => {
     // user may be muted, but only an explicit Watch session is receive-only.
     receiveOnlyChannelId: null as string | null,
   });
+  const voiceJoinPendingRef = useRef(false);
   const [voiceActionStatus, setVoiceActionStatus] = useState<{ pending: string | null; error: string | null }>({
     pending: null,
     error: null,
@@ -417,7 +418,6 @@ export const Layout: React.FC = () => {
         ? prev.receiveOnlyChannelId
         : null,
     }));
-    setVoiceActionStatus({ pending: null, error: null });
     setShowScreenSharePanel(false);
   }, [state.connectedVoiceChannelId]);
 
@@ -469,7 +469,7 @@ export const Layout: React.FC = () => {
     setState((prev) => {
       const nextServerId = resolveActiveServerId(prev.activeServerId, shellData);
       const nextChannelId = resolveActiveChannelId(nextServerId, prev.activeChannelId, shellData);
-      const nextVoiceChannelId = hasVoiceChannel(nextServerId, prev.connectedVoiceChannelId, shellData)
+      const nextVoiceChannelId = hasVoiceChannel(prev.connectedVoiceChannelId, shellData)
         ? prev.connectedVoiceChannelId
         : null;
       if (
@@ -490,6 +490,27 @@ export const Layout: React.FC = () => {
   }, [shellData]);
 
   const handleQuickNavigate = (serverId: string, channelId: string) => {
+    // Resolve against the current live destinations, not a stale search result.
+    const targetChannels = servers.find((server) => server.id === serverId)?.categories.flatMap((category) => category.channels) ?? [];
+    const target = targetChannels.find((channel) => channel.id === channelId);
+    if (serverId === 'home' ? !directMessages.some((dm) => dm.id === channelId) : !target) return;
+    if (target?.type === 'voice') {
+      if (!hasIdentity) { setAuthScreen('register'); return; }
+      if (voiceJoinPendingRef.current) return;
+      // Joining voice is an explicit action. Keep a text conversation on screen
+      // instead of misrepresenting the voice room as a normal message channel.
+      setState((prev) => ({
+        ...prev,
+        activeServerId: serverId,
+        activeChannelId: targetChannels.find((channel) => channel.id === prev.activeChannelId && channel.type !== 'voice')?.id
+          ?? targetChannels.find((channel) => channel.type !== 'voice')?.id ?? '',
+        viewMode: 'chat',
+        mobileMenuOpen: false,
+      }));
+      setShowFriends(false);
+      void handleJoinVoice(channelId);
+      return;
+    }
     setState((prev) => ({
       ...prev,
       activeServerId: serverId,
@@ -578,7 +599,8 @@ export const Layout: React.FC = () => {
   const allChannels = activeServer ? activeServer.categories.flatMap((category) => category.channels) : [];
   const fallbackChannel: Channel = createFallbackChannel(connectionState, shellData.runtimeSnapshot !== null);
 
-  let activeChannel = allChannels.find((channel) => channel.id === state.activeChannelId) || allChannels[0] || fallbackChannel;
+  let activeChannel = allChannels.find((channel) => channel.id === state.activeChannelId && channel.type !== 'voice')
+    || allChannels.find((channel) => channel.type !== 'voice') || fallbackChannel;
   let isDM = false;
 
   if (isHome && state.activeChannelId) {
@@ -852,7 +874,8 @@ export const Layout: React.FC = () => {
   });
 
   const connectedVoiceChannel = state.connectedVoiceChannelId
-    ? allChannels.find((channel) => channel.id === state.connectedVoiceChannelId && channel.type === 'voice') ?? null
+    ? servers.flatMap((server) => server.categories.flatMap((category) => category.channels))
+      .find((channel) => channel.id === state.connectedVoiceChannelId && channel.type === 'voice') ?? null
     : null;
 
   const voiceControlState = buildVoiceControlState({
@@ -885,6 +908,8 @@ export const Layout: React.FC = () => {
       setAuthScreen('register');
       return;
     }
+    if (voiceJoinPendingRef.current) return;
+    voiceJoinPendingRef.current = true;
     const alreadyConnectedToTarget = state.connectedVoiceChannelId === nextChannel;
 
     // Voice is a local-first P2P mesh. A regular join captures the mic once inside
@@ -916,6 +941,8 @@ export const Layout: React.FC = () => {
           : prev);
       }
       voiceActionError(error);
+    } finally {
+      voiceJoinPendingRef.current = false;
     }
   };
 
@@ -1565,21 +1592,17 @@ function resolveDefaultChannelId(serverId: string | 'home' | 'explore', shellDat
   }
   const server = shellData.servers.find((entry) => entry.id === serverId);
   const channels = server?.categories.flatMap((category) => category.channels) ?? [];
-  return channels.find((channel) => channel.type === 'text')?.id ?? channels[0]?.id ?? '';
+  return channels.find((channel) => channel.type !== 'voice')?.id ?? '';
 }
 
 function hasVoiceChannel(
-  serverId: string | 'home' | 'explore',
   voiceChannelId: string | null,
   shellData: ReturnType<typeof readShellRuntimeData>,
 ): boolean {
-  if (!voiceChannelId || serverId === 'home' || serverId === 'explore') {
-    return false;
-  }
-  const server = shellData.servers.find((entry) => entry.id === serverId);
-  return (server?.categories.flatMap((category) => category.channels) ?? []).some(
+  if (!voiceChannelId) return false;
+  return shellData.servers.some((server) => server.categories.some((category) => category.channels.some(
     (channel) => channel.id === voiceChannelId && channel.type === 'voice',
-  );
+  )));
 }
 
 function createFallbackChannel(connectionState: ConnectionState, hasRuntimeSnapshot: boolean): Channel {

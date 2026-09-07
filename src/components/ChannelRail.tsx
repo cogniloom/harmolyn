@@ -251,7 +251,8 @@ export const ChannelRail: React.FC<ChannelRailProps> = ({
     e.stopPropagation();
     const isVoice = ch.type === 'voice';
     const canManage = isOwner;
-    showMenu(e.clientX, e.clientY, [
+    const anchor = e.type === 'click' && e.detail === 0 ? e.currentTarget.getBoundingClientRect() : null;
+    showMenu(anchor ? anchor.right : e.clientX, anchor ? anchor.bottom : e.clientY, [
       {
         items: [
           ...(!isVoice ? [{
@@ -318,7 +319,8 @@ export const ChannelRail: React.FC<ChannelRailProps> = ({
   const showCategoryContextMenu = (e: React.MouseEvent, categoryId: string) => {
     e.preventDefault();
     e.stopPropagation();
-    showMenu(e.clientX, e.clientY, [
+    const anchor = e.type === 'click' && e.detail === 0 ? e.currentTarget.getBoundingClientRect() : null;
+    showMenu(anchor ? anchor.right : e.clientX, anchor ? anchor.bottom : e.clientY, [
       {
         items: [
           {
@@ -549,13 +551,14 @@ export const ChannelRail: React.FC<ChannelRailProps> = ({
                             onClick={(event) => showCategoryContextMenu(event, cat.id)}
                             className="compact-touch-target flex items-center justify-center rounded text-white/45 transition-colors hover:bg-white/5 hover:text-primary focus-ring"
                             aria-label="Category actions"
+                            aria-haspopup="menu"
                             title={`${cat.name} actions`}
                           >
                             <MoreHorizontal size={14} />
                           </button>
                         </div>
                     </div>
-                    <div className={`space-y-0.5 ${isCollapsed ? 'hidden' : ''}`}>
+                    <div hidden={isCollapsed} className="space-y-0.5">
                         {cat.channels.map(ch => {
                             const isVoice = ch.type === 'voice';
                             const isConnected = connectedVoiceChannelId === ch.id;
@@ -578,6 +581,7 @@ export const ChannelRail: React.FC<ChannelRailProps> = ({
                                       onClick={(event) => showChannelContextMenu(event, ch, cat.id)}
                                       className="compact-touch-target flex shrink-0 items-center justify-center rounded-full text-white/45 transition-colors hover:bg-white/5 hover:text-primary focus-ring"
                                       aria-label="Channel actions"
+                                      aria-haspopup="menu"
                                       title={`${ch.name} actions`}
                                     >
                                       <MoreHorizontal size={14} />

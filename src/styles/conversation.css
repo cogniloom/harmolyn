@@ -79,3 +79,28 @@ html.reduce-motion .chat-send-button .animate-spin { animation: none; }
   .chat-message-list .compact-message-trigger { min-width: 44px; min-height: 44px; }
   .chat-message-list [data-message-row] { padding-inline-end: 52px; }
 }
+
+/* The scroll viewport starts below the toolbar, so headings and focus targets
+   cannot scroll underneath an opaque, fixed header. */
+.chat-message-list { top: 52px; padding-top: 1.5rem; }
+.chat-compose-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: end; column-gap: .375rem; }
+.chat-compose-attachments, .chat-compose-input, .chat-compose-actions { order: 0; min-width: 0; }
+.chat-compose-attachments { grid-column: 1; grid-row: 1; }
+.chat-compose-input { grid-column: 2; grid-row: 1; width: 100%; }
+.chat-compose-actions { grid-column: 3; grid-row: 1; margin-inline-start: 0; }
+.chat-compose-row .compact-touch-target { min-width: 36px; min-height: 44px; flex-shrink: 0; }
+@container conversation (max-width: 599px) {
+  .chat-compose-row { grid-template-columns: minmax(0, 1fr) auto; }
+  .chat-compose-input { grid-column: 1 / -1; grid-row: 1; }
+  .chat-compose-attachments { grid-column: 1; grid-row: 2; }
+  .chat-compose-actions { grid-column: 2; grid-row: 2; }
+}
+@media (max-width: 599px) {
+  .chat-compose-row { grid-template-columns: minmax(0, 1fr) auto; }
+  .chat-compose-input { grid-column: 1 / -1; grid-row: 1; }
+  .chat-compose-attachments { grid-column: 1; grid-row: 2; }
+  .chat-compose-actions { grid-column: 2; grid-row: 2; }
+}
+@media (pointer: coarse), (max-width: 599px) {
+  .chat-compose-row .compact-touch-target { min-width: 44px; }
+}

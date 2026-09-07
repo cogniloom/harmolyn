@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { ReactElement } from 'react';
 import { ChannelRail } from './ChannelRail';
+import { ContextMenuContext } from './GlobalContextMenuContext';
 import type { ConnectionState, Server, User } from '@/types';
 
 // ChannelRail uses react-query (useCreateChannel/useUpdatePresence), so every render
@@ -490,21 +491,39 @@ describe('ChannelRail local navigation filter', () => {
   it('finds channels inside collapsed categories and restores the collapsed state on clear', async () => {
     const user = userEvent.setup(); renderRail(navigation());
     await user.click(screen.getByRole('button', { name: 'Collapse Discussion' }));
-    expect(screen.queryByText('design-review')).toBeNull();
+    expect(screen.getByText('design-review')).not.toBeVisible();
     await user.type(screen.getByRole('searchbox', { name: 'Filter channels' }), 'DESIGN');
-    expect(screen.getByText('design-review')).toBeInTheDocument();
+    expect(screen.getByText('design-review')).toBeVisible();
     expect(screen.queryByText('general')).toBeNull();
     const category = screen.getByRole('button', { name: 'Discussion (filtered results)' });
     expect(category).toBeDisabled();
     await user.click(category);
     await user.click(screen.getByRole('button', { name: 'Clear navigation filter' }));
-    expect(screen.queryByText('design-review')).toBeNull();
+    expect(screen.getByText('design-review')).not.toBeVisible();
+  });
+  it.each(['Channel actions', 'Category actions'])('anchors keyboard %s to its invoking control', async (label) => {
+    const showMenu = vi.fn();
+    renderRail(<ContextMenuContext.Provider value={{ showMenu, closeMenu: () => {} }}>{navigation()}</ContextMenuContext.Provider>);
+    const control = screen.getAllByRole('button', { name: label })[0];
+    vi.spyOn(control, 'getBoundingClientRect').mockReturnValue(new DOMRect(120, 240, 44, 44));
+    const user = userEvent.setup();
+    control.focus();
+    await user.keyboard('{Enter}');
+    expect(showMenu).toHaveBeenLastCalledWith(164, 284, expect.any(Array));
+    await user.keyboard(' ');
+    expect(showMenu).toHaveBeenLastCalledWith(164, 284, expect.any(Array));
+  });
+  it('preserves pointer coordinates for context clicks', () => {
+    const showMenu = vi.fn();
+    renderRail(<ContextMenuContext.Provider value={{ showMenu, closeMenu: () => {} }}>{navigation()}</ContextMenuContext.Provider>);
+    fireEvent.contextMenu(screen.getByText('design-review'), { clientX: 131, clientY: 262 });
+    expect(showMenu).toHaveBeenCalledWith(131, 262, expect.any(Array));
   });
   it('matches category names and provides recovery for an empty result', async () => {
     const user = userEvent.setup(); renderRail(navigation());
     const input = screen.getByRole('searchbox', { name: 'Filter channels' });
     await user.type(input, 'discussion');
-    expect(screen.getByText('design-review')).toBeInTheDocument();
+    expect(screen.getByText('design-review')).toBeVisible();
     expect(screen.getByText('general')).toBeInTheDocument();
     expect(screen.queryByText('lounge')).toBeNull();
     await user.clear(input); await user.type(input, 'no-channel');

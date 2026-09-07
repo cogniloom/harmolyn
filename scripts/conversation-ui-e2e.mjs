@@ -37,6 +37,7 @@ try {
   checks.push('Real conversation components render without a framework overlay');
   for (const width of [1440, 1100, 768, 390, 320]) {
     await page.setViewportSize({ width, height: 1000 });
+    await page.emulateMedia({ reducedMotion: width === 768 ? 'reduce' : 'no-preference' });
     for (const theme of ['midnight','graphite','oled','ocean','forest','ember','rose','violet','daylight','sand']) {
       await page.getByRole('combobox', { name: 'Test theme' }).selectOption(theme);
       await page.waitForFunction(theme => document.documentElement.dataset.appearance === theme, theme);
@@ -44,6 +45,17 @@ try {
         const fits = await page.locator(selector).evaluate(el => el.scrollWidth <= el.clientWidth + 1);
         assert.ok(fits, `${selector} overflow, ${width}, ${theme}`);
       }
+      const palette = await page.evaluate(() => {
+        const root = getComputedStyle(document.documentElement);
+        const asRgb = name => { const hex = root.getPropertyValue(name).trim(); return [1,3,5].map(i => parseInt(hex.slice(i,i+2),16)); };
+        const color = (selector, property) => getComputedStyle(document.querySelector(selector))[property].match(/[\d.]+/g).slice(0,3).map(Number);
+        return { expectedText: asRgb('--appearance-text'), expectedBackground: asRgb('--appearance-background'),
+          title: color('.chat-title', 'color'), input: color('.chat-compose-input', 'color'),
+          background: color('.chat-composer', 'backgroundColor') };
+      });
+      assert.deepEqual(palette.title, palette.expectedText, `Title palette drift: ${theme}: ${JSON.stringify(palette)}`);
+      assert.deepEqual(palette.input, palette.expectedText, `Composer palette drift: ${theme}: ${JSON.stringify(palette)}`);
+      assert.deepEqual(palette.background, palette.expectedBackground, `Background palette drift: ${theme}: ${JSON.stringify(palette)}`);
       const input = page.getByRole('textbox', { name: 'Message Input' });
       await input.fill('A multiline draft\nwith a second line\nand a third line.');
       const boxes = await page.locator('.chat-compose-row').evaluate(el => {
@@ -53,12 +65,23 @@ try {
         });
       });
       assert.ok(boxes, `Composer controls clipped at ${width}`);
+      const geometry = await page.locator('.chat-compose-row').evaluate(el => {
+        const text = el.querySelector('textarea').getBoundingClientRect();
+        const controls = [...el.querySelectorAll('button')].filter(node => node.getClientRects().length).map(node => node.getBoundingClientRect());
+        const overlaps = controls.some(r => r.left < text.right && r.right > text.left && r.top < text.bottom && r.bottom > text.top);
+        return { overlaps, textWidth: text.width, width: el.clientWidth };
+      });
+      assert.equal(geometry.overlaps, false, `Composer control/text overlap at ${width}`);
+      if (width < 600) assert.ok(geometry.textWidth >= geometry.width - 20, `Narrow composer squeezed text at ${width}`);
+      const viewport = await page.locator('.chat-message-list').boundingBox();
+      const toolbar = await page.locator('.chat-toolbar').boundingBox();
+      assert.ok(viewport.y >= toolbar.y + toolbar.height - 1, `Messages scroll behind the toolbar at ${width}`);
       if (['midnight', 'daylight'].includes(theme) && [1440, 390, 320].includes(width)) {
         await page.screenshot({ path: path.join(evidence, `${theme}-${width}.png`) });
       }
       await input.fill('');
     }
-    checks.push(`Ten themes at ${width}px: toolbar, message list, multiline composer fit`);
+    checks.push(`Ten themes at ${width}px: matching text/background palette, no composer overlap, unobscured message viewport`);
   }
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.getByRole('button', { name: 'Toggle narrow chat' }).click();
@@ -88,7 +111,32 @@ try {
   }
   checks.push('Message actions: keyboard anchor, arrow/home/end focus and Escape restoration on desktop/mobile');
   await page.setViewportSize({ width: 1440, height: 1000 });
+  for (const name of ['Channel actions', 'Category actions']) {
+    const action = page.getByRole('button', { name, exact: true }).first();
+    await action.focus();
+    const anchor = await action.boundingBox();
+    await page.keyboard.press('Enter');
+    const menu = page.getByRole('menu', { name: 'Context menu' });
+    await menu.waitFor();
+    const bounds = await menu.boundingBox();
+    assert.ok(bounds.y >= anchor.y && bounds.x >= anchor.x - 1, `${name} opened away from its invoker`);
+    assert.ok(await menu.evaluate(el => el.contains(document.activeElement)), `${name} did not receive focus`);
+    await page.screenshot({ path: path.join(evidence, name.startsWith('Channel') ? 'channel-menu-keyboard.png' : 'category-menu-keyboard.png') });
+    await page.keyboard.press('Escape');
+    assert.ok(await action.evaluate(el => el === document.activeElement));
+  }
   const filter = page.getByRole('searchbox', { name: 'Filter channels' });
+  const design = page.getByRole('complementary', { name: 'Channel List' }).getByText('design-review', { exact: true });
+  await page.getByRole('button', { name: 'Collapse Discussion', exact: true }).click();
+  assert.equal(await design.isVisible(), false);
+  await filter.fill('design');
+  assert.ok(await design.isVisible());
+  assert.ok(await page.getByRole('button', { name: 'Discussion (filtered results)', exact: true }).isDisabled());
+  await page.getByRole('button', { name: 'Clear navigation filter' }).click();
+  assert.equal(await design.isVisible(), false);
+  await page.getByRole('button', { name: 'Expand Discussion', exact: true }).click();
+  checks.push('Collapsed categories remain hidden, expand temporarily for filtering, and restore without mutating the saved state');
+  checks.push('Channel/category keyboard menus anchor to invokers, take focus, and restore it on Escape');
   await filter.fill('ideas');
   assert.equal(await page.getByRole('complementary', { name: 'Channel List' }).getByText('general', { exact: true }).count(), 0);
   await page.getByRole('button', { name: 'Clear navigation filter' }).click();

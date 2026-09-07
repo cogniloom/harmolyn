@@ -2331,7 +2331,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                   />
                 )}
 
-                <div className="order-2 flex items-center min-[600px]:order-none">
+                <div className="chat-compose-attachments order-2 flex items-center min-[600px]:order-none">
                   {hasFileUploads && (
                   <>
                     <input type="file" ref={fileInputRef} className="hidden" onChange={handleFileUpload} />
@@ -2362,7 +2362,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                     onChange={handleInputChange}
                     onKeyDown={handleKeyDown}
                 />
-                <div className="order-3 ml-auto flex items-center gap-1 px-1.5 min-[600px]:order-none min-[600px]:gap-2.5">
+                <div className="chat-compose-actions order-3 ml-auto flex items-center gap-1 px-1.5 min-[600px]:order-none min-[600px]:gap-2.5">
                     {hasStickers && (
                       <div className="relative">
                           <button onClick={() => { setShowStickerPicker(prev => !prev); setShowEmojiPicker(false); }} className={`compact-touch-target flex items-center justify-center transition-all ${showStickerPicker ? 'text-primary' : 'text-white/40 hover:text-primary'}`} aria-label="Stickers"><Sticker size={18} /></button>

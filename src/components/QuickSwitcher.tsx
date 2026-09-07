@@ -335,7 +335,7 @@ export const QuickSwitcher: React.FC<QuickSwitcherProps> = ({ onClose, onNavigat
                   <TypeIcon type={r.type} />
                   <div className="flex-1 min-w-0">
                     <span className={`text-xs font-bold block truncate ${isSelected ? 'text-white' : 'text-white/80'}`}>{r.label}</span>
-                    <span className="text-white/50 text-xs truncate block">{r.sublabel}</span>
+                    <span className="text-white/50 text-xs truncate block">{r.type === 'voice' ? 'Join voice · ' : ''}{r.sublabel}</span>
                   </div>
                   {isSelected && <ArrowRight size={12} className="text-primary flex-shrink-0" />}
                 </button>
@@ -349,7 +349,7 @@ export const QuickSwitcher: React.FC<QuickSwitcherProps> = ({ onClose, onNavigat
         {/* Footer hint */}
         <div className="quick-switcher-footer px-5 py-2 border-t border-white/5 flex items-center gap-4">
           <span className="text-[9px] text-white/20 font-mono">↑↓ to navigate</span>
-          <span className="text-[9px] text-white/20 font-mono">Enter to open</span>
+          <span className="text-[9px] text-white/20 font-mono">{results[activeIndex]?.type === 'voice' ? 'Enter to join voice' : 'Enter to open'}</span>
           <span className="text-[9px] text-white/20 font-mono">Esc to close</span>
         </div>
       </div>
