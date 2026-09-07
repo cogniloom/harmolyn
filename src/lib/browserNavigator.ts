@@ -4,7 +4,7 @@ type NavigatorInfo = {
 };
 
 export function safeNavigatorInfo(): NavigatorInfo {
-  let nav: Navigator | null = null;
+  let nav: Navigator | null;
   try {
     nav = (globalThis as typeof globalThis & { navigator?: Navigator }).navigator ?? null;
   } catch {
@@ -21,7 +21,7 @@ export function safeNavigatorInfo(): NavigatorInfo {
     };
   }
 
-  let deviceMemory: number | null = null;
+  let deviceMemory: number | null;
   try {
     const value = (nav as Navigator & { deviceMemory?: number }).deviceMemory;
     deviceMemory = typeof value === "number" ? value : null;
@@ -29,7 +29,7 @@ export function safeNavigatorInfo(): NavigatorInfo {
     deviceMemory = null;
   }
 
-  let hardwareConcurrency: number | null = null;
+  let hardwareConcurrency: number | null;
   try {
     const value = nav.hardwareConcurrency;
     hardwareConcurrency = typeof value === "number" ? value : null;

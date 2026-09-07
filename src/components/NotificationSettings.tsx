@@ -25,7 +25,9 @@ export interface FriendRequestBadgePreferenceDetail {
 
 const DEFAULT_PREFERENCES: NotificationPreferences = {
   globalLevel: 'mentions',
-  desktopEnabled: true,
+  // Privacy-first: OS notifications can surface metadata/content on a lock screen.
+  // Request permission only after the user explicitly enables this setting.
+  desktopEnabled: false,
   soundEnabled: true,
   flashTaskbar: true,
   suppressEveryone: false,
@@ -93,13 +95,12 @@ export const NotificationSettings: React.FC = () => {
           <div className="space-y-3">
             <ToggleRow
               label="Desktop Notifications"
-              desc="Show OS-level notifications"
+              desc="Off by default. Enabling this may show Harmolyn alerts on your OS lock screen."
               checked={preferences.desktopEnabled}
               onChange={(value) => {
                 setPreferences((prev) => ({ ...prev, desktopEnabled: value }));
-                // Turning the toggle ON is a user gesture — request OS permission now, so
-                // notifications work immediately instead of only after a reload (the Layout
-                // first-gesture effect doesn't re-run when this stored pref changes).
+                // Turning the toggle ON is the explicit user gesture that requests
+                // OS permission. Cold load and unrelated clicks never prompt.
                 if (value && typeof Notification !== 'undefined' && Notification.permission === 'default') {
                   void Notification.requestPermission();
                 }
@@ -218,15 +219,15 @@ const ToggleRow = ({
   checked: boolean;
   onChange: (v: boolean) => void;
 }) => (
-  <div className="glass-card rounded-r2 p-4 border border-white/10 flex items-center justify-between">
-    <div>
+  <div className="glass-card rounded-r2 p-4 border border-white/10 flex items-center justify-between gap-4">
+    <div className="min-w-0">
       <div className="text-white font-bold text-sm">{label}</div>
-      <div className="text-[10px] text-white/40">{desc}</div>
+      <div className="text-[10px] text-white/40 leading-relaxed">{desc}</div>
     </div>
     <button
       type="button"
       onClick={() => onChange(!checked)}
-      className={`w-11 h-6 rounded-full transition-all relative ${checked ? 'bg-primary/30' : 'bg-white/10'}`}
+      className={`w-11 h-6 shrink-0 rounded-full transition-all relative ${checked ? 'bg-primary/30' : 'bg-white/10'}`}
       aria-pressed={checked}
       aria-label={label}
     >

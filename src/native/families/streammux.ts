@@ -239,7 +239,7 @@ export class MuxChannel {
         this.destroy(new MuxStreamError(`mux: no response within ${timeoutMs}ms`));
       }, timeoutMs);
       this.pending.set(requestId, { resolve, reject, timer });
-      let accepted = false;
+      let accepted: boolean;
       try {
         accepted = this.stream.send(framed);
         try {

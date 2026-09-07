@@ -1,129 +1,71 @@
-// VoiceAudioSinks — renders one hidden <audio autoPlay> per remote participant
-// in the active voice session. Attaching srcObject on the join gesture (which is
-// a user-initiated action) satisfies the browser autoplay policy.
-//
-// EVENT-DRIVEN: subscribes to VoiceSession.onRosterChanged so a newly attached
-// remote stream reaches its DOM sink within one render of the track arriving
-// (the old 500ms poll added up to half a second of dead air on join/renegotiate).
-//
-// Mount once in Layout.tsx near the existing `connectedVoiceSession` computation.
-import React, { useEffect, useRef, useState } from 'react';
-import { getVoiceSession } from '@/native/voice/registry';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { getVoiceSession, subscribeVoiceSession } from '@/native/voice/registry';
+import { usePersistentState } from '@/hooks/usePersistentState';
+import type { PlaybackState } from '@/lib/stabilization/playback';
 
-/** Speaker device + output volume from the Audio & Video settings (best-effort). */
-function readSpeakerPrefs(): { deviceId: string; volume: number } {
-  try {
-    const raw = localStorage.getItem('harmolyn:settings:audio-video');
-    const p = raw ? JSON.parse(raw) : {};
-    return {
-      deviceId: typeof p.speakerDevice === 'string' ? p.speakerDevice : 'default',
-      volume: typeof p.speakerVolume === 'number' ? p.speakerVolume : 100,
-    };
-  } catch {
-    return { deviceId: 'default', volume: 100 };
-  }
-}
+import { AudioSink, type SinkEntry } from './AudioSink';
 
-interface SinkEntry {
-  peerId: string;
-  stream: MediaStream;
-}
-
-interface Props {
-  channelId: string | null;
-  /** When deafened, all incoming audio is silenced (in addition to mic mute). */
-  deafened?: boolean;
-}
+const EMPTY_PREFS: Record<string, unknown> = {};
+interface Props { channelId: string | null; deafened?: boolean }
 
 export function VoiceAudioSinks({ channelId, deafened = false }: Props) {
-  const [sinks, setSinks] = useState<SinkEntry[]>([]);
+  const [snapshot, setSnapshot] = useState<{ channelId: string | null; sinks: SinkEntry[] }>({ channelId: null, sinks: [] });
+  const [problems, setProblems] = useState<Record<string, PlaybackState>>({});
+  const retries = useRef(new Map<string, () => void>());
+  const [prefs] = usePersistentState('harmolyn:settings:audio-video', EMPTY_PREFS);
+  const deviceId = typeof prefs.speakerDevice === 'string' && prefs.speakerDevice !== 'default' ? prefs.speakerDevice : '';
+  const volume = typeof prefs.speakerVolume === 'number' && Number.isFinite(prefs.speakerVolume) ? Math.max(0, Math.min(1, prefs.speakerVolume / 100)) : 1;
+  // Old-session audio disappears on the render that changes scope, not a later effect.
+  const sinks = snapshot.channelId === channelId ? snapshot.sinks : [];
 
   useEffect(() => {
-    if (!channelId) {
-      setSinks([]);
-      return;
-    }
-
-    // Snapshot the live session's remoteStreamsMap into React state.
-    // VoiceSession is mutable; re-read the map on every notify. Skips the state
-    // update when nothing changed so fallback ticks don't cause re-renders.
-    const sync = () => {
-      const s = getVoiceSession(channelId);
-      const next: SinkEntry[] = s
-        ? Array.from(s.remoteStreamsMap.entries()).map(([pid, stream]) => ({ peerId: pid, stream }))
-        : [];
-      setSinks(prev =>
-        prev.length === next.length && prev.every((p, i) => p.peerId === next[i].peerId && p.stream === next[i].stream)
-          ? prev
-          : next);
-    };
-
-    // Event-driven attach: the session notifies on every remote-stream change.
-    // subscribe() also handles the session being created/replaced after mount.
-    let unsubscribe: (() => void) | null = null;
+    if (!channelId) return;
     let subscribed: ReturnType<typeof getVoiceSession> = null;
-    const subscribe = () => {
-      const s = getVoiceSession(channelId);
-      if (s === subscribed) return;
-      unsubscribe?.();
-      subscribed = s;
-      unsubscribe = s ? s.onRosterChanged(sync) : null;
+    let unsubscribe: (() => void) | undefined;
+    const collect = () => {
+      const session = getVoiceSession(channelId);
+      const next: SinkEntry[] = [];
+      const seen = new Set<MediaStream>();
+      if (session) for (const [kind, map] of [['voice', session.remoteStreamsMap], ['screen', session.remoteScreensMap]] as const) {
+        for (const [peerId, stream] of map) {
+          if (seen.has(stream)) continue;
+          seen.add(stream);
+          next.push({ id: `${channelId}:${peerId}:${kind}`, stream });
+        }
+      }
+      setSnapshot(previous => previous.channelId === channelId && previous.sinks.length === next.length && previous.sinks.every((sink, index) => sink.id === next[index].id && sink.stream === next[index].stream) ? previous : { channelId, sinks: next });
     };
-
-    subscribe();
-    sync();
-
-    // FALLBACK ONLY: a low-frequency re-sync as a safety net against a missed
-    // event (or a session that appeared after mount). The onRosterChanged
-    // subscription above is the primary update path.
-    const fallback = setInterval(() => { subscribe(); sync(); }, 2000);
-
-    return () => {
-      clearInterval(fallback);
-      unsubscribe?.();
+    const bind = () => {
+      const session = getVoiceSession(channelId);
+      if (session !== subscribed) {
+        unsubscribe?.();
+        subscribed = session;
+        unsubscribe = session?.onRosterChanged(collect);
+      }
+      collect();
     };
+    const releaseRegistry = subscribeVoiceSession(channelId, bind);
+    bind();
+    return () => { releaseRegistry(); unsubscribe?.(); };
   }, [channelId]);
 
-  return (
-    <>
-      {sinks.map(({ peerId, stream }) => (
-        <React.Fragment key={peerId}>
-          <AudioSink peerId={peerId} stream={stream} muted={deafened} />
-        </React.Fragment>
-      ))}
-    </>
-  );
-}
-
-function AudioSink({ peerId, stream, muted }: { peerId: string; stream: MediaStream; muted: boolean }) {
-  const ref = useRef<HTMLAudioElement>(null);
-
-  // Deafen state lives in its own effect (covering mount + toggles) so a mute
-  // flip never re-runs the attach effect below and restarts playback.
-  useEffect(() => { if (ref.current) ref.current.muted = muted; }, [muted]);
-
-  useEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    el.srcObject = stream;
-    // Route to the chosen output device + apply the output volume (both were
-    // previously stored but never honoured).
-    const { deviceId, volume } = readSpeakerPrefs();
-    el.volume = Math.min(1, Math.max(0, volume / 100));
-    const sinkable = el as HTMLAudioElement & { setSinkId?: (id: string) => Promise<void> };
-    if (deviceId && deviceId !== 'default' && typeof sinkable.setSinkId === 'function') {
-      void sinkable.setSinkId(deviceId).catch(() => { /* permission/unsupported — system default */ });
-    }
-    el.play().catch(() => {
-      // Autoplay may be blocked on some browsers without a recent user gesture.
-      // The join click is a gesture, so this should succeed; log and continue.
-      console.warn('[VoiceAudioSink] autoplay blocked for peer', peerId);
+  const onState = useCallback((id: string, state: PlaybackState | null) => {
+    setProblems(previous => {
+      if (state === 'blocked' || state === 'error') return previous[id] === state ? previous : { ...previous, [id]: state };
+      if (!(id in previous)) return previous;
+      const next = { ...previous }; delete next[id]; return next;
     });
-    return () => {
-      el.srcObject = null;
-    };
-  }, [stream, peerId]);
-
-  // Hidden — audio only, no visual element needed.
-  return <audio ref={ref} autoPlay style={{ display: 'none' }} aria-hidden="true" />;
+  }, []);
+  const register = useCallback((id: string, retry: (() => void) | null) => {
+    if (retry) retries.current.set(id, retry); else retries.current.delete(id);
+  }, []);
+  const affected = sinks.filter(sink => problems[sink.id]);
+  return <>
+    {sinks.map(sink => <AudioSink key={sink.id} entry={sink} muted={deafened} deviceId={deviceId} volume={volume} onState={onState} register={register} />)}
+    {!deafened && affected.length > 0 && <div className="voice-playback-notice" role="status">
+      <span className="min-w-0 flex-1 text-sm">{deviceId ? 'Sound needs attention. Check the selected output in Settings → Audio & Video, then retry.' : 'Sound needs attention. Your browser may have paused playback.'}</span>
+      <button type="button" onClick={() => { for (const sink of affected) retries.current.get(sink.id)?.(); }}>Retry sound</button>
+    </div>}
+  </>;
 }
+

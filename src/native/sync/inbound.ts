@@ -1141,7 +1141,7 @@ export function handleSyncRequest(operation: string, payload: Record<string, unk
   }
 
   let messages: XoreinRuntimeMessage[];
-  let hasMore = false;
+  let hasMore: boolean;
   if (operation === 'sync.pull' && before) {
     // Only members may page (cursor pull is not a join); non-members get nothing.
     // Scope to the requested channel so a busy server's other channels can't fill the
@@ -1524,7 +1524,7 @@ async function handlePeerRequest(
     const localPeerId = getState().identity?.peer_id ?? '';
     if (!localPeerId
       || !verifyRoutedRequest(request)
-      || request.path.at(-1) !== remotePeerId
+      || request.path.slice(-1)[0] !== remotePeerId
       || request.path.includes(localPeerId)
       || !claimRoutedRequest(request)) {
       return { ok: false, error: 'invalid_route' };

@@ -153,8 +153,9 @@ if (browser) {
     // break the smoke: the boot shell always surfaces the product and network names.
     await page.waitForFunction(() => {
       const root = document.getElementById('root');
-      return !!root && /HARMOLYN/i.test(root.innerText);
-    }, { timeout: 45000 });
+      return !!root && /HARMOLYN/i.test(root.innerText) && /XOREIN/i.test(root.innerText)
+        && !!root.querySelector('button');
+    }, null, { timeout: 45000 });
 
     const bodyText = (await page.locator('body').innerText()).toUpperCase();
     const markers = ['HARMOLYN', 'XOREIN'];

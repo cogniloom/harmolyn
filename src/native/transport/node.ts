@@ -116,7 +116,7 @@ export function isTrustedRelayMultiaddr(value: unknown, expectedPeerId?: string)
 
   try {
     const components = multiaddr(raw).getComponents();
-    const peer = components.at(-1);
+    const peer = components.slice(-1)[0];
     if (!peer || peer.name !== 'p2p' || typeof peer.value !== 'string' || !peer.value) return false;
     if (expectedPeerId && peer.value !== expectedPeerId) return false;
     if (components.some(component => component.name === 'p2p-circuit')) return false;
@@ -254,7 +254,7 @@ export function isTrustedPeerCircuitMultiaddr(value: unknown, expectedPeerId?: s
     const circuitIndex = components.findIndex(component => component.name === 'p2p-circuit');
     if (circuitIndex <= 0) return false;
 
-    const finalPeer = components.at(-1);
+    const finalPeer = components.slice(-1)[0];
     if (!finalPeer || finalPeer.name !== 'p2p' || typeof finalPeer.value !== 'string' || !finalPeer.value) {
       return false;
     }
@@ -295,7 +295,7 @@ export function isAllowedDialMultiaddr(
   try {
     const components = multiaddr(value).getComponents();
     if (components.some(component => component.name === 'p2p-circuit')) return false;
-    const finalPeer = components.at(-1);
+    const finalPeer = components.slice(-1)[0];
     if (!finalPeer || finalPeer.name !== 'p2p' || typeof finalPeer.value !== 'string'
       || !authenticatedPeerIds.has(finalPeer.value)) return false;
     const names = new Set(components.map(component => component.name));
@@ -575,7 +575,7 @@ export function circuitAddrsForRelay(
 ): string[] {
   if (!isTrustedRelayMultiaddr(relayMultiaddr)) return [];
   try {
-    const peer = multiaddr(relayMultiaddr).getComponents().at(-1);
+    const peer = multiaddr(relayMultiaddr).getComponents().slice(-1)[0];
     if (peer?.name !== 'p2p' || typeof peer.value !== 'string') return [];
     const marker = `/p2p/${peer.value}/p2p-circuit`;
     return circuitAddrs(node).filter(address => address.includes(marker));

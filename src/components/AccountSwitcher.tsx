@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Plus, Check, LogOut, ArrowRight } from 'lucide-react';
 import { resolveAvatarSrc } from '@/lib/avatar';
 import { shortFingerprint } from '@/lib/peerLabel';
@@ -31,15 +31,28 @@ export const AccountSwitcher: React.FC<AccountSwitcherProps> = ({ entries, activ
   const [switching, setSwitching] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  useEscapeKey(onClose);
+  useEscapeKey(onClose, !busy);
+  useEffect(() => () => setPassphrase(''), []);
+
+  const closeEntry = () => {
+    if (busy) return;
+    setOpenFor(null);
+    setPassphrase('');
+    setError(null);
+  };
 
   const handleUnlock = async (entry: VaultEntry) => {
+    if (busy || !passphrase) return;
     setError(null);
     setBusy(true);
     try {
-      await unlockAndActivateVaultIdentity(entry, passphrase, () => setSwitching(true));
+      await unlockAndActivateVaultIdentity(entry, passphrase, () => {
+        setPassphrase('');
+        setSwitching(true);
+      });
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Wrong password for this account.');
+      setPassphrase('');
+      setError(err instanceof Error ? err.message : 'Could not unlock this account. Check the password and try again.');
       setBusy(false);
     }
   };
@@ -48,8 +61,14 @@ export const AccountSwitcher: React.FC<AccountSwitcherProps> = ({ entries, activ
 
   return (
     <>
-      <div className="fixed inset-0 z-[70]" onClick={onClose} />
-      <div className="absolute bottom-full left-0 right-0 mb-2 z-[80] glass-card rounded-r2 border border-stroke p-2 space-y-1 animate-in slide-in-from-bottom-2 fade-in duration-200 max-h-[60vh] overflow-y-auto">
+      <div className="fixed inset-0 z-[70]" onClick={busy ? undefined : onClose} />
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Switch account"
+        aria-busy={busy}
+        className="absolute bottom-full left-0 right-0 mb-2 z-[80] glass-card rounded-r2 border border-stroke p-2 space-y-1 animate-in slide-in-from-bottom-2 fade-in duration-200 max-h-[60vh] overflow-y-auto"
+      >
         <div className="micro-label text-text-tertiary px-3 py-1.5">Your accounts</div>
 
         {entries.length === 0 ? (
@@ -76,8 +95,10 @@ export const AccountSwitcher: React.FC<AccountSwitcherProps> = ({ entries, activ
                     </span>
                   ) : openFor !== entry.peerId ? (
                     <button
+                      type="button"
+                      disabled={busy}
                       onClick={() => { setOpenFor(entry.peerId); setPassphrase(''); setError(null); }}
-                      className="text-[10px] font-bold text-text-tertiary hover:text-primary transition-colors flex-shrink-0"
+                      className="text-[10px] font-bold text-text-tertiary hover:text-primary transition-colors flex-shrink-0 disabled:opacity-40"
                     >
                       Switch
                     </button>
@@ -88,25 +109,48 @@ export const AccountSwitcher: React.FC<AccountSwitcherProps> = ({ entries, activ
                   <div className="space-y-2 px-1">
                     <input
                       type="password"
+                      name="current-password"
                       value={passphrase}
                       autoFocus
+                      disabled={busy}
                       onChange={(e) => setPassphrase(e.target.value)}
                       onKeyDown={(e) => {
-                        if (e.key === 'Enter') void handleUnlock(entry);
-                        if (e.key === 'Escape') { setOpenFor(null); setPassphrase(''); setError(null); }
+                        if (e.key === 'Enter' && !busy) {
+                          e.preventDefault();
+                          void handleUnlock(entry);
+                        }
+                        if (e.key === 'Escape' && !busy) {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          closeEntry();
+                        }
                       }}
                       placeholder="Password"
                       autoComplete="current-password"
-                      className="w-full h-9 px-3 rounded-full bg-surface-dark border border-stroke-subtle text-text-primary text-[11px] placeholder:text-text-disabled focus:border-stroke-primary focus:outline-none transition-colors"
+                      autoCapitalize="none"
+                      autoCorrect="off"
+                      spellCheck={false}
+                      className="w-full h-9 px-3 rounded-full bg-surface-dark border border-stroke-subtle text-text-primary text-[11px] placeholder:text-text-disabled focus:border-stroke-primary focus:outline-none transition-colors disabled:opacity-60"
                     />
                     {error && <p role="alert" className="text-[10px] text-accent-danger px-1">{error}</p>}
-                    <button
-                      onClick={() => void handleUnlock(entry)}
-                      disabled={busy || !passphrase}
-                      className="w-full h-9 rounded-full bg-primary text-bg-0 font-bold text-[11px] flex items-center justify-center gap-1.5 hover:shadow-glow transition-all disabled:opacity-50"
-                    >
-                      {busy ? <div className="w-3.5 h-3.5 border-2 border-bg-0/30 border-t-bg-0 rounded-full animate-spin" /> : <>Switch &amp; reload<ArrowRight size={13} /></>}
-                    </button>
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        onClick={() => void handleUnlock(entry)}
+                        disabled={busy || !passphrase}
+                        className="flex-1 h-9 rounded-full bg-primary text-bg-0 font-bold text-[11px] flex items-center justify-center gap-1.5 hover:shadow-glow transition-all disabled:opacity-50"
+                      >
+                        {busy ? <div className="w-3.5 h-3.5 border-2 border-bg-0/30 border-t-bg-0 rounded-full animate-spin" /> : <>Switch &amp; reload<ArrowRight size={13} /></>}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={closeEntry}
+                        disabled={busy}
+                        className="h-9 rounded-full border border-stroke px-3 text-[10px] font-semibold text-text-tertiary hover:bg-white/5 disabled:opacity-40"
+                      >
+                        Cancel
+                      </button>
+                    </div>
                   </div>
                 )}
               </div>
@@ -117,8 +161,10 @@ export const AccountSwitcher: React.FC<AccountSwitcherProps> = ({ entries, activ
         <div className="h-px bg-stroke-subtle mx-2 my-1" />
 
         <button
+          type="button"
+          disabled={busy}
           onClick={onAdd}
-          className="w-full flex items-center gap-2.5 px-3 py-2 rounded-r1 text-text-secondary hover:bg-white/5 hover:text-primary transition-all border border-transparent"
+          className="w-full flex items-center gap-2.5 px-3 py-2 rounded-r1 text-text-secondary hover:bg-white/5 hover:text-primary transition-all border border-transparent disabled:opacity-40"
         >
           <div className="w-7 h-7 rounded-full border border-dashed border-stroke-strong flex items-center justify-center">
             <Plus size={14} />
@@ -127,8 +173,10 @@ export const AccountSwitcher: React.FC<AccountSwitcherProps> = ({ entries, activ
         </button>
 
         <button
+          type="button"
+          disabled={busy}
           onClick={onLogout}
-          className="w-full flex items-center gap-2.5 px-3 py-2 rounded-r1 text-accent-danger hover:bg-accent-danger/10 transition-all border border-transparent"
+          className="w-full flex items-center gap-2.5 px-3 py-2 rounded-r1 text-accent-danger hover:bg-accent-danger/10 transition-all border border-transparent disabled:opacity-40"
         >
           <LogOut size={14} />
           <span className="text-xs font-bold">Log out</span>

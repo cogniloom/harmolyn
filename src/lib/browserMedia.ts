@@ -5,7 +5,7 @@ export function safeMatchMedia(query: Parameters<MediaMatcher>[0]): MediaQueryLi
     return null;
   }
 
-  let matchMedia: MediaMatcher | null = null;
+  let matchMedia: MediaMatcher | null;
   try {
     matchMedia = window.matchMedia;
   } catch {

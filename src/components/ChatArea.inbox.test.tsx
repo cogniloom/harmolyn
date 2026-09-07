@@ -114,8 +114,6 @@ describe('ChatArea inbox', () => {
         isDM={false}
         messageLayout="modern"
         onToggleLayout={() => {}}
-        bgSeed="seed"
-        setBgSeed={() => {}}
       />,
     );
 

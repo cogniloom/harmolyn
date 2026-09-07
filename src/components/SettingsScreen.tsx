@@ -1,3 +1,4 @@
+import { AppearanceSettings } from '@/components/settings/AppearanceSettings';
 import React, { useEffect, useCallback, useRef, useState, useMemo } from 'react';
 import {
   X,
@@ -267,7 +268,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
   });
 
   return (
-    <div className="absolute inset-0 z-[100] flex min-w-0 flex-col overflow-hidden bg-bg-0 text-white/70 md:flex-row">
+    <div className="settings-screen absolute inset-0 z-[100] flex min-w-0 flex-col overflow-hidden bg-bg-0 text-white/70 md:flex-row">
       <header className="safe-top sticky top-0 z-[120] flex shrink-0 border-b border-white/10 bg-bg-1/95 backdrop-blur-xl md:hidden">
         <div className="flex min-w-0 flex-1 items-center gap-2 px-3 py-2">
           <label htmlFor="mobile-settings-section" className="sr-only">Settings section</label>
@@ -336,7 +337,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
 
       <div className="relative min-h-0 min-w-0 flex-1 overflow-y-auto overscroll-contain bg-bg-2">
         <div className="absolute inset-0 grid-overlay opacity-30 pointer-events-none" />
-        <div className="mx-auto max-w-[640px] min-w-0 px-4 pb-[calc(2.5rem+env(safe-area-inset-bottom))] pt-6 md:px-10 md:py-12">
+        <div className="mx-auto max-w-[960px] min-w-0 px-4 pb-[calc(2.5rem+env(safe-area-inset-bottom))] pt-6 md:px-10 md:py-12">
           {activeSection === 'account' && <AccountSection user={user} showFeedback={showFeedback} onOpenRecovery={() => setActiveSection('recovery')} />}
           {activeSection === 'privacy' && <PrivacySection showFeedback={showFeedback} />}
           {activeSection === 'recovery' && <RecoverySection showFeedback={showFeedback} />}
@@ -1595,186 +1596,11 @@ const AppearanceSection: React.FC<{
   bgSeed: string;
   onSetBgSeed?: (seed: string) => void;
   showFeedback: (tone: FeedbackTone, message: string) => void;
-}> = ({ messageLayout, onSetMessageLayout, bgSeed, onSetBgSeed, showFeedback }) => {
-  const [accentHue, setAccentHue] = usePersistentState<number>('harmolyn:settings:accent-hue', 183);
-  const [localSeed, setLocalSeed] = useState(bgSeed);
-  const theme = useMemo(() => generateTheme(localSeed), [localSeed]);
-
-  const applyAccentHue = useCallback((hue: number) => {
-    const s = 85; const l = 50;
-    document.documentElement.style.setProperty('--primary', `${hue} ${s}% ${l}%`);
-    document.documentElement.style.setProperty('--primary-glow', `0 0 10px hsl(${hue} ${s}% ${l}% / 0.5), 0 0 20px hsl(${hue} ${s}% ${l}% / 0.3)`);
-    document.documentElement.style.setProperty('--shadow-glow-sm', `0 0 5px hsl(${hue} ${s}% ${l}% / 0.4)`);
-  }, []);
-
-  useEffect(() => { applyAccentHue(accentHue); }, [accentHue, applyAccentHue]);
-
-  const applySeed = (seed: string) => {
-    setLocalSeed(seed);
-    onSetBgSeed?.(seed);
-  };
-
-  const selectLayout = (key: MessageLayout) => {
-    if (!onSetMessageLayout) { showFeedback('info', 'Layout switching unavailable in this session.'); return; }
-    onSetMessageLayout(key);
-  };
-
-  const accent = `hsl(${accentHue}, 85%, 50%)`;
-
-  return (
-    <>
-      <header className="mb-8">
-        <h2 className="text-[26px] font-bold text-white mb-2 font-display tracking-tight">Appearance</h2>
-        <p className="micro-label text-white/30">Layout, colors, and visual preferences</p>
-      </header>
-
-      <LanguageSection />
-
-      {/* ── LARGE LIVE PREVIEW ──────────────────────────────────── */}
-      <div className="mb-8 rounded-r2 overflow-hidden border border-white/10 shadow-2xl" style={{ background: theme.background, minHeight: 300 }}>
-        {/* Simulated top bar */}
-        <div className="flex items-center gap-2 px-4 py-2.5 border-b" style={{ background: 'rgba(0,0,0,0.4)', borderColor: 'rgba(255,255,255,0.08)' }}>
-          <div className="w-3 h-3 rounded-full mr-1" style={{ background: accent }} />
-          <span className="text-xs font-bold" style={{ color: theme.themeVars['--theme-text'] as string }}>#general</span>
-          <span className="ml-auto text-[10px]" style={{ color: theme.themeVars['--theme-text-dim'] as string }}>XOREIN · E2EE</span>
-        </div>
-        {/* Simulated messages */}
-        <div className="p-4 space-y-3">
-          {MOCK_MESSAGES.map((m, i) => (
-            messageLayout === 'terminal' ? (
-              <div key={m.id} className="flex items-baseline gap-2 font-mono">
-                <span className="text-[9px] w-7 text-right flex-shrink-0" style={{ color: theme.themeVars['--theme-text-dim'] as string }}>{m.time}</span>
-                <span className="text-[11px] font-bold flex-shrink-0" style={{ color: m.author === 'you' ? 'rgba(180,130,255,0.9)' : accent }}>{m.author}</span>
-                <span className="text-[11px]" style={{ color: theme.themeVars['--theme-text-secondary'] as string }}>{m.content}</span>
-              </div>
-            ) : messageLayout === 'bubbles' ? (
-              <div key={m.id} className={`flex ${m.author === 'you' ? 'justify-end' : 'justify-start'}`}>
-                <div className="rounded-2xl px-3 py-2 text-xs max-w-[70%]" style={{
-                  background: m.author === 'you' ? `${accent}33` : 'rgba(255,255,255,0.08)',
-                  color: theme.themeVars['--theme-text'] as string,
-                  borderRadius: m.author === 'you' ? '16px 16px 4px 16px' : '16px 16px 16px 4px',
-                }}>
-                  {m.content}
-                </div>
-              </div>
-            ) : (
-              <div key={m.id} className={`flex gap-2.5 ${i > 0 ? 'pt-1' : ''}`}>
-                <div className="w-7 h-7 rounded-full flex-shrink-0 flex items-center justify-center text-[10px] font-bold text-white" style={{ background: m.author === 'you' ? 'rgba(180,130,255,0.5)' : `${accent}66` }}>{m.avatar}</div>
-                <div>
-                  <div className="flex items-baseline gap-1.5">
-                    <span className="text-[11px] font-bold" style={{ color: m.author === 'you' ? 'rgba(180,130,255,0.9)' : accent }}>{m.author}</span>
-                    <span className="text-[9px]" style={{ color: theme.themeVars['--theme-text-dim'] as string }}>{m.time}</span>
-                  </div>
-                  <div className="text-[11px] leading-snug" style={{ color: theme.themeVars['--theme-text-secondary'] as string }}>{m.content}</div>
-                </div>
-              </div>
-            )
-          ))}
-        </div>
-      </div>
-
-      <div className="space-y-6">
-        {/* Message Layout */}
-        <section>
-          <h3 className="micro-label text-white/40 border-b border-white/5 pb-2 mb-4">Message Layout</h3>
-          <div className="grid grid-cols-3 gap-2">
-            {LAYOUTS.map(({ key, label, desc }) => (
-              <button
-                key={key}
-                type="button"
-                onClick={() => selectLayout(key)}
-                className={`rounded-r2 border p-3 text-left transition-all ${messageLayout === key ? 'border-primary/40 bg-primary/10 shadow-glow-sm' : 'border-white/10 bg-white/3 hover:border-white/20'}`}
-              >
-                <div className="mb-2">
-                  <ChatPreview layout={key} />
-                </div>
-                <div className="flex items-center gap-1.5 mt-2">
-                  {messageLayout === key && <Check size={11} className="text-primary" />}
-                  <span className="text-white font-bold text-xs">{label}</span>
-                </div>
-                <div className="text-[10px] text-white/40 leading-tight">{desc}</div>
-              </button>
-            ))}
-          </div>
-        </section>
-
-        {/* Background / Theme */}
-        <section>
-          <h3 className="micro-label text-white/40 border-b border-white/5 pb-2 mb-4">Background Theme</h3>
-          <div className="glass-card rounded-r2 p-5 border border-white/10 space-y-4">
-            <div className="flex items-center gap-3 mb-2">
-              <div className="w-12 h-12 rounded-r2 border border-white/10 flex-shrink-0" style={{ background: theme.background }} />
-              <div>
-                <div className="text-white font-bold text-sm">Theme seed</div>
-                <div className="text-[10px] text-white/40">A short string generates a unique gradient background</div>
-              </div>
-            </div>
-            <div className="flex gap-2">
-              <input
-                type="text"
-                value={localSeed}
-                onChange={e => setLocalSeed(e.target.value)}
-                onBlur={() => applySeed(localSeed)}
-                onKeyDown={e => e.key === 'Enter' && applySeed(localSeed)}
-                className="flex-1 bg-white/5 border border-white/10 rounded-r1 px-3 py-2 text-sm font-mono text-white focus:outline-none focus:border-primary/40"
-                placeholder="e.g. midnight-city"
-              />
-              <button type="button" onClick={() => applySeed(Math.random().toString(36).substring(2, 9))}
-                className="px-3 py-2 bg-primary/15 border border-primary/30 text-primary rounded-r1 text-xs font-bold hover:bg-primary/25 transition-colors flex items-center gap-1.5">
-                <RefreshCw size={12} /> Randomize
-              </button>
-            </div>
-            {/* Quick presets */}
-            <div className="flex flex-wrap gap-1.5">
-              {['nexus-default', 'midnight-city', 'aurora', 'ember', 'abyss', 'neon-tokyo', 'forest', 'cosmos'].map(preset => (
-                <button key={preset} type="button" onClick={() => applySeed(preset)}
-                  className={`px-2.5 py-1 rounded-full text-[10px] font-mono border transition-all ${localSeed === preset ? 'border-primary/40 bg-primary/10 text-primary' : 'border-white/10 text-white/40 hover:border-white/20 hover:text-white/70'}`}>
-                  {preset}
-                </button>
-              ))}
-            </div>
-          </div>
-        </section>
-
-        {/* Accent Color */}
-        <section>
-          <h3 className="micro-label text-white/40 border-b border-white/5 pb-2 mb-4">Accent Color</h3>
-          <div className="glass-card rounded-r2 p-5 border border-white/10 space-y-4">
-            <div className="flex items-center justify-between gap-4">
-              <div>
-                <div className="text-white font-bold text-sm">Primary hue — {accentHue}°</div>
-                <div className="text-[10px] text-white/40">Controls buttons, highlights, glows — applied site-wide</div>
-              </div>
-              <div className="w-10 h-10 rounded-full border-2 border-white/20 flex-shrink-0" style={{ background: accent }} />
-            </div>
-            <input
-              type="range" min={0} max={359} value={accentHue}
-              onChange={e => setAccentHue(Number(e.target.value))}
-              className="w-full h-3 rounded-full appearance-none cursor-pointer"
-              style={{ background: 'linear-gradient(to right,hsl(0,85%,50%),hsl(45,85%,50%),hsl(90,85%,50%),hsl(135,85%,50%),hsl(180,85%,50%),hsl(225,85%,50%),hsl(270,85%,50%),hsl(315,85%,50%),hsl(360,85%,50%))' }}
-            />
-            {/* Preset swatches */}
-            <div className="flex gap-2 flex-wrap">
-              {[
-                { label: 'Cyan', hue: 183 }, { label: 'Blue', hue: 220 }, { label: 'Purple', hue: 270 },
-                { label: 'Pink', hue: 330 }, { label: 'Red', hue: 0 }, { label: 'Orange', hue: 25 },
-                { label: 'Green', hue: 130 }, { label: 'Teal', hue: 170 },
-              ].map(sw => (
-                <button key={sw.hue} type="button" onClick={() => setAccentHue(sw.hue)} title={sw.label}
-                  className={`w-7 h-7 rounded-full border-2 transition-all ${accentHue === sw.hue ? 'border-white scale-110' : 'border-white/20 hover:border-white/60'}`}
-                  style={{ background: `hsl(${sw.hue}, 85%, 50%)` }} />
-              ))}
-              <button type="button" onClick={() => setAccentHue(Math.floor(Math.random() * 360))}
-                className="w-7 h-7 rounded-full border-2 border-white/20 hover:border-white/60 transition-all flex items-center justify-center"
-                style={{ background: 'conic-gradient(red,yellow,lime,cyan,blue,magenta,red)' }} title="Random">
-              </button>
-            </div>
-          </div>
-        </section>
-      </div>
-    </>
-  );
-};
+}> = ({ messageLayout, onSetMessageLayout }) => (
+  <AppearanceSettings messageLayout={messageLayout} onSetMessageLayout={onSetMessageLayout}>
+    <LanguageSection />
+  </AppearanceSettings>
+);
 
 const CB_FILTERS: Record<string, string> = {
   protanopia:   '0.567 0.433 0 0 0  0.558 0.442 0 0 0  0 0.242 0.758 0 0  0 0 0 1 0',

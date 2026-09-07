@@ -5,6 +5,7 @@ import { unlockAndActivateVaultIdentity } from '@/lib/identitySwitch';
 import { resolveAvatarSrc } from '@/lib/avatar';
 import { shortFingerprint } from '@/lib/peerLabel';
 import { SwitchingOverlay } from '@/components/SwitchingOverlay';
+import { useEscapeKey } from '@/hooks/useEscapeKey';
 
 interface IdentityPickerProps {
   /** Switch to the "restore from backup file" step. */
@@ -38,24 +39,41 @@ export const IdentityPicker: React.FC<IdentityPickerProps> = ({ onRestore, onCre
   const [switching, setSwitching] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  useEscapeKey(onClose, !busy && !switching);
+
   useEffect(() => {
     let mounted = true;
     listVaultIdentities()
       .then((list) => { if (mounted) setEntries(list); })
       .catch(() => { if (mounted) setEntries([]); })
       .finally(() => { if (mounted) setLoading(false); });
-    return () => { mounted = false; };
+    return () => {
+      mounted = false;
+      setPassphrase('');
+    };
   }, []);
 
+  const closeEntry = () => {
+    if (busy) return;
+    setOpenFor(null);
+    setPassphrase('');
+    setError(null);
+  };
+
   const handleUnlock = async (entry: VaultEntry) => {
+    if (busy || !passphrase) return;
     setError(null);
     setBusy(true);
     try {
       // Validates the passphrase, activates the entry, then reloads on success.
       // The overlay is shown only after a successful unlock, right before reload.
-      await unlockAndActivateVaultIdentity(entry, passphrase, () => setSwitching(true));
+      await unlockAndActivateVaultIdentity(entry, passphrase, () => {
+        setPassphrase('');
+        setSwitching(true);
+      });
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Wrong password or corrupt account.');
+      setPassphrase('');
+      setError(err instanceof Error ? err.message : 'Could not unlock this account. Check the password and try again.');
       setBusy(false);
     }
   };
@@ -65,7 +83,13 @@ export const IdentityPicker: React.FC<IdentityPickerProps> = ({ onRestore, onCre
   if (switching) return <SwitchingOverlay />;
 
   return (
-    <div className="fixed inset-0 z-[200] bg-bg-0 flex items-center justify-center overflow-auto">
+    <div
+      className="fixed inset-0 z-[200] bg-bg-0 flex items-center justify-center overflow-auto"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="identity-picker-title"
+      aria-busy={busy || loading}
+    >
       <div className="absolute inset-0 bg-gradient-to-b from-bg-0 via-bg-2 to-bg-0" />
       <div className="absolute inset-0" style={{ background: 'radial-gradient(circle at 50% 0%, rgba(19,221,236,0.08) 0%, transparent 60%)' }} />
       <div className="absolute inset-0 grid-overlay opacity-30" />
@@ -73,8 +97,9 @@ export const IdentityPicker: React.FC<IdentityPickerProps> = ({ onRestore, onCre
       <button
         type="button"
         onClick={onClose}
+        disabled={busy}
         aria-label="Close"
-        className="absolute top-5 right-5 z-20 p-2 rounded-full text-text-tertiary hover:text-text-primary hover:bg-white/5 transition-all"
+        className="absolute top-5 right-5 z-20 p-2 rounded-full text-text-tertiary hover:text-text-primary hover:bg-white/5 transition-all disabled:opacity-40 disabled:cursor-wait"
       >
         <X size={20} />
       </button>
@@ -84,13 +109,13 @@ export const IdentityPicker: React.FC<IdentityPickerProps> = ({ onRestore, onCre
           <div className="inline-flex items-center justify-center w-16 h-16 rounded-r2 bg-primary/10 border border-primary/20 mb-5 shadow-glow">
             <Shield size={28} className="text-primary" />
           </div>
-          <h1 className="text-display-l font-bold text-text-primary font-display tracking-tight">Choose an account</h1>
+          <h1 id="identity-picker-title" className="text-display-l font-bold text-text-primary font-display tracking-tight">Choose an account</h1>
           <p className="text-body text-text-secondary mt-2">Sign in with an account saved on this device.</p>
         </div>
 
         <div className="glass-card rounded-r3 p-8 border border-stroke space-y-4">
           {loading ? (
-            <div className="flex items-center justify-center gap-2 text-text-tertiary text-caption py-6">
+            <div className="flex items-center justify-center gap-2 text-text-tertiary text-caption py-6" role="status">
               <RefreshCw size={14} className="animate-spin" />
               Loading your accounts…
             </div>
@@ -120,16 +145,28 @@ export const IdentityPicker: React.FC<IdentityPickerProps> = ({ onRestore, onCre
                     <div className="space-y-2">
                       <input
                         type="password"
+                        name="current-password"
                         value={passphrase}
                         autoFocus
+                        disabled={busy}
                         onChange={(e) => setPassphrase(e.target.value)}
                         onKeyDown={(e) => {
-                          if (e.key === 'Enter') void handleUnlock(entry);
-                          if (e.key === 'Escape') { setOpenFor(null); setPassphrase(''); setError(null); }
+                          if (e.key === 'Enter' && !busy) {
+                            e.preventDefault();
+                            void handleUnlock(entry);
+                          }
+                          if (e.key === 'Escape' && !busy) {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            closeEntry();
+                          }
                         }}
                         placeholder="Password for this account"
                         autoComplete="current-password"
-                        className="w-full h-11 px-4 rounded-full bg-surface-dark border border-stroke-subtle text-text-primary text-caption placeholder:text-text-disabled focus:border-stroke-primary focus:outline-none transition-colors"
+                        autoCapitalize="none"
+                        autoCorrect="off"
+                        spellCheck={false}
+                        className="w-full h-11 px-4 rounded-full bg-surface-dark border border-stroke-subtle text-text-primary text-caption placeholder:text-text-disabled focus:border-stroke-primary focus:outline-none transition-colors disabled:opacity-60"
                       />
                       {error && <p role="alert" className="text-caption text-accent-danger px-1">{error}</p>}
                       <div className="flex gap-2">
@@ -143,8 +180,9 @@ export const IdentityPicker: React.FC<IdentityPickerProps> = ({ onRestore, onCre
                         </button>
                         <button
                           type="button"
-                          onClick={() => { setOpenFor(null); setPassphrase(''); setError(null); }}
-                          className="px-4 h-11 rounded-full bg-white/5 text-text-tertiary text-caption hover:bg-white/10 transition-all"
+                          onClick={closeEntry}
+                          disabled={busy}
+                          className="px-4 h-11 rounded-full bg-white/5 text-text-tertiary text-caption hover:bg-white/10 transition-all disabled:opacity-40"
                         >
                           Cancel
                         </button>
@@ -153,8 +191,9 @@ export const IdentityPicker: React.FC<IdentityPickerProps> = ({ onRestore, onCre
                   ) : (
                     <button
                       type="button"
+                      disabled={busy}
                       onClick={() => { setOpenFor(entry.peerId); setPassphrase(''); setError(null); }}
-                      className="w-full h-10 rounded-full bg-white/5 border border-stroke text-text-secondary font-semibold text-caption hover:border-stroke-primary hover:text-primary transition-all"
+                      className="w-full h-10 rounded-full bg-white/5 border border-stroke text-text-secondary font-semibold text-caption hover:border-stroke-primary hover:text-primary transition-all disabled:opacity-40"
                     >
                       Sign in
                     </button>
@@ -172,7 +211,8 @@ export const IdentityPicker: React.FC<IdentityPickerProps> = ({ onRestore, onCre
             <button
               type="button"
               onClick={onRestore}
-              className="w-full h-12 rounded-full bg-surface-dark border border-stroke text-text-primary font-semibold text-caption flex items-center justify-center gap-2 hover:border-stroke-primary transition-all"
+              disabled={busy}
+              className="w-full h-12 rounded-full bg-surface-dark border border-stroke text-text-primary font-semibold text-caption flex items-center justify-center gap-2 hover:border-stroke-primary transition-all disabled:opacity-40"
             >
               <Upload size={15} />
               Restore from a backup file
@@ -180,7 +220,8 @@ export const IdentityPicker: React.FC<IdentityPickerProps> = ({ onRestore, onCre
             <button
               type="button"
               onClick={onCreate}
-              className="w-full text-center text-caption text-text-tertiary hover:text-primary transition-colors py-1 flex items-center justify-center gap-1.5"
+              disabled={busy}
+              className="w-full text-center text-caption text-text-tertiary hover:text-primary transition-colors py-1 flex items-center justify-center gap-1.5 disabled:opacity-40"
             >
               <UserPlus size={14} />
               Create a new account

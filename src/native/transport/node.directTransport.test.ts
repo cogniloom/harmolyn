@@ -106,7 +106,7 @@ describe('remote PEX host policy', () => {
   });
 
   it('allows private discovery only from the same explicitly reached local scope', () => {
-    const sourcePeer = RELAY_MULTIADDR.split('/').at(-1)!;
+    const sourcePeer = RELAY_MULTIADDR.split('/').slice(-1)[0]!;
     const loopbackSource = `/ip4/127.0.0.1/tcp/9999/ws/p2p/${sourcePeer}`;
     const publicSource = `/ip4/8.8.8.8/tcp/443/wss/p2p/${sourcePeer}`;
     expect(isSafeRemoteRelayMultiaddr(

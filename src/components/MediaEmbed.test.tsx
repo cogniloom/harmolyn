@@ -21,18 +21,18 @@ describe("MediaEmbed", () => {
 
   it("does not leak regex state between renders", () => {
     render(<MediaEmbed content="https://example.com/first-image.png" />);
-    expect(screen.getByAltText("Embedded image")).toBeTruthy();
+    expect(screen.getByAltText("Message image preview")).toBeTruthy();
 
     cleanup();
 
     render(<MediaEmbed content="https://example.com/second-image.png" />);
-    expect(screen.getByAltText("Embedded image")).toBeTruthy();
+    expect(screen.getByAltText("Message image preview")).toBeTruthy();
   });
 
   it("renders svg image urls as link cards instead of embedded images", () => {
     render(<MediaEmbed content="https://example.com/vector.svg" />);
 
-    expect(screen.queryByAltText("Embedded image")).toBeNull();
+    expect(screen.queryByAltText("Message image preview")).toBeNull();
     expect(screen.getByText("example.com")).toBeTruthy();
   });
 
@@ -54,20 +54,21 @@ describe("MediaEmbed", () => {
   it("does not render unsafe image sources", () => {
     render(<MediaEmbed content="https://example.com/vector.svg" />);
 
-    expect(screen.queryByAltText("Embedded image")).toBeNull();
+    expect(screen.queryByAltText("Message image preview")).toBeNull();
     expect(screen.getByText("example.com")).toBeTruthy();
   });
 
-  it("uses the privacy-enhanced youtube host", () => {
+  it("uses the privacy-enhanced host for the YouTube player", () => {
     render(<MediaEmbed content="https://youtu.be/dQw4w9WgXcQ" />);
 
-    expect(screen.getByAltText("Video thumbnail").getAttribute("src")).toContain("img.youtube-nocookie.com");
+    fireEvent.click(screen.getByRole("button", { name: "Play YouTube video" }));
+    expect(document.querySelector("iframe")?.getAttribute("src")).toMatch(/^https:\/\/www\.youtube-nocookie\.com\/embed\//);
   });
 
   it("sets a strict referrer policy on the youtube iframe", () => {
     render(<MediaEmbed content="https://youtu.be/dQw4w9WgXcQ" />);
 
-    fireEvent.click(screen.getByAltText("Video thumbnail"));
+    fireEvent.click(screen.getByRole("button", { name: "Play YouTube video" }));
     expect(document.querySelector("iframe")?.getAttribute("referrerpolicy")).toBe("strict-origin-when-cross-origin");
   });
 
@@ -77,13 +78,13 @@ describe("MediaEmbed", () => {
     render(<MediaEmbed content="https://example.com/first-image.png" />);
 
     // Nothing is fetched: no <img> is rendered, only a click-to-load placeholder.
-    expect(screen.queryByAltText("Embedded image")).toBeNull();
-    const reveal = screen.getByRole("button", { name: /image preview hidden/i });
+    expect(screen.queryByAltText("Message image preview")).toBeNull();
+    const reveal = screen.getByRole("button", { name: /load image preview/i });
     expect(reveal).toBeTruthy();
 
     // Opting in for this item loads it.
     fireEvent.click(reveal);
-    expect(screen.getByAltText("Embedded image")).toBeTruthy();
+    expect(screen.getByAltText("Message image preview")).toBeTruthy();
   });
 
   it("keeps link cards (which fetch nothing) visible even with media off", () => {
