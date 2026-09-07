@@ -30,7 +30,12 @@ assert.deepEqual(palette.background, palette.expectedBackground, `Background pal
 }
 try {
   await build({ configFile: false, root, plugins: [react()], logLevel: 'error',
-    resolve: { alias: { '@': path.join(root, 'src') } }, define: { __APP_VERSION__: JSON.stringify('ui-test') },
+    resolve: { alias: [
+      { find: '@/hooks/runtime/useRuntimeMutations', replacement: path.join(root, 'scripts/fixtures/sendRuntime.ts') },
+      { find: './useRuntimeMutations', replacement: path.join(root, 'scripts/fixtures/sendRuntime.ts') },
+      { find: '@/protocol/client', replacement: path.join(root, 'scripts/fixtures/sendSupport.ts') },
+      { find: '@', replacement: path.join(root, 'src') },
+    ] }, define: { __APP_VERSION__: JSON.stringify('ui-test') },
     build: { outDir, emptyOutDir: true, rollupOptions: { input: path.join(temp, 'index.html') } } });
   server = await preview({ configFile: false, root, build: { outDir }, preview: { host: '127.0.0.1', port: 0 }, logLevel: 'error' });
   const address = server.httpServer.address();
@@ -171,6 +176,71 @@ try {
     assert.ok(await page.getByRole('button', { name: 'Find a conversation', exact: true }).evaluate(el => el === document.activeElement));
   }
   checks.push('Quick switcher: combobox selection, viewport fit, focus trapping and restoration');
+  for (const width of [1440, 390, 320]) {
+    await page.setViewportSize({ width, height: width === 320 ? 568 : 844 });
+    const opener = page.getByRole('button', { name: width === 1440 ? 'Pinned Messages' : 'More chat tools', exact: true });
+    await opener.click();
+    if (width !== 1440) await page.getByRole('dialog', { name: 'Chat tools', exact: true }).getByRole('button', { name: /Pinned messages/ }).click();
+    const drawer = page.getByRole('dialog', { name: 'Pinned messages', exact: true });
+    await drawer.waitFor();
+    assert.ok(await drawer.evaluate(el => el.contains(document.activeElement)));
+    const rect = await drawer.boundingBox();
+    assert.ok(rect.x >= 0 && rect.y >= 0 && rect.x + rect.width <= width + 1 && rect.y + rect.height <= (width === 320 ? 569 : 845));
+    await page.keyboard.press('Shift+Tab'); await page.keyboard.press('Tab');
+    assert.ok(await drawer.evaluate(el => el.contains(document.activeElement)));
+    await page.screenshot({ path: path.join(evidence, `pinned-${width}.png`) });
+    await page.keyboard.press('Escape');
+    assert.equal(await drawer.count(), 0);
+    assert.ok(await opener.evaluate(el => el === document.activeElement));
+  }
+  checks.push('Pinned drawer: viewport fit, modal focus, keyboard containment and Escape restoration from desktop/compact tools');
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  for (const layout of ['modern', 'bubbles', 'terminal']) {
+    const labels = await page.locator('.compact-message-trigger').evaluateAll(nodes => nodes.map(node => node.getAttribute('aria-label')));
+    assert.equal(labels.length, 3);
+    assert.equal(new Set(labels).size, 3, `Ambiguous message controls in ${layout}`);
+    assert.ok(labels.every(label => label.includes('message ') && /09:2\d/.test(label)));
+    await page.getByRole('button', { name: 'Change Chat View', exact: true }).click();
+  }
+  const messageSearch = page.getByRole('textbox', { name: 'Search messages', exact: true });
+  await messageSearch.fill('  controls  ');
+  assert.ok(await page.locator('[data-message-row] mark').count() > 0);
+  await messageSearch.fill('   ');
+  assert.ok(await page.locator('.chat-conversation-start').isVisible());
+  await messageSearch.fill('');
+  checks.push('All three layouts identify message controls; trimmed matching, highlighting and whitespace-only search agree');
+  // The same production components, with only send/support facade boundaries simulated.
+  await page.goto(origin + entry + '?test-remote-send', { waitUntil: 'networkidle' });
+  const draft = page.getByRole('textbox', { name: 'Message Input' });
+  const recovery = page.getByRole('region', { name: 'Unsent message' });
+  for (const width of [1440, 390, 320]) {
+    await page.setViewportSize({ width, height: width === 320 ? 568 : 844 });
+    const original = `Retained submission at ${width}px. ` + 'A longer message remains selectable and scrollable. '.repeat(6);
+    await draft.fill(original);
+    await page.getByRole('button', { name: 'Send Message', exact: true }).click();
+    await draft.fill('Newer draft\nwith multiple lines\nthat must not be overwritten.');
+    await page.getByRole('button', { name: 'Fail pending send', exact: true }).click();
+    await recovery.waitFor();
+    assert.equal(await recovery.locator('.chat-failed-content').textContent(), original);
+    assert.ok(await page.getByRole('button', { name: 'Send Message', exact: true }).isDisabled());
+    assert.equal(await page.getByText(/TEST-PRIVATE-DIAGNOSTIC/).count(), 0);
+    for (const action of ['Retry unsent message', 'Discard unsent message']) {
+      const box = await recovery.getByRole('button', { name: action, exact: true }).boundingBox();
+      assert.ok(box.x >= 0 && box.y >= 0 && box.x + box.width <= width + 1 && box.y + box.height <= (width === 320 ? 569 : 845), `Unreachable ${action} at ${width}`);
+    }
+    const composerBounds = await page.locator('.chat-composer').boundingBox();
+    const toolbarBounds = await page.locator('.chat-toolbar').boundingBox();
+    assert.ok(composerBounds.y >= toolbarBounds.y + toolbarBounds.height, `Recovery composer overlaps toolbar at ${width}`);
+    await page.screenshot({ path: path.join(evidence, `unsent-${width}.png`) });
+    await recovery.getByRole('button', { name: 'Retry unsent message', exact: true }).click();
+    await page.getByRole('button', { name: 'Complete pending send', exact: true }).click();
+    await recovery.waitFor({ state: 'hidden' });
+    assert.equal(await draft.inputValue(), 'Newer draft\nwith multiple lines\nthat must not be overwritten.');
+    const sent = JSON.parse(await page.getByLabel('Test send requests').textContent());
+    assert.equal(sent.at(-1).content, original);
+    assert.deepEqual(sent.at(-1), sent.at(-2));
+  }
+  checks.push('Simulated send rejection: bounded selectable recovery, no raw diagnostics, reachable retry/discard, exact-request retry preserving newer draft');
   assert.deepEqual(errors, [], 'Uncaught exceptions');
   assert.deepEqual(warnings, [], 'Console warnings/errors');
   assert.deepEqual(requests, [], 'Unexpected external requests during local UI interactions');

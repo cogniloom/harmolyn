@@ -169,7 +169,7 @@ describe("ChatArea persisted-scope merge (live runtime data wins)", () => {
 
     // And the pinned drawer must actually list the message (not the empty state).
     fireEvent.click(pinButton);
-    expect(screen.getByText(/ARCHIVE \/\/ 1 ENTRIES/)).toBeTruthy();
+    expect(screen.getByText("1 saved message")).toBeTruthy();
     expect(screen.queryByText("No Pinned Messages")).toBeNull();
     // Message list + drawer entry — the drawer renders a second copy.
     expect(screen.getAllByText("pin me later").length).toBeGreaterThanOrEqual(2);

@@ -53,7 +53,7 @@ vi.mock('@/components/AccountSwitcher', () => ({
 }));
 
 vi.mock('@/components/voice/VoiceControlBar', () => ({
-  VoiceControlBar: () => null,
+  VoiceControlBar: ({ channelName }: { channelName: string }) => <output data-testid="call-room-name">{channelName}</output>,
 }));
 
 const currentUser: User = {
@@ -533,5 +533,17 @@ describe('ChannelRail local navigation filter', () => {
     expect(screen.getByText('No channels found.')).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Clear filter' }));
     expect(screen.getByText('lounge')).toBeInTheDocument();
+  });
+});
+
+describe('retained voice room labels', () => {
+  afterEach(() => { delete featureFlags.voiceControlBar; delete featureFlags.voiceTextChat; });
+  it('shows the connected room in both voice surfaces when browsing Home', () => {
+    featureFlags.voiceControlBar = true; featureFlags.voiceTextChat = true;
+    renderRail(<ChannelRail activeChannelId="dm" currentUser={currentUser} users={[]} directMessages={[]}
+      connectionState={connectionState} connectedVoiceChannelId="remote-room" connectedVoiceChannelName="Garden lounge"
+      collapsed={false} onToggleCollapse={() => {}} onSelectChannel={() => {}} onJoinVoice={() => {}} onOpenSettings={() => {}} isHome />);
+    expect(screen.getByTestId('call-room-name')).toHaveTextContent('Garden lounge');
+    expect(screen.getByRole('button', { name: /Garden lounge \/\/ TEXT/i })).toBeInTheDocument();
   });
 });

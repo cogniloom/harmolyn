@@ -1,5 +1,6 @@
 
 import React, { useRef, useEffect, useState, useCallback, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import { Channel, Message, User, MessageLayout, XoreinAttachment } from '@/types';
 import { AttachmentView } from '@/components/AttachmentView';
 import { generateTheme } from '@/utils/themeGenerator';
@@ -399,6 +400,18 @@ interface InboxItem {
   read: boolean;
 }
 
+interface SubmissionOwner { active: boolean; pending: boolean }
+interface RetryableSubmission {
+  owner: SubmissionOwner;
+  channelId: string;
+  identityId: string | undefined;
+  isDM: boolean;
+  content: string;
+  replyToId?: string;
+  draftRevision: number;
+  replyRevision: number;
+}
+
 interface ComposerFeedback {
   tone: 'info' | 'success' | 'error';
   text: string;
@@ -510,6 +523,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   const [hoveredMessageId, setHoveredMessageId] = useState<string | null>(null);
   const [reactionMenuMsgId, setReactionMenuMsgId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
+  const normalizedSearch = searchQuery.trim().toLowerCase();
   const draftRevisionRef = useRef(0);
   const [inputValue, updateInputValue] = useState('');
   const setInputValue = useCallback((value: React.SetStateAction<string>) => {
@@ -517,20 +531,44 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
     updateInputValue(value);
   }, []);
   const [isSending, setIsSending] = useState(false);
-  const sendOwnerRef = useRef({ active: true, pending: false });
+  const sendOwnerRef = useRef<SubmissionOwner>({ active: true, pending: false });
+  // One recoverable submission, held in memory only. Resolve it before sending
+  // another so repeated failures cannot silently replace data or grow a queue.
+  const failedSubmissionRef = useRef<RetryableSubmission | null>(null);
+  const [failedSubmission, setFailedSubmission] = useState<RetryableSubmission | null>(null);
+  const activeFailedSubmission = failedSubmission?.channelId === channel?.id
+    && failedSubmission?.identityId === liveShellData.runtimeSnapshot?.identity?.peer_id
+    && failedSubmission?.isDM === Boolean(isDM) ? failedSubmission : null;
   const chatToolsRef = useRef<HTMLDivElement>(null);
+  const chatToolsTriggerRef = useRef<HTMLButtonElement>(null);
+  const pinnedDrawerRef = useRef<HTMLDivElement>(null);
+  const pinnedReturnFocusRef = useRef<HTMLElement | null>(null);
 
   // A completion belongs only to the conversation and identity that started it.
   useEffect(() => {
     const owner = { active: true, pending: false };
     sendOwnerRef.current = owner;
     setIsSending(false);
-    return () => { owner.active = false; };
-  }, [channel?.id, liveShellData.runtimeSnapshot?.identity?.peer_id]);
+    failedSubmissionRef.current = null;
+    setFailedSubmission(null);
+    return () => { owner.active = false; failedSubmissionRef.current = null; };
+  }, [channel?.id, isDM, liveShellData.runtimeSnapshot?.identity?.peer_id]);
 
   useEffect(() => {
     if (showMobileTools && chatToolsRef.current) return trapDialogFocus(chatToolsRef.current);
   }, [showMobileTools]);
+  useEffect(() => {
+    const drawer = pinnedDrawerRef.current;
+    if (!showPinned || !drawer) return;
+    const opener = pinnedReturnFocusRef.current;
+    const release = trapDialogFocus(drawer, { restoreFocus: false });
+    return () => {
+      const active = drawer.ownerDocument.activeElement;
+      const shouldRestore = active === drawer.ownerDocument.body || drawer.contains(active);
+      release();
+      if (shouldRestore && opener?.isConnected) opener.focus({ preventScroll: true });
+    };
+  }, [showPinned]);
   const [showSlashCommands, setShowSlashCommands] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
@@ -613,6 +651,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
 
   useEscapeKey(() => setShowSecuritySummary(false), showSecuritySummary);
   useEscapeKey(() => setShowMobileTools(false), showMobileTools);
+  useEscapeKey(() => setShowPinned(false), showPinned);
 
   // Ctrl/Cmd+F opens the advanced message search — the shortcut documented in the
   // keyboard-shortcuts overlay ("Search Messages"). Browser find is intentionally
@@ -907,9 +946,51 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
     ...overrides,
   }), [replyingTo]);
 
+  const submitRemoteMessage = async (submission: RetryableSubmission) => {
+    const { owner, content, channelId, replyToId } = submission;
+    if (!owner.active || owner !== sendOwnerRef.current || owner.pending || chatSupport.mode === 'offline') return;
+    owner.pending = true;
+    setIsSending(true);
+    nativeStopTyping();
+    try {
+      if (submission.isDM) {
+        await sendDmMutation.mutateAsync({ dmId: channelId, content });
+      } else {
+        await sendChannelMutation.mutateAsync({ channelId, content, ...(replyToId ? { replyTo: replyToId } : {}) });
+      }
+      if (owner.active) {
+        // A retry sends the captured request, never the newer composer contents.
+        if (draftRevisionRef.current === submission.draftRevision) updateInputValue('');
+        if (replyRevisionRef.current === submission.replyRevision) updateReplyingTo(null);
+        if (failedSubmissionRef.current === submission) {
+          failedSubmissionRef.current = null;
+          setFailedSubmission(null);
+        }
+        setComposerFeedback(null);
+      }
+    } catch {
+      if (owner.active) {
+        failedSubmissionRef.current = submission;
+        setFailedSubmission(submission);
+        showFeedback('error', 'Message could not be sent. Retry or discard the unsent message below. Your current draft is unchanged.', 'system');
+      }
+    } finally {
+      owner.pending = false;
+      if (owner.active) setIsSending(false);
+    }
+  };
+
+  const discardFailedSubmission = () => {
+    if (sendOwnerRef.current.pending) return;
+    failedSubmissionRef.current = null;
+    setFailedSubmission(null);
+    setComposerFeedback(null);
+    composerRef.current?.focus({ preventScroll: true });
+  };
+
   const handleSendMessage = async () => {
     const trimmed = inputValue.trim();
-    if (!trimmed || sendOwnerRef.current.pending) return;
+    if (!trimmed || sendOwnerRef.current.pending || failedSubmissionRef.current) return;
 
     if (trimmed.startsWith('/')) {
       const [command, ...rest] = trimmed.slice(1).split(/\s+/);
@@ -964,29 +1045,12 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
       // targets only exist on this device, so never reference them remotely).
       const replyTarget = replyingTo;
       const replyToId = replyTarget && !replyTarget.id.startsWith(MESSAGE_ID_PREFIX) ? replyTarget.id : undefined;
-      const owner = sendOwnerRef.current;
-      const draftRevision = draftRevisionRef.current;
-      const replyRevision = replyRevisionRef.current;
-      owner.pending = true;
-      setIsSending(true);
-      nativeStopTyping();
-      try {
-        if (isDM) {
-          await sendDmMutation.mutateAsync({ dmId: channel.id, content });
-        } else {
-          await sendChannelMutation.mutateAsync({ channelId: channel.id, content, ...(replyToId ? { replyTo: replyToId } : {}) });
-        }
-        if (owner.active) {
-          // Revisions distinguish an untouched draft from edits returning to the same value.
-          if (draftRevisionRef.current === draftRevision) updateInputValue('');
-          if (replyRevisionRef.current === replyRevision) updateReplyingTo(null);
-        }
-      } catch {
-        if (owner.active) showFeedback('error', 'Message could not be sent. Your draft is still here; try again.', 'system');
-      } finally {
-        owner.pending = false;
-        if (owner.active) setIsSending(false);
-      }
+      await submitRemoteMessage({
+        owner: sendOwnerRef.current,
+        content, channelId: channel.id, replyToId, isDM: Boolean(isDM),
+        identityId: liveShellData.runtimeSnapshot?.identity?.peer_id,
+        draftRevision: draftRevisionRef.current, replyRevision: replyRevisionRef.current,
+      });
     } else {
       const nextMessages = [...messagesState, createLocalMessage(inputValue)];
       setMessagesState(nextMessages);
@@ -1254,7 +1318,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
       return;
     }
     scrollToBottom();
-  }, [channel, messageLayout, normalizedMessages, searchQuery, scrollToBottom]);
+  }, [channel, messageLayout, normalizedMessages, normalizedSearch, scrollToBottom]);
 
   // Reset the "more history" belief when switching channels, and track the active
   // channel id in a ref so an in-flight history pull can detect a switch and discard
@@ -1346,9 +1410,9 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
     const parts = text.split(new RegExp(`(${escapedQuery})`, 'gi'));
     return parts.map((part, i) => 
       part.toLowerCase() === query.toLowerCase() ? (
-        <span key={i} className="bg-primary/20 text-white font-bold px-0.5 rounded shadow-[0_0_5px_rgba(19,221,236,0.2)] transition-all duration-300">
+        <mark key={i} className="bg-primary/20 text-white font-bold px-0.5 rounded shadow-[0_0_5px_rgba(19,221,236,0.2)] transition-all duration-300">
           {part}
-        </span>
+        </mark>
       ) : (
         part
       )
@@ -1531,7 +1595,6 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
     }
   }, [channel, chatSupport.mode, forwardingContent, persistScopeState, sendChannelMutation, sendDmMutation, showFeedback]);
 
-  const normalizedSearch = searchQuery.trim().toLowerCase();
   const filteredMessages = useMemo(() => messagesState.filter(msg =>
     msg.content.toLowerCase().includes(normalizedSearch) && !mutedUsers.has(msg.userId)
   ), [messagesState, normalizedSearch, mutedUsers]);
@@ -1603,6 +1666,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
              type="button"
              onClick={() => setShowMobileTools((open) => !open)}
              className={`chat-toolbar-compact min-[1100px]:hidden touch-target flex items-center justify-center rounded-r1 transition-colors ${showMobileTools ? 'bg-primary/10 text-primary' : 'text-white/60 active:bg-white/10'}`}
+             ref={chatToolsTriggerRef}
              aria-label="More chat tools"
              aria-haspopup="dialog"
              aria-expanded={showMobileTools}
@@ -1621,7 +1685,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
               )}
               <button aria-label="Notifications" onClick={() => showFeedback('info', 'Notification routing is managed from Settings → Signal Alerts.', 'system')} className="hover:text-primary transition-colors"><Bell size={16} /></button>
               <div className="relative">
-                 <button aria-label="Pinned Messages" onClick={() => setShowPinned(!showPinned)} className={`transition-colors relative ${showPinned ? 'text-primary' : 'hover:text-primary'}`}>
+                 <button aria-label="Pinned Messages" aria-haspopup="dialog" aria-expanded={showPinned} onClick={event => { pinnedReturnFocusRef.current = event.currentTarget; setShowPinned(true); }} className={`transition-colors relative ${showPinned ? 'text-primary' : 'hover:text-primary'}`}>
                    <Pin size={16} />
                    {messagesState.filter(m => m.pinned).length > 0 && (
                      <span className="absolute -top-1 -right-1 w-3.5 h-3.5 rounded-full bg-accent-danger text-[7px] font-bold flex items-center justify-center text-white shadow-[0_0_6px_rgba(255,42,109,0.35)]">
@@ -1727,6 +1791,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                   badge={messagesState.filter((message) => message.pinned).length}
                   active={showPinned}
                   onClick={() => {
+                    pinnedReturnFocusRef.current = chatToolsTriggerRef.current;
                     setShowPinned(true);
                     setShowMobileTools(false);
                   }}
@@ -1798,7 +1863,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
             when not filtering. Shown even on an EMPTY channel (a recovered device
             restores membership but not history — the owner can still serve the
             retention window). Hidden only once the responder reports no more history. */}
-        {!isDM && !searchQuery && historyServerId && hasMoreHistory && (
+        {!isDM && !normalizedSearch && historyServerId && hasMoreHistory && (
           <div className="flex justify-center pb-4">
             <button
               type="button"
@@ -1811,7 +1876,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
           </div>
         )}
 
-        {messageLayout !== 'terminal' && !searchQuery && (
+        {messageLayout !== 'terminal' && !normalizedSearch && (
              <div className="chat-conversation-start pb-10 border-b border-white/5 mb-6">
                 <div className="w-20 h-20 rounded-2xl bg-gradient-to-br from-primary/30 to-transparent flex items-center justify-center mb-6 shadow-glow border border-primary/20 relative group">
                     <div className="absolute inset-0 grid-overlay opacity-30"></div>
@@ -1822,7 +1887,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
             </div>
         )}
 
-        {filteredMessages.length === 0 && searchQuery && (
+        {filteredMessages.length === 0 && normalizedSearch && (
              <div className="flex flex-col items-center justify-center h-full text-white/30">
                  <Search size={40} className="mb-3 opacity-50" />
                  <p className="text-base font-semibold">No matching messages</p>
@@ -1832,7 +1897,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
 
         {filteredMessages.map((msg, msgIndex) => {
           {/* Unread divider */}
-          const showUnreadDivider = hasUnreadDivider && !searchQuery && msgIndex === UNREAD_AFTER_INDEX;
+          const showUnreadDivider = hasUnreadDivider && !normalizedSearch && msgIndex === UNREAD_AFTER_INDEX;
 
           {/* Deletion tombstone — shown instead of the original content */}
           if (msg.deletedAt) {
@@ -1860,6 +1925,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
           }
 
           const user = getUser(msg.userId);
+          const messageActionLabel = `More message actions for ${user.username.slice(0, 80)}, ${msg.timestamp}, message ${msgIndex + 1}`;
           const isSpecial = user.role === 'Admin' || user.role === 'Moderator';
           const isMe = msg.userId === 'me';
           // Polls: the body carries an encoded payload (🗳️ POLL:{json}) that must
@@ -1869,8 +1935,8 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
           const displayContent = msg.sticker
             ? <span className="text-5xl leading-none">{msg.content}</span>
             : poll
-              ? <span className="italic">🗳️ {searchQuery ? highlightText(poll.q, searchQuery) : poll.q}</span>
-              : searchQuery ? highlightText(msg.content, searchQuery) : renderMarkdown(msg.content);
+              ? <span className="italic">🗳️ {normalizedSearch ? highlightText(poll.q, normalizedSearch) : poll.q}</span>
+              : normalizedSearch ? highlightText(msg.content, normalizedSearch) : renderMarkdown(msg.content);
           const replyMsg = msg.replyToId ? messagesState.find(m => m.id === msg.replyToId) : null;
           const replyUser = replyMsg ? getUser(replyMsg.userId) : null;
 
@@ -1901,7 +1967,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                        type="button"
                        onClick={(event) => handleContextMenu(event as unknown as React.MouseEvent, msg.id)}
                        className="compact-message-trigger compact-touch-target ml-auto shrink-0 items-center justify-center rounded-full text-white/50"
-                       aria-label="More message actions"
+                       aria-label={messageActionLabel}
                        title={`Actions for ${user.username}'s message`}
                        aria-haspopup="menu"
                      >
@@ -1938,7 +2004,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                           handleContextMenu(event, msg.id);
                         }}
                         className="compact-message-trigger absolute right-0 top-0 z-20 min-h-[44px] min-w-[44px] items-center justify-center rounded-full border border-white/10 bg-bg-0/80 text-white/60 transition-colors"
-                        aria-label="More message actions"
+                        aria-label={messageActionLabel}
                         title={`Actions for ${user.username}'s message`}
                         aria-haspopup="menu"
                       >
@@ -2067,7 +2133,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                   handleContextMenu(event, msg.id);
                 }}
                 className="compact-message-trigger absolute right-1 top-1 z-20 min-h-[44px] min-w-[44px] items-center justify-center rounded-full border border-white/10 bg-bg-0/80 text-white/60 transition-colors"
-                aria-label="More message actions"
+                aria-label={messageActionLabel}
                 title={`Actions for ${user.username}'s message`}
                 aria-haspopup="menu"
               >
@@ -2215,25 +2281,25 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
       </div>
 
       {/* Pinned Messages Drawer */}
-      {showPinned && (
-        <>
-          <div className="absolute inset-0 bg-black/40 backdrop-blur-sm z-30 animate-in fade-in" onClick={() => setShowPinned(false)} />
-          <div className="absolute top-0 right-0 bottom-0 w-[288px] max-w-full bg-bg-0 border-l border-white/10 z-40 flex flex-col animate-in slide-in-from-right duration-300 shadow-2xl">
+      {showPinned && createPortal(
+        <div className="harmolyn-visible-viewport z-[160]">
+          <button type="button" tabIndex={-1} aria-label="Dismiss pinned messages" className="absolute inset-0 w-full h-full bg-black/40" onClick={() => setShowPinned(false)} />
+          <div ref={pinnedDrawerRef} role="dialog" aria-modal="true" aria-label="Pinned messages" className="pinned-messages-drawer absolute top-0 right-0 bottom-0 w-[320px] max-w-full bg-bg-0 border-l border-white/10 flex flex-col animate-in slide-in-from-right duration-300 shadow-2xl">
             <div className="h-[52px] px-5 flex items-center justify-between border-b border-white/5 shrink-0">
               <div>
                 <h3 className="font-bold text-white text-xs font-display">Pinned messages</h3>
-                <span className="micro-label text-white/30 text-[8px]">ARCHIVE // {messagesState.filter(m => m.pinned).length} ENTRIES</span>
+                <span className="text-xs theme-text-dim">{messagesState.filter(m => m.pinned).length} saved {messagesState.filter(m => m.pinned).length === 1 ? 'message' : 'messages'}</span>
               </div>
               <button onClick={() => setShowPinned(false)} className="compact-touch-target flex items-center justify-center text-white/40 hover:text-primary transition-colors rounded-full hover:bg-white/5" aria-label="Close pinned messages">
                 <X size={16} />
               </button>
             </div>
-            <div className="flex-1 overflow-y-auto p-3 space-y-2.5 no-scrollbar">
+            <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain p-3 space-y-2.5">
               {messagesState.filter(m => m.pinned).length === 0 ? (
                 <div className="flex flex-col items-center justify-center h-full text-center px-6">
                   <Pin size={40} className="text-white/10 mb-3" />
                   <p className="text-white/30 text-xs font-bold mb-1">No Pinned Messages</p>
-                  <p className="text-white/15 text-[10px] font-mono">PIN IMPORTANT MESSAGES TO KEEP THEM HERE</p>
+                  <p className="text-white/15 text-[10px] font-mono">Pin a message to keep it here.</p>
                 </div>
               ) : (
                 messagesState.filter(m => m.pinned).map(m => {
@@ -2261,7 +2327,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
               )}
             </div>
           </div>
-        </>
+        </div>, document.body,
       )}
 
 
@@ -2300,6 +2366,20 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
               </span>
               <span className={`${composerFeedback?.tone === 'error' ? 'text-accent-danger/75' : composerFeedback?.tone === 'success' ? 'text-accent-success/80' : 'text-white/45'} text-right`}>{composerFeedback?.text || chatSupport.detail}</span>
             </div>
+
+            {activeFailedSubmission && (
+              <section className="chat-failed-submission" aria-label="Unsent message">
+                <div className="chat-failed-heading">
+                  <span className="font-semibold">Message not sent{activeFailedSubmission.replyToId ? ' · Reply' : ''}</span>
+                  <div className="flex shrink-0 gap-1">
+                    <button type="button" disabled={isSending || chatSupport.mode === 'offline'} onClick={() => void submitRemoteMessage(activeFailedSubmission)} aria-label="Retry unsent message">{isSending ? 'Retrying…' : 'Retry'}</button>
+                    <button type="button" disabled={isSending} onClick={discardFailedSubmission} aria-label="Discard unsent message">Discard</button>
+                  </div>
+                </div>
+                <p className="chat-failed-content" tabIndex={0}>{activeFailedSubmission.content}</p>
+                <p className="chat-failed-help">Retry or discard this message before sending another. This copy is kept only while this conversation is open.</p>
+              </section>
+            )}
 
             {/* Reply Preview Bar */}
             {replyingTo && (
@@ -2385,7 +2465,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                     </div>
                     <button
                       onClick={handleSendMessage}
-                      disabled={!inputValue.trim() || isSending}
+                      disabled={!inputValue.trim() || isSending || Boolean(activeFailedSubmission)}
                       className={`chat-send-button touch-target rounded-full flex items-center justify-center transition-all btn-press focus-ring ${
                         inputValue.trim()
                           ? 'bg-primary text-bg-0 shadow-glow hover:scale-105 group-focus-within:shadow-[0_0_20px_#13DDEC] cursor-pointer'
@@ -2393,12 +2473,12 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                       }`}
                       aria-label="Send Message"
                       aria-busy={isSending}
-                      title={isSending ? 'Sending message…' : 'Send message'}
+                      title={isSending ? 'Sending message…' : activeFailedSubmission ? 'Retry or discard the unsent message first' : 'Send message'}
                     >{isSending ? <LoaderCircle size={18} className="animate-spin" aria-hidden="true" /> : <Send size={18} aria-hidden="true" />}</button>
                 </div>
             </div>
             <p id="chat-composer-hint" className="chat-composer-hint">
-              {isSending ? 'Sending… You can keep editing your draft.' : 'Enter to send · Shift+Enter for a new line'}
+              {isSending ? 'Sending… You can keep editing your draft.' : activeFailedSubmission ? 'Your current draft is kept while you resolve the unsent message.' : 'Enter to send · Shift+Enter for a new line'}
             </p>
           </>
         )}

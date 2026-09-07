@@ -1,8 +1,9 @@
 // Test-only composition: real UI, deterministic local props, no network engine.
 // Not imported by the production entrypoint or emitted into application dist/.
-import React, { useState } from 'react';
+import React, { useState, useSyncExternalStore } from 'react';
 import { createRoot } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { isSendFixture, settleSend, subscribeSends, getSendCount, getSendCalls } from './sendRuntime';
 import { ChatArea } from '../../src/components/ChatArea';
 import { ChannelRail } from '../../src/components/ChannelRail';
 import { QuickSwitcher } from '../../src/components/QuickSwitcher';
@@ -26,12 +27,13 @@ const channels = [
 const spaces: Server[] = [{ id: 'studio', name: 'Design studio', icon: '', ownerId: 'morgan', members: users,
   categories: [{ id: 'discussions', name: 'Discussion', channels }] }];
 const messages: Message[] = [
-  { id: 'intro', userId: 'morgan', content: 'Let’s keep the conversation easy to follow. The latest layout is ready for review.', timestamp: '09:24', securityMode: 'tree', encrypted: true },
+  { id: 'intro', userId: 'morgan', content: 'Let’s keep the conversation easy to follow. The latest layout is ready for review.', timestamp: '09:24', pinned: true, securityMode: 'tree', encrypted: true },
   { id: 'reply', userId: 'me', content: 'The controls are easier to find now. I’m checking the small-screen layout next.', timestamp: '09:26', securityMode: 'tree', encrypted: true, delivery_status: 'sent' },
   { id: 'details', userId: 'morgan', content: '**Today’s review**\nReadable messages, reachable controls, and predictable navigation.\n\nA long reference should wrap without moving the toolbar: abcdefghijklmnopqrstuvwxyz'.repeat(1), timestamp: '09:28', securityMode: 'tree', encrypted: true },
 ];
 initializeAppearance();
 export function Fixture() {
+  const sendCount = useSyncExternalStore(subscribeSends, getSendCount);
   const [selected, setSelected] = useState('design');
   const [switcher, setSwitcher] = useState(false);
   const [layout, setLayout] = useState<MessageLayout>('modern');
@@ -45,6 +47,12 @@ export function Fixture() {
         {THEMES.map(theme => <option key={theme.id} value={theme.id}>{theme.name}</option>)}
       </select>
       <button type="button" onClick={() => setSwitcher(true)} style={{ padding: 6 }}>Find a conversation</button>
+      {isSendFixture && <>
+        <button onClick={() => settleSend(false)}>Fail pending send</button>
+        <button onClick={() => settleSend(true)}>Complete pending send</button>
+        <output aria-label="Test send count">{sendCount}</output>
+        <output aria-label="Test send requests" hidden>{JSON.stringify(getSendCalls())}</output>
+      </>}
       <button type="button" onClick={() => setNarrow(value => !value)} style={{ padding: 6 }}>Toggle narrow chat</button>
     </div>
     <div style={{ display: 'flex', flex: 1, minHeight: 0 }}>

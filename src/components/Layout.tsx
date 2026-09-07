@@ -1352,6 +1352,7 @@ export const Layout: React.FC = () => {
                 directMessages={directMessages}
                 connectionState={connectionState}
                 connectedVoiceChannelId={state.connectedVoiceChannelId}
+                connectedVoiceChannelName={connectedVoiceChannel?.name}
                 collapsed={!(isMobile || isTablet) && state.channelListCollapsed && !channelListHovered}
                 onToggleCollapse={() => setState((s) => ({ ...s, channelListCollapsed: !s.channelListCollapsed, mobileMenuOpen: false }))}
                 onSelectChannel={(id) => {

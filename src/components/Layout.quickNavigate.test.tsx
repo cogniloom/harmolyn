@@ -35,9 +35,9 @@ vi.mock('@/components/MemberSidebar', () => ({ MemberSidebar: () => null }));
 vi.mock('@/components/RecoveryConsentPrompt', () => ({ RecoveryConsentPrompt: () => null }));
 vi.mock('@/components/WelcomeEmptyState', () => ({ WelcomeEmptyState: () => <div>No text channels</div> }));
 vi.mock('@/components/ChatArea', () => ({ ChatArea: ({ channel }: { channel: Channel }) => <div data-testid="active-chat" data-type={channel.type}>{channel.id}</div> }));
-vi.mock('@/components/ChannelRail', () => ({ ChannelRail: ({ connectedVoiceChannelId, onJoinVoice, voiceControlState }: {
-  voiceControlState: { error: string | null }; connectedVoiceChannelId: string | null; onJoinVoice: (id: string) => void;
-}) => <div><output data-testid="voice-channel">{connectedVoiceChannelId ?? ''}</output><output data-testid="voice-error">{voiceControlState.error ?? ''}</output><button onClick={() => onJoinVoice('lounge')}>Rail join</button></div> }));
+vi.mock('@/components/ChannelRail', () => ({ ChannelRail: ({ connectedVoiceChannelId, connectedVoiceChannelName, onJoinVoice, voiceControlState }: {
+  connectedVoiceChannelName?: string; voiceControlState: { error: string | null }; connectedVoiceChannelId: string | null; onJoinVoice: (id: string) => void;
+}) => <div><output data-testid="voice-room-name">{connectedVoiceChannelName ?? ''}</output><output data-testid="voice-channel">{connectedVoiceChannelId ?? ''}</output><output data-testid="voice-error">{voiceControlState.error ?? ''}</output><button onClick={() => onJoinVoice('lounge')}>Rail join</button></div> }));
 vi.mock('@/components/voice/VoiceAudioSinks', () => ({ VoiceAudioSinks: ({ channelId }: { channelId: string | null }) => <output data-testid="audio-channel">{channelId ?? ''}</output> }));
 vi.mock('@/components/voice/VoiceVideoSinks', () => ({ VoiceVideoSinks: () => null }));
 vi.mock('@/components/auth/AuthFlow', () => ({ AuthFlow: ({ initialStep }: { initialStep: string }) => <output data-testid="auth-step">{initialStep}</output> }));
@@ -106,6 +106,9 @@ describe('quick switcher voice integration', () => {
     expect(screen.getByTestId('active-chat')).toHaveTextContent('dm-morgan');
     expect(screen.getByTestId('audio-channel')).toHaveTextContent('lounge');
     expect(live.leave).not.toHaveBeenCalled();
+    expect(screen.getByTestId('voice-room-name')).toHaveTextContent('lounge');
+    await select('planning'); publish(data());
+    expect(screen.getByTestId('voice-room-name')).toHaveTextContent('lounge');
   });
   it('leaves the previous voice room before joining another one', async () => {
     render(<Layout />); await select('lounge');

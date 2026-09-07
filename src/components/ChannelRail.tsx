@@ -131,6 +131,8 @@ interface ChannelRailProps {
   directMessages: DirectMessageChannel[];
   connectionState: ConnectionState;
   connectedVoiceChannelId: string | null;
+  /** Resolved across Spaces, independent of the currently browsed navigation. */
+  connectedVoiceChannelName?: string;
   collapsed: boolean;
   onToggleCollapse: () => void;
   onSelectChannel: (id: string) => void;
@@ -171,6 +173,7 @@ export const ChannelRail: React.FC<ChannelRailProps> = ({
   directMessages,
   connectionState,
   connectedVoiceChannelId,
+  connectedVoiceChannelName,
   collapsed,
   onToggleCollapse,
   onSelectChannel,
@@ -208,6 +211,9 @@ export const ChannelRail: React.FC<ChannelRailProps> = ({
         : category.channels.filter(channel => channel.name.toLocaleLowerCase().includes(needle)),
     })).filter(category => category.channels.length > 0);
   }, [server?.categories, needle]);
+  const connectedRoomName = connectedVoiceChannelName
+    ?? server?.categories.flatMap(category => category.channels).find(channel => channel.id === connectedVoiceChannelId)?.name
+    ?? 'Voice';
   const connectivityEnabled = connectionState.canUseConnectivityActions;
   const voiceDisabledReason = voiceControlState?.canInteract ? undefined : voiceControlState?.statusDetail;
   const voiceControlBarEnabled = useFeature('voiceControlBar');
@@ -690,9 +696,7 @@ export const ChannelRail: React.FC<ChannelRailProps> = ({
       {connectedVoiceChannelId && voiceControlBarEnabled ? (
         <>
           <VoiceControlBar
-            channelName={
-              server?.categories.flatMap(c => c.channels).find(ch => ch.id === connectedVoiceChannelId)?.name || 'Voice'
-            }
+            channelName={connectedRoomName}
             state={voiceControlState ?? {
               statusLabel: 'VOICE CONNECTED',
               statusDetail: 'The local runtime is available.',
@@ -719,9 +723,7 @@ export const ChannelRail: React.FC<ChannelRailProps> = ({
             <VoiceTextChat
               key={connectedVoiceChannelId}
               channelId={connectedVoiceChannelId}
-              channelName={
-                server?.categories.flatMap(c => c.channels).find(ch => ch.id === connectedVoiceChannelId)?.name || 'voice'
-              }
+              channelName={connectedRoomName}
               disabledReason={voiceDisabledReason}
             />
           )}
