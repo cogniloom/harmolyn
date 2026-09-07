@@ -65,6 +65,8 @@ jobs:
           HARMOLYN_APPEARANCE_EVIDENCE: .generated/appearance-evidence
       - name: Exercise conversation UI at desktop and touch widths
         run: node scripts/conversation-ui-e2e.mjs
+      - name: Verify attachment cancellation and IndexedDB rollback
+        run: node scripts/blob-upload-e2e.mjs
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
@@ -73,6 +75,7 @@ jobs:
             .generated/appearance-evidence/
             .generated/browser-evidence/
             .generated/conversation-evidence/
+            .generated/blob-evidence/
           if-no-files-found: warn
           retention-days: 7
 
