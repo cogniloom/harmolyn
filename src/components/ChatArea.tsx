@@ -850,7 +850,9 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
     }
     moderationItems.push({ label: 'Delete Message', icon: <Trash2 size={13} />, onClick: () => deleteMessage(msg.id), danger: true });
 
-    showMenu(e.clientX, e.clientY, [
+    // Keyboard clicks have no pointer coordinates; anchor them to the action.
+    const anchor = e.type === 'click' && e.detail === 0 ? e.currentTarget.getBoundingClientRect() : null;
+    showMenu(anchor ? anchor.right : e.clientX, anchor ? anchor.bottom : e.clientY, [
       { items: mainItems },
       { items: moderationItems },
     ]);

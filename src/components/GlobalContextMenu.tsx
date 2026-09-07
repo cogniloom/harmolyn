@@ -3,6 +3,8 @@ import { Copy, ExternalLink, Clipboard, Search, Eye, RotateCcw, Link2 } from 'lu
 import { ContextMenuContext, type ContextMenuSection, type ContextMenuState } from '@/components/GlobalContextMenuContext';
 import { ALLOWED_EXTERNAL_SCHEMES, ALLOWED_IMAGE_SCHEMES, copyTextToClipboardSafely, openUrlSafely, safeConfirm, safeGetSelectedText, safeReloadPage } from '@/components/contextMenuUtils';
 import { safeViewportSize } from '@/lib/browserViewport';
+import { useEscapeKey } from '@/hooks/useEscapeKey';
+import { isComposingKey } from '@/lib/composerKeys';
 
 // ─── Detect what's under the cursor ──────────────────────────
 
@@ -106,8 +108,12 @@ function buildDefaultItems(target: HTMLElement): ContextMenuSection[] {
 export const ContextMenuProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [menu, setMenu] = useState<ContextMenuState | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+  const openerRef = useRef<HTMLElement | null>(null);
 
   const showMenu = useCallback((x: number, y: number, sections: ContextMenuSection[]) => {
+    if (!menuRef.current?.contains(document.activeElement)) {
+      openerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    }
     // Clamp to viewport so menu doesn't overflow offscreen
     const menuW = 200;
     const menuH = sections.reduce((h, s) => h + s.items.length * 44 + 9, 8);
@@ -121,11 +127,44 @@ export const ContextMenuProvider: React.FC<{ children: React.ReactNode }> = ({ c
 
   const closeMenu = useCallback(() => setMenu(null), []);
 
-  // Close on click anywhere or Escape
+  useEscapeKey(closeMenu, menu !== null);
+
+  useEffect(() => {
+    if (!menu || !menuRef.current) return;
+    const element = menuRef.current;
+    const opener = openerRef.current;
+    (element.querySelector<HTMLElement>('[role="menuitem"]:not(:disabled)') ?? element).focus({ preventScroll: true });
+    return () => {
+      // Do not steal focus from an outside click or an action's new dialog.
+      const active = document.activeElement;
+      if ((active === document.body || element.contains(active)) && opener?.isConnected) {
+        opener.focus({ preventScroll: true });
+      }
+    };
+  }, [menu]);
+
+  const handleMenuKey = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (isComposingKey(event.nativeEvent)) return;
+    const items = Array.from(event.currentTarget.querySelectorAll<HTMLElement>('[role="menuitem"]:not(:disabled)'));
+    const index = items.findIndex(item => item === document.activeElement);
+    const last = items.length - 1;
+    const next = event.key === 'Home' ? 0 : event.key === 'End' ? last
+      : event.key === 'ArrowDown' ? (index + 1) % items.length
+      : event.key === 'ArrowUp' ? (index - 1 + items.length) % items.length : null;
+    if (next !== null && items[next]) {
+      event.preventDefault(); event.stopPropagation();
+      items[next].focus({ preventScroll: true });
+      items[next].scrollIntoView?.({ block: 'nearest' });
+    } else if (event.key === 'Tab') {
+      // Leave the menu through its invoker, never cycle through hidden actions.
+      event.preventDefault(); closeMenu();
+    }
+  };
+
+  // Close on outside clicks and scrolling; Escape belongs to the overlay stack.
   useEffect(() => {
     if (!menu) return;
     const handleClick = () => closeMenu();
-    const handleKey = (e: KeyboardEvent) => { if (e.key === 'Escape') closeMenu(); };
     const handleScroll = (event: Event) => {
       // The menu itself can scroll on short viewports. Only outside scrolling
       // should dismiss it.
@@ -133,11 +172,9 @@ export const ContextMenuProvider: React.FC<{ children: React.ReactNode }> = ({ c
       closeMenu();
     };
     window.addEventListener('click', handleClick);
-    window.addEventListener('keydown', handleKey);
     window.addEventListener('scroll', handleScroll, true);
     return () => {
       window.removeEventListener('click', handleClick);
-      window.removeEventListener('keydown', handleKey);
       window.removeEventListener('scroll', handleScroll, true);
     };
   }, [menu, closeMenu]);
@@ -167,6 +204,8 @@ export const ContextMenuProvider: React.FC<{ children: React.ReactNode }> = ({ c
         <div
           ref={menuRef}
           role="menu"
+          tabIndex={-1}
+          onKeyDown={handleMenuKey}
           aria-label="Context menu"
           className="fixed z-[200] max-h-[calc(100dvh-0.5rem)] w-[min(200px,calc(100vw-0.5rem))] overflow-x-hidden overflow-y-auto overscroll-contain rounded-r2 glass-card shadow-2xl animate-in fade-in zoom-in-95 duration-100"
           style={{ top: menu.y, left: menu.x }}
@@ -180,6 +219,8 @@ export const ContextMenuProvider: React.FC<{ children: React.ReactNode }> = ({ c
                   <button
                     key={ii}
                     role="menuitem"
+                    type="button"
+                    tabIndex={-1}
                     onClick={() => { if (!item.disabled) { item.onClick(); closeMenu(); } }}
                     disabled={item.disabled}
                     className={`touch-target flex w-full items-center gap-2 rounded-r1 px-3 py-2 text-left text-[12px] transition-colors ${

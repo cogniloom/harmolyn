@@ -31,7 +31,7 @@ const messages: Message[] = [
   { id: 'details', userId: 'morgan', content: '**Today’s review**\nReadable messages, reachable controls, and predictable navigation.\n\nA long reference should wrap without moving the toolbar: abcdefghijklmnopqrstuvwxyz'.repeat(1), timestamp: '09:28', securityMode: 'tree', encrypted: true },
 ];
 initializeAppearance();
-function Fixture() {
+export function Fixture() {
   const [selected, setSelected] = useState('design');
   const [switcher, setSwitcher] = useState(false);
   const [layout, setLayout] = useState<MessageLayout>('modern');

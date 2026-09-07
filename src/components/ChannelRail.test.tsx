@@ -506,7 +506,7 @@ describe('ChannelRail local navigation filter', () => {
     expect(screen.queryByText('lounge')).toBeNull();
     await user.clear(input); await user.type(input, 'no-channel');
     expect(screen.getByText('No channels found.')).toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: 'Clear filter', exact: true }));
+    await user.click(screen.getByRole('button', { name: 'Clear filter' }));
     expect(screen.getByText('lounge')).toBeInTheDocument();
   });
 });

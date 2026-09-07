@@ -7,6 +7,7 @@ import { build, preview } from 'vite';
 import react from '@vitejs/plugin-react';
 import { chromium } from 'playwright-core';
 const root = process.cwd();
+await fs.mkdir(path.join(root, '.generated'), { recursive: true });
 const temp = await fs.mkdtemp(path.join(root, '.generated/conversation-harness-'));
 const outDir = path.join(temp, 'dist');
 const evidence = path.join(root, '.generated/conversation-evidence');
@@ -68,6 +69,25 @@ try {
   assert.equal(await page.getByRole('dialog', { name: 'Chat tools', exact: true }).count(), 0);
   await page.getByRole('button', { name: 'Toggle narrow chat' }).click();
   checks.push('Narrow desktop conversation uses reachable compact tools; Escape closes them');
+  for (const width of [1440, 390, 320]) {
+    await page.setViewportSize({ width, height: 844 });
+    const action = page.locator('.compact-message-trigger').first();
+    await action.focus();
+    await page.keyboard.press('Enter');
+    const menu = page.getByRole('menu', { name: 'Context menu' });
+    await menu.waitFor();
+    assert.ok(await menu.evaluate(el => el.contains(document.activeElement)), 'Message menu did not receive keyboard focus');
+    const bounds = await menu.boundingBox();
+    assert.ok(bounds.x >= 0 && bounds.x + bounds.width <= width + 1 && bounds.y > 20 && bounds.y + bounds.height <= 845, 'Keyboard menu is detached or clipped');
+    await page.keyboard.press('End');
+    assert.ok(await menu.getByRole('menuitem').last().evaluate(el => el === document.activeElement));
+    await page.screenshot({ path: path.join(evidence, `message-menu-${width}.png`) });
+    await page.keyboard.press('Escape');
+    assert.equal(await menu.count(), 0);
+    assert.ok(await action.evaluate(el => el === document.activeElement));
+  }
+  checks.push('Message actions: keyboard anchor, arrow/home/end focus and Escape restoration on desktop/mobile');
+  await page.setViewportSize({ width: 1440, height: 1000 });
   const filter = page.getByRole('searchbox', { name: 'Filter channels' });
   await filter.fill('ideas');
   assert.equal(await page.getByRole('complementary', { name: 'Channel List' }).getByText('general', { exact: true }).count(), 0);
