@@ -1,4 +1,4 @@
-name: PR78 menu scroll fix assembly
+name: PR78 verified menu fix assembly
 on:
   push:
     branches: [codex/harmolyn-pr78-source-check]
@@ -16,7 +16,7 @@ jobs:
         with:
           ref: c0ee38411601c388523d53d6ecfd925061dc8872
           persist-credentials: false
-      - name: Verify reviewed patch and publish immutable objects
+      - name: Verify reviewed files and publish immutable objects
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -24,26 +24,101 @@ jobs:
           import fs from 'node:fs';
           import path from 'node:path';
           import crypto from 'node:crypto';
-          import { gunzipSync } from 'node:zlib';
           import { execFileSync } from 'node:child_process';
           import assert from 'node:assert/strict';
           const git = (...args) => execFileSync('git', ['-c', `safe.directory=${process.cwd()}`, ...args], { encoding:'utf8' });
           assert.equal(git('rev-parse','HEAD').trim(), 'c0ee38411601c388523d53d6ecfd925061dc8872');
-          const digest = value => crypto.createHash('sha256').update(value).digest('hex');
-          const encoded = 'H4sIAAAAAAAC/7VYa3PaSBb97l/Rce2ORCFkICbJEGPnPcmsE28l3tlNuVyVRmqBYiFppAabcvHf59zulmgBiePUDh/0aO6j7+vc2wrjKGKdziSWjB+UQRHnsjwIsnQhipLLOEs787gj+sKffS3Z+C6KvTgNxQ0bDHrjfj/y/UGvH4R9wXrd7qPDw71Op3O3lr12u/0Dmp49Y51ev+89Zm269R4yrMhiyW73GP3AV0o2zuZpWLIR49ccJs5EOvfVWpxOXmQ3buuppuZlKQrpZ1eu5vBv2PGIddkvv7B6oV09XsehnLKjEdMPbdaz6JbsmPW7jYWacSriyVQS55PDgcecf4nlOONFqPbF4pKFQvJgKkKWFSxI4jwXoVNvUVmQ84nwrwyfnxeiLF3ndarIOk1LLJMnQr5YfswS4Tr0Hksxc1p+wkvptnyx4MmcS+GKhI2OGV1HIxZmwRy00ueBjBfidSLorQU17bV7IxCVnySYaxerDdYi3RaJvNU8FZey1tLw51wUy08iEYHMCte5KLDR0T5R7V9e8CLmnYSPRTLaf5mlUtxoAfuXTrWXSi6ZRbGmv0+aUp8nSUMwke5fDtNMusMwLvk4EWHLElgIOS9SdsuyXKRD9uABMXmMPPaGbBYhLSqFJ34i0gnyACFXCxfqWq12WO/yOw71Ko2InFoffoPwxM/mUhRvz9+f+mUSB8LtemzQ7bY8hlLJkuSzpwz/pF6Gxgn6r/MsZytj26oycp0o6yj6ZC4ZYi1ZNnvsC1KNJVkVREXGuGT/uFW1sBri6fdPZx/8UhYosThaWtJbqy87khlbFCItpwjFLVbkdKiu/tcsTl2xiEORBgKaZ0h10HdIcafS5+fp5EtLGXVnkZQBz4WzUfHjahzzizzlP7FIJUKqoCo91QRk20LEIgEazPEsRjvLAJON7Yqp1SVFKX5Y3BGD3IDe4GfUGgovQ93ui3zschBu4eR+BBkTvw6IQ1RsAT3F59myPxWAsJPsokIgsKrIZcwp6dgA15r9bVAq2XqgkRBjZyhA+I7HIgE4SjwteLA8qznbNGcWFeL2gGri3kGprSMpCifgWAxF0BFFYXLfAWWovY6SVuMkBEsB4q12OLuNa8iElSg8dy3r+LjPKyqMn9g9+SbMwTiwa85NCHA+8Ra+P68Ak1qEqx6wQWlrEqGMCAAMnqeKwCTiuryZY6bK5z+zabiVWdz9oQV3twJ+B7MCLlMyCM8yYuUMKEL1nqoHpLavqze8oVQdW6aogGKWLqORpGSZWmyZHIq9KavpwjVDJ5IJ0xmjKcsiyITQSPaQ5kt04A12oAGa7IGWF1H0C8BuTl0m2RwF7G4dut+Y7kAjTG42mHoeC6l0lmb+V5DhtlNqSxt9C/TiXY7zWnSEg5+k3bTwae84d+GIO3Nd6nM/oCJELmI/Sh1K6Kz8VcE0g9FFKcCmZYDppYuacfE0ORVGiE0iifzgnrYEBPQHFlN7RcvG5pW31ehW5wD9yIcb9WocpcC4NNaKswo8+VZWgkiF5lR66WS+RFKMXbMsuDqo+qvf5AUoL7M8iF6mYc5CSGcQe4AcpE77NXZe+LaUmHccU8V/b6lo/9ot47dxYa+t6oTwtSa6hd1h6UaeiHcXu9wg4z2ulVg7WbNWmFq+ZhKDPkLpNpLnmA4qXlq1DSa1S62Be7MZ73Fd+n5VLwyQ0Yt9+CAPQ8kmqHJGqpqkZQCVV4IBlRNEoZJaRajb5Y1CPjf2NT2DgjsxtmNXSRnc1kCRsEtktAuzqYZapDbZciHOTRpHgus4kmaoeMTHvEEDSNcdnieIztCM67oLTLAhWVQhIk7RY1wDBslBsa1F34KxDSRQbKjMF6wkEveUe0pHO1r4Z2cg0LuH99qrFsdHYDyuIkWmmYDeM4h511YAbORU6enfrVmvxF1XMP2bcHQr8lr5/yEhd1nR+xmtP5o/TOdPgPFWWL0OyDGjgTfDMTThS2RIiMBSjpg6iNNFdkXlUjuumS/s7nzx1mGumkGjDRrzql6vhdGsrsT9ZAi/P95uDTS7x9qdZGacHT968uvgYc/3D8e9Q3E4/u44u1vQzjF2N6kaXwePvScYYHHrPaZ5C5lA05t22I4JbqinW//NyyM0ummchAWd9/Siun7IgFCrY7gZXSTYM2e1IVNDJXUIdbhznhdFdv2f3GEnzNXW4+CHk799FmyxfzbeISVFCpqgxhFzU5oIH0Aera8PlLR82apSiRndONfQ/ZWI+DyhujHrSM2cmjqfqI8mbvVlgNnSfIWFdOLSUqpjI7V3lRs7WJp96sQH9zhBp0V6pYJTTVizjn0oh/MsOTUBrd25D0OL9rQxzcyoFpMyoxFUqEKkY99BBeClhwEVlVzB/RR1m4jCkmd3s7jU7YydUdkblnrZARxcp4xKkdLJb1pYLcNKHYBgXlC5nvMCJbnhDnWIV2VuZO0cYdwtL6a61JXLfoxFKshUjD49d7Ru83y4Qa2noprBvDZ56j3bIyJyfC2Lcphoj3B6XpOvIbw9om3V5DRfKB6j7vjbbJrClMpqzblRhud87FiFgiifCm7SQw37clpk88kUjiw1cNOxM4WUggXLIBE1wTQOw/ogU/p3lZ7qGoQsFAcFRY9+9XpdYNHjJ17/8O/CInSS11FE4W90G/KM+mTVMl+yGo1Dl8JLav8kSjE29l8PhHpi6gDQ5gHmJ1MXAUarsWDoq3MsjgVmJ8vD1JZK1SVDkcRwrAhrgTxCNl1joi599kqXn2606ixJMcmzMiaPwwE8nZDOGAWthCLdfXsyMmsaMWAIjW//FfzqPc+PVHfVBUhfF3iotFyk89lYBVzdL4/XUzUmPjcRcj3/jUx//SiiqqCf1v8+temqR1936epL6fqrZ2Oj1PLdisVjFzW3du6piLDjjUXUwGW105W+bcusPhtC5jUCll0b5v8BCO33z7WobRma8IckbOVTHQddk0OmYmBnpUqB8ypPEG2RRCqZTF4h6uWUSqSCgNLgcWYOCvVMbskDxzwJKzCH1LpU1/AgVSKg3ktJns0ipioJ/ZV2YkX4xKfPMhyEDc7WuoyaoKlTv8J9o+Zkw7FYa0pD3wd6q8N32IBOLc/KnPrbA7JiU41ljUk5aLYprIyCxmZEn25q0N3ipxQQQm/I/2zJJ8P0/gHQ2sKL7iU5X+lcL/Yut9y8qmLZgCf9l7kbvTwMVb6dxqWksqU5HviGEdhCO/D+BfGyuzbwGgAA';
-          const patch = gunzipSync(Buffer.from(encoded, 'base64'), { maxOutputLength:1048576 });
-          assert.equal(digest(patch), '2232c488e69f0d1f6403ceaeb49f4f03738b9d650dddf71589cad857d816c0ad');
-          const file = path.join(process.env.RUNNER_TEMP, 'menu.patch'); fs.writeFileSync(file,patch);
-          git('apply','--check',file); git('apply','--index',file);
+          const replace = (file, before, after) => {
+            const source = fs.readFileSync(file, 'utf8');
+            assert.equal(source.split(before).length, 2, file + ': replacement must match exactly once');
+            fs.writeFileSync(file, source.replace(before, after));
+          };
+          const menu = 'src/components/GlobalContextMenu.tsx';
+          replace(menu, `      items[next].focus({ preventScroll: true });
+                items[next].scrollIntoView?.({ block: 'nearest' });`, `      const item = items[next];
+                item.focus({ preventScroll: true });
+                // scrollIntoView may also move the page/ancestors, whose scroll handler
+                // dismisses this menu. Only scroll this menu's own viewport.
+                const viewport = event.currentTarget;
+                const outer = viewport.getBoundingClientRect();
+                const inner = item.getBoundingClientRect();
+                const top = inner.top - outer.top - 4;
+                const bottom = inner.bottom - outer.top - viewport.clientHeight + 4;
+                if (top < 0) viewport.scrollTop += top;
+                else if (bottom > 0) viewport.scrollTop += bottom;`);
+          replace(menu, `    const handleClick = () => closeMenu();
+              const handleScroll`, `    const handleClick = () => closeMenu();
+              // A focus-induced scroll can be queued before the menu opens and delivered
+              // afterwards. Dismiss only when its position changed since opening.
+              const openingScroll = new WeakMap<EventTarget, readonly [number, number]>();
+              for (let ancestor = openerRef.current; ancestor; ancestor = ancestor.parentElement) {
+                openingScroll.set(ancestor, [ancestor.scrollLeft, ancestor.scrollTop]);
+              }
+              openingScroll.set(document, [window.scrollX, window.scrollY]);
+              openingScroll.set(window, [window.scrollX, window.scrollY]);
+              const handleScroll`);
+          replace(menu, `      if (event.target instanceof Node && menuRef.current?.contains(event.target)) return;
+                closeMenu();`, `      if (event.target instanceof Node && menuRef.current?.contains(event.target)) return;
+                const before = event.target ? openingScroll.get(event.target) : undefined;
+                if (before) {
+                  const left = event.target instanceof Element ? event.target.scrollLeft : window.scrollX;
+                  const top = event.target instanceof Element ? event.target.scrollTop : window.scrollY;
+                  if (left === before[0] && top === before[1]) return;
+                }
+                closeMenu();`);
+          const test = 'src/components/ContextMenu.keyboard.test.tsx';
+          replace(test, "import { render, screen } from '@testing-library/react';", "import { fireEvent, render, screen } from '@testing-library/react';");
+          replace(test, `  it('closes only the topmost overlay and restores the invoking button',`, `  it('scrolls only the menu when moving to an offscreen action', async () => {
+              const user = userEvent.setup(); render(view());
+              await user.click(screen.getByRole('button', { name: 'Message actions' }));
+              const menu = screen.getByRole('menu');
+              const last = screen.getByRole('menuitem', { name: 'Last action' });
+              const scrollIntoView = vi.fn();
+              Object.defineProperty(last, 'scrollIntoView', { configurable: true, value: scrollIntoView });
+              Object.defineProperty(menu, 'clientHeight', { configurable: true, value: 100 });
+              vi.spyOn(menu, 'getBoundingClientRect').mockReturnValue({ top: 50, bottom: 150 } as DOMRect);
+              vi.spyOn(last, 'getBoundingClientRect').mockReturnValue({ top: 220, bottom: 260 } as DOMRect);
+              await user.keyboard('{End}');
+              expect(menu.scrollTop).toBe(114);
+              expect(last).toHaveFocus();
+              expect(scrollIntoView).not.toHaveBeenCalled();
+              fireEvent.scroll(menu);
+              expect(screen.getByRole('menu')).toBeInTheDocument();
+              // Actual scrolling elsewhere still dismisses the menu.
+              fireEvent.scroll(screen.getByRole('textbox', { name: 'Outside field' }));
+              expect(screen.queryByRole('menu')).toBeNull();
+            });
+            it('ignores an already-applied focus scroll but dismisses for new ancestor scrolling', async () => {
+              const user = userEvent.setup();
+              render(<div data-testid="scroll-parent">{view()}</div>);
+              const parent = screen.getByTestId('scroll-parent');
+              parent.scrollTop = 30;
+              await user.click(screen.getByRole('button', { name: 'Message actions' }));
+              fireEvent.scroll(parent);
+              expect(screen.getByRole('menu')).toBeInTheDocument();
+              parent.scrollTop = 31;
+              fireEvent.scroll(parent);
+              expect(screen.queryByRole('menu')).toBeNull();
+            });
+            it('closes only the topmost overlay and restores the invoking button',`);
+          const browser = 'scripts/conversation-ui-e2e.mjs';
+          replace(browser, `    assert.ok(await menu.getByRole('menuitem').last().evaluate(el => el === document.activeElement));`, `    const focusState = await page.evaluate(() => {
+                const menu = document.querySelector('[role="menu"][aria-label="Context menu"]');
+                const items = menu?.querySelectorAll('[role="menuitem"]:not(:disabled)');
+                return { open: !!menu, lastFocused: !!items?.length && items[items.length - 1] === document.activeElement,
+                  active: document.activeElement?.outerHTML.slice(0, 500), scrollY, menuScroll: menu?.scrollTop };
+              });
+              assert.ok(focusState.open && focusState.lastFocused, \`End lost menu focus at \${width}: \${JSON.stringify(focusState)}\`);`);
           const expected = {
             'src/components/GlobalContextMenu.tsx':'01a5db698986154b56476d0606d24df13dbfa4ea227607910906d8b075c2ac4d',
             'src/components/ContextMenu.keyboard.test.tsx':'d30bb6ca4c1ad784576941ece7a97f957d0862623afb093c3ca2bf60e20d18e5',
             'scripts/conversation-ui-e2e.mjs':'73e87305c7ad45e122c25758c2b008237492d036d36703b03c71e48c011dffa3'
           };
-          assert.deepEqual(git('diff','--cached','--name-only').trim().split('\n').sort(), Object.keys(expected).sort());
+          assert.deepEqual(git('diff','--name-only').trim().split('\n').sort(), Object.keys(expected).sort());
           const tree=[];
           for (const [file, hash] of Object.entries(expected)) {
-            const content=fs.readFileSync(file); assert.equal(digest(content),hash,file);
+            const content=fs.readFileSync(file);
+            assert.equal(crypto.createHash('sha256').update(content).digest('hex'),hash,file);
             const response=await fetch('https://api.github.com/repos/cogniloom/harmolyn/git/blobs', {
               method:'POST',headers:{ Authorization:`Bearer ${process.env.GH_TOKEN}`, Accept:'application/vnd.github+json', 'Content-Type':'application/json' },
               body:JSON.stringify({ content:content.toString('base64'), encoding:'base64' })
