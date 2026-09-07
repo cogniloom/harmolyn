@@ -18,6 +18,9 @@ jobs:
       - name: Apply hash-verified reviewed source without executing it
         shell: bash
         run: |
+          export GIT_CONFIG_COUNT=1
+          export GIT_CONFIG_KEY_0=safe.directory
+          export GIT_CONFIG_VALUE_0="$PWD"
           node --input-type=module <<'NODE'
           import fs from 'node:fs';
           import path from 'node:path';
@@ -61,8 +64,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          export GIT_CONFIG_COUNT=1
+          export GIT_CONFIG_COUNT=2
           export GIT_CONFIG_KEY_0=http.https://github.com/.extraheader
           export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          export GIT_CONFIG_KEY_1=safe.directory
+          export GIT_CONFIG_VALUE_1="$PWD"
           git push origin HEAD:refs/heads/codex/harmolyn-ui-polish-2026-09-07
           git rev-parse HEAD
