@@ -190,8 +190,14 @@ try {
     const drawer = page.getByRole('dialog', { name: 'Pinned messages', exact: true });
     await drawer.waitFor();
     assert.ok(await drawer.evaluate(el => el.contains(document.activeElement)));
+    // Normal motion deliberately enters from outside the viewport. Measure the
+    // settled drawer, rather than whichever animation frame follows visibility.
+    await page.waitForFunction(() => {
+      const dialog = document.querySelector('[role="dialog"][aria-label="Pinned messages"]');
+      return dialog && dialog.getAnimations().every(animation => animation.playState !== 'running');
+    }, undefined, { timeout: 3000 });
     const rect = await drawer.boundingBox();
-    assert.ok(rect.x >= 0 && rect.y >= 0 && rect.x + rect.width <= width + 1 && rect.y + rect.height <= (width === 320 ? 569 : 845));
+    assert.ok(rect.x >= 0 && rect.y >= 0 && rect.x + rect.width <= width + 1 && rect.y + rect.height <= (width === 320 ? 569 : 845), `Pinned drawer clipped at ${width}: ${JSON.stringify(rect)}`);
     await page.keyboard.press('Shift+Tab'); await page.keyboard.press('Tab');
     assert.ok(await drawer.evaluate(el => el.contains(document.activeElement)));
     await page.screenshot({ path: path.join(evidence, `pinned-${width}.png`) });
