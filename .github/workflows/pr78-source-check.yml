@@ -1,0 +1,62 @@
+name: PR78 menu fix assembly
+on:
+  push:
+    branches: [codex/harmolyn-pr78-source-check]
+permissions:
+  contents: read
+jobs:
+  assemble:
+    runs-on: self-hosted
+    container: node:26-bookworm
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: c0ee38411601c388523d53d6ecfd925061dc8872
+          persist-credentials: false
+      - name: Verify reviewed patch and publish immutable objects
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import path from 'node:path';
+          import crypto from 'node:crypto';
+          import { gunzipSync } from 'node:zlib';
+          import { execFileSync } from 'node:child_process';
+          import assert from 'node:assert/strict';
+          const git = (...args) => execFileSync('git', ['-c', `safe.directory=${process.cwd()}`, ...args], { encoding:'utf8' });
+          assert.equal(git('rev-parse','HEAD').trim(), 'c0ee38411601c388523d53d6ecfd925061dc8872');
+          const digest = value => crypto.createHash('sha256').update(value).digest('hex');
+          const encoded = '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';
+          const patch = gunzipSync(Buffer.from(encoded, 'base64'), { maxOutputLength:1048576 });
+          assert.equal(digest(patch), '68d82805ec3bd01db52a81dd050cdfdfa5499fde3c1d694a78ea2e0db3107e74');
+          const file = path.join(process.env.RUNNER_TEMP, 'menu.patch'); fs.writeFileSync(file,patch);
+          git('apply','--check',file); git('apply','--index',file);
+          const expected = {
+            'src/components/GlobalContextMenu.tsx':'acd2ad39cf42c2ae0d54e16dcb63b30bc2e8abbfaec01d33431be940614eb061',
+            'src/components/ContextMenu.keyboard.test.tsx':'42151783892f566fd078c2ef59ed6d5558542283e28b95f059e0e1636689fdd0',
+            'scripts/conversation-ui-e2e.mjs':'73e87305c7ad45e122c25758c2b008237492d036d36703b03c71e48c011dffa3'
+          };
+          assert.deepEqual(git('diff','--cached','--name-only').trim().split('\n').sort(), Object.keys(expected).sort());
+          const tree=[];
+          for (const [file, hash] of Object.entries(expected)) {
+            const content=fs.readFileSync(file); assert.equal(digest(content),hash,file);
+            const response=await fetch('https://api.github.com/repos/cogniloom/harmolyn/git/blobs', {
+              method:'POST',headers:{ Authorization:`Bearer ${process.env.GH_TOKEN}`, Accept:'application/vnd.github+json', 'Content-Type':'application/json' },
+              body:JSON.stringify({ content:content.toString('base64'), encoding:'base64' })
+            });
+            if(!response.ok) throw new Error(`Object API status ${response.status}`);
+            const blob=await response.json(); tree.push({path:file,mode:'100644',type:'blob',sha:blob.sha});
+          }
+          const out=path.join(process.env.RUNNER_TEMP,'menu-objects');fs.mkdirSync(out,{recursive:true});
+          fs.writeFileSync(path.join(out,'tree.json'),JSON.stringify(tree));
+          NODE
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: pr78-menu-object-manifest
+          path: ${{ runner.temp }}/menu-objects/
+          retention-days: 1
+          if-no-files-found: error
