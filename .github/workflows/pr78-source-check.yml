@@ -1,42 +1,74 @@
-name: PR78 local visual verification bundle
+name: PR78 reviewed follow-up assembly
 on:
   push:
     branches: [codex/harmolyn-pr78-source-check]
 permissions:
-  contents: read
+  contents: write
 jobs:
-  preview:
+  assemble:
     runs-on: self-hosted
     container: node:26-bookworm
-    timeout-minutes: 10
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           ref: 1d37d62e5908f5eff385eb46af5cb0ce436f700b
           persist-credentials: false
-      - run: npm ci
-      - run: npm run build
-      - name: Build the same real-component fixture for local visual inspection
+      - name: Verify reviewed patch and publish immutable blobs only
+        env:
+          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           node --input-type=module <<'NODE'
-          import fs from 'node:fs/promises';
+          import fs from 'node:fs';
           import path from 'node:path';
-          import { build } from 'vite';
-          import react from '@vitejs/plugin-react';
-          const root = process.cwd();
-          const fixture = path.join(root, '.generated/local-preview');
-          await fs.mkdir(fixture, { recursive: true });
-          await fs.writeFile(path.join(fixture, 'index.html'), '<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Harmolyn conversation UI verification</title></head><body><div id="root"></div><script type="module" src="/scripts/fixtures/conversation.tsx"></script></body></html>');
-          await build({ configFile: false, root, plugins: [react()], resolve: { alias: { '@': path.join(root, 'src') } }, define: { __APP_VERSION__: JSON.stringify('ui-test') }, build: { outDir: 'preview-dist', emptyOutDir: true, rollupOptions: { input: path.join(fixture, 'index.html') } } });
-          await fs.writeFile('preview-dist/commit.txt', '1d37d62e5908f5eff385eb46af5cb0ce436f700b');
+          import assert from 'node:assert/strict';
+          import { createHash } from 'node:crypto';
+          import { gunzipSync } from 'node:zlib';
+          import { execFileSync } from 'node:child_process';
+          const api = 'https://api.github.com/repos/cogniloom/harmolyn/git/blobs';
+          const headers = { Authorization: `Bearer ${process.env.GH_TOKEN}`, Accept: 'application/vnd.github+json', 'Content-Type': 'application/json' };
+          const hash = bytes => createHash('sha256').update(bytes).digest('hex');
+          const blobHash = bytes => createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex');
+          const response = await fetch(api + '/df74e8ec55611add545503af64059fb767965ed1', { headers });
+          assert.ok(response.ok, `Patch fetch failed: ${response.status}`);
+          const blob = await response.json();
+          const compressed = Buffer.from(blob.content, 'base64');
+          assert.equal(blobHash(compressed), 'df74e8ec55611add545503af64059fb767965ed1');
+          const patch = gunzipSync(compressed, { maxOutputLength: 100000 });
+          assert.equal(hash(patch), 'd786fb5736a03e5eb66e0fdcd95b1c98d6f1fe11ceb8d18353ffd06e96dcb5c3');
+          const patchPath = path.join(process.env.RUNNER_TEMP, 'reviewed.patch');
+          fs.writeFileSync(patchPath, patch);
+          const git = args => execFileSync('git', ['-c', `safe.directory=${process.env.GITHUB_WORKSPACE}`, ...args], { encoding: 'utf8' });
+          assert.equal(git(['rev-parse', 'HEAD']).trim(), '1d37d62e5908f5eff385eb46af5cb0ce436f700b');
+          git(['apply', '--check', patchPath]);
+          git(['apply', patchPath]);
+          const expected = {
+            'scripts/conversation-ui-e2e.mjs': '683e3bb5cb47d73f55f3fdf0db084c56d3b338a389aa2c2b6ae96ffe8a1792a1',
+            'src/components/ChannelRail.test.tsx': '682093fded2393d467dcbe850edcfe3f67ce255826cacbabcfdb2be50940f268',
+            'src/components/Layout.quickNavigate.test.tsx': 'c677ead83344efb3cdb341a3bbf10a04c1339ed536cc3f642f0f2ba8cab5c750',
+            'src/components/Layout.tsx': 'b2cc290ed9c26539bb5fa0dadad96b2577ec3cd164b33110496c87fb04536a10',
+            'src/index.css': 'ffed7772c113ba795e05188e7a12341394a90fbe4ffd821cedf21c3eeebe329f'
+          };
+          const changed = [...git(['diff', '--name-only']).trim().split('\n'), ...git(['ls-files', '--others', '--exclude-standard']).trim().split('\n')].filter(Boolean).sort();
+          assert.deepEqual(changed, Object.keys(expected).sort());
+          git(['diff', '--check']);
+          const entries = [];
+          for (const [file, sha256] of Object.entries(expected)) {
+            const bytes = fs.readFileSync(file);
+            assert.equal(hash(bytes), sha256, file);
+            const published = await fetch(api, { method: 'POST', headers, body: JSON.stringify({ encoding: 'base64', content: bytes.toString('base64') }) });
+            assert.ok(published.ok, `Blob publish failed: ${published.status}`);
+            const result = await published.json();
+            assert.equal(result.sha, blobHash(bytes), file);
+            entries.push({ path: file, mode: '100644', type: 'blob', sha: result.sha });
+          }
+          console.log('VERIFIED_TREE_ENTRIES=' + JSON.stringify(entries));
+          fs.writeFileSync(path.join(process.env.RUNNER_TEMP, 'pr78-blobs.json'), JSON.stringify(entries, null, 2));
           NODE
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: pr78-renderable-bundles
-          path: |
-            dist/
-            preview-dist/
-          include-hidden-files: true
+          name: pr78-verified-blobs-followup
+          path: ${{ runner.temp }}/pr78-blobs.json
           retention-days: 1
           if-no-files-found: error
