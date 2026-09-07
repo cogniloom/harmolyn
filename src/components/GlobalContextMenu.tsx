@@ -4,6 +4,7 @@ import { ContextMenuContext, type ContextMenuSection, type ContextMenuState } fr
 import { ALLOWED_EXTERNAL_SCHEMES, ALLOWED_IMAGE_SCHEMES, copyTextToClipboardSafely, openUrlSafely, safeConfirm, safeGetSelectedText, safeReloadPage } from '@/components/contextMenuUtils';
 import { safeViewportSize } from '@/lib/browserViewport';
 import { useEscapeKey } from '@/hooks/useEscapeKey';
+import { trapDialogFocus } from '@/lib/stabilization/interaction';
 import { isComposingKey } from '@/lib/composerKeys';
 
 // ─── Detect what's under the cursor ──────────────────────────
@@ -133,10 +134,13 @@ export const ContextMenuProvider: React.FC<{ children: React.ReactNode }> = ({ c
     if (!menu || !menuRef.current) return;
     const element = menuRef.current;
     const opener = openerRef.current;
+    // Register above a parent dialog while allowing an outside click to keep focus.
+    const releaseFocus = trapDialogFocus(element, { containFocus: false, restoreFocus: false });
     (element.querySelector<HTMLElement>('[role="menuitem"]:not(:disabled)') ?? element).focus({ preventScroll: true });
     return () => {
       // Do not steal focus from an outside click or an action's new dialog.
       const active = document.activeElement;
+      releaseFocus();
       if ((active === document.body || element.contains(active)) && opener?.isConnected) {
         opener.focus({ preventScroll: true });
       }
