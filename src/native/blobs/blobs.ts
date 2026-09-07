@@ -2,6 +2,7 @@
 // The relay stores opaque (encrypted) blobs — zero-knowledge per node role.
 // Content-addressed: blob ID derived from SHA-256 of plaintext for dedup.
 import { sha256 } from '@noble/hashes/sha2.js';
+import { createUploadLifetime } from './uploadLifecycle.js';
 import { gcm as aesGcm } from '@noble/ciphers/aes.js';
 import { supportNodeOrigin } from '../nodeOrigin.js';
 import { reportNodeRequestFailure, reportNodeRequestSuccess } from '../../lib/nodeHealth.js';
@@ -19,6 +20,8 @@ import {
 import { getState } from '../state/store.js';
 import {
   createLocalBlobSwarm,
+  commitLocalBlobUpload,
+  discardLocalBlobUpload,
   fetchBlobFromSwarm,
   seedBlobSwarm,
 } from './swarm.js';
@@ -61,6 +64,8 @@ export interface BlobRef {
 }
 
 export interface BlobUploadOptions {
+  /** Optional explicit cancellation in addition to identity/navigation lifetime. */
+  signal?: AbortSignal;
   /** Channel or DM whose authenticated members may store and serve fragments. */
   scopeId?: string;
   /** Defaults to the active local identity. */
@@ -163,85 +168,81 @@ export async function uploadBlob(
   if (typeof filename !== 'string' || filename.length > 512 || typeof contentType !== 'string' || contentType.length > 256) {
     throw new Error('blob upload: invalid metadata');
   }
-  const hash = contentHash(data);
-  const { ciphertext, key, nonce } = encryptBlob(data);
   const scopeId = options.scopeId?.trim() ?? '';
-  const ownerPeerId = options.ownerPeerId?.trim()
-    || getState().identity?.peer_id
-    || '';
-  if (scopeId && !ownerPeerId) {
-    throw new Error('blob upload: a local peer identity is required for peer storage');
-  }
-  const swarm = scopeId
-    ? await createLocalBlobSwarm(
-      ciphertext,
-      scopeId,
-      ownerPeerId,
-      availableScopeProviderCount(scopeId),
-    )
-    : undefined;
-
-  const origin = configuredNodeOrigin();
-  // Legacy unscoped uploads use the retired HTTP blob route. Current scoped
-  // attachments must not probe it: doing so against a current Xorein node would
-  // manufacture a 404 health failure before the P2P replica succeeds.
-  let nodeId = '';
-  let uploadedOrigin: string | undefined;
-  let nodeError: unknown;
-  if (origin && !swarm) {
-    try {
-      const ctData = 'data:application/octet-stream;base64,' + toBase64(ciphertext);
-      const res = await fetch(`${apiBase(origin)}/uploads`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ filename: 'blob', content_type: 'application/octet-stream', data: ctData }),
-      });
-      reportNodeRequestSuccess();
-      if (!res.ok) throw new Error(`blob upload: ${res.status}`);
-      const json = await res.json() as unknown;
-      if (!isPlainObject(json)
-        || typeof json.id !== 'string'
-        || json.id.length === 0
-        || json.id.length > 256
-        || hasControlCharacters(json.id)) {
-        throw new Error('blob upload: invalid response');
-      }
-      nodeId = json.id;
-      uploadedOrigin = origin;
-    } catch (error) {
-      nodeError = error;
-      reportNodeRequestFailure(error);
+  const ownerPeerId = options.ownerPeerId?.trim() || getState().identity?.peer_id || '';
+  const lifetime = createUploadLifetime(scopeId, ownerPeerId, options.signal);
+  let swarm: BlobSwarmManifest | undefined;
+  let key: Uint8Array | undefined;
+  let nonce: Uint8Array | undefined;
+  let complete = false;
+  try {
+    lifetime.check();
+    if (scopeId && !ownerPeerId) throw new Error('blob upload: a local peer identity is required for peer storage');
+    const hash = contentHash(data);
+    const encrypted = encryptBlob(data);
+    key = encrypted.key;
+    nonce = encrypted.nonce;
+    const ciphertext = encrypted.ciphertext;
+    if (scopeId) {
+      // Pending files remain RAM-only. Navigation/pagehide cannot leave an
+      // unreachable persistent blob before the message has a usable descriptor.
+      swarm = await createLocalBlobSwarm(ciphertext, scopeId, ownerPeerId,
+        availableScopeProviderCount(scopeId), { deferPersistence: true, guard: lifetime });
+      lifetime.check();
+      const report = await seedBlobSwarm(swarm, { ciphertext, guard: lifetime });
+      lifetime.check();
+      swarm.provider_peer_ids = [...report.successfulProviders];
+      await commitLocalBlobUpload(swarm, ciphertext, lifetime);
+      lifetime.check();
     }
-  }
 
-  if (swarm) {
-    // Await bounded distribution so the attachment is not published before any
-    // currently reachable member has had a chance to retain encrypted fragments.
-    // A lone peer may still publish: it remains the complete source and future
-    // members can fetch from it once a route exists.
-    const report = await seedBlobSwarm(swarm);
-    // Provider acknowledgements are part of author-proof v2. Freeze the initial
-    // set before the attachment enters the signed message; later anti-entropy
-    // passes return fresh health data but must never mutate this manifest.
-    swarm.provider_peer_ids = [...report.successfulProviders];
-  } else if (!nodeId) {
-    if (nodeError instanceof Error) throw nodeError;
-    throw new Error('blob upload: no support node or peer storage scope is available');
-  }
+    let nodeId = '';
+    let uploadedOrigin: string | undefined;
+    if (!swarm) {
+      const origin = configuredNodeOrigin();
+      if (!origin) throw new Error('blob upload: no support node or peer storage scope is available');
+      lifetime.check();
+      try {
+        const ctData = 'data:application/octet-stream;base64,' + toBase64(ciphertext);
+        const res = await fetch(`${apiBase(origin)}/uploads`, {
+          method: 'POST',
+          signal: lifetime.signal,
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ filename: 'blob', content_type: 'application/octet-stream', data: ctData }),
+        });
+        lifetime.check();
+        reportNodeRequestSuccess();
+        if (!res.ok) throw new Error(`blob upload: ${res.status}`);
+        const json = await res.json() as unknown;
+        lifetime.check();
+        if (!isPlainObject(json) || typeof json.id !== 'string' || !json.id.length
+          || json.id.length > 256 || hasControlCharacters(json.id)) throw new Error('blob upload: invalid response');
+        nodeId = json.id;
+        uploadedOrigin = origin;
+      } catch (error) {
+        lifetime.check(); // Cancellation is not a provider-health failure.
+        reportNodeRequestFailure(error);
+        throw error;
+      }
+    }
 
-  const ref: BlobRef = {
-    id: nodeId || swarm!.blob_id,
-    contentHash: hash,
-    key,
-    nonce,
-    filename,
-    contentType,
-    size: data.length,
-    ...(uploadedOrigin ? { origin: uploadedOrigin } : {}),
-    ...(swarm ? { swarm } : {}),
-  };
-  if (!validBlobRef(ref)) throw new Error('blob upload: invalid reference');
-  return ref;
+    const ref: BlobRef = {
+      id: nodeId || swarm!.blob_id, contentHash: hash, key, nonce,
+      filename, contentType, size: data.length,
+      ...(uploadedOrigin ? { origin: uploadedOrigin } : {}),
+      ...(swarm ? { swarm } : {}),
+    };
+    if (!validBlobRef(ref)) throw new Error('blob upload: invalid reference');
+    lifetime.check();
+    complete = true;
+    return ref;
+  } catch (error) {
+    if (swarm) await discardLocalBlobUpload(swarm);
+    throw error;
+  } finally {
+    lifetime.dispose();
+    if (!complete) { key?.fill(0); nonce?.fill(0); }
+  }
 }
 
 /**
@@ -384,8 +385,9 @@ export async function uploadEncryptedAttachment(
   filename: string,
   contentType?: string,
   scopeId?: string,
+  signal?: AbortSignal,
 ): Promise<XoreinAttachment> {
-  return blobRefToAttachment(await uploadBlob(data, filename, contentType, { scopeId }));
+  return blobRefToAttachment(await uploadBlob(data, filename, contentType, { scopeId, signal }));
 }
 
 /** Download + decrypt an attachment by its ref; verifies integrity when a hash is present. */

@@ -2,7 +2,7 @@ const dialogStacks = new WeakMap<Document, HTMLElement[]>();
 const focusableSelector = 'button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
 /** Focus isolation and restoration for a portal dialog; no document-wide observer. */
-export function trapDialogFocus(root: HTMLElement): () => void {
+export function trapDialogFocus(root: HTMLElement, options: { containFocus?: boolean; restoreFocus?: boolean } = {}): () => void {
   const doc = root.ownerDocument;
   const opener = doc.activeElement instanceof HTMLElement ? doc.activeElement : null;
   const oldTabIndex = root.getAttribute('tabindex');
@@ -15,7 +15,7 @@ export function trapDialogFocus(root: HTMLElement): () => void {
     .filter(el => el.tabIndex >= 0 && !el.closest('[inert], [hidden], [aria-hidden="true"]') && el.getClientRects().length > 0);
   const focusFirst = () => (targets()[0] ?? root).focus({ preventScroll: true });
   const onFocus = (event: FocusEvent) => {
-    if (isTop() && event.target instanceof Node && !root.contains(event.target)) focusFirst();
+    if (options.containFocus !== false && isTop() && event.target instanceof Node && !root.contains(event.target)) focusFirst();
   };
   const onKey = (event: KeyboardEvent) => {
     if (!isTop() || event.key !== 'Tab' || event.defaultPrevented) return;
@@ -40,7 +40,6 @@ export function trapDialogFocus(root: HTMLElement): () => void {
     if (index >= 0) stack.splice(index, 1);
     if (!stack.length) dialogStacks.delete(doc);
     if (oldTabIndex === null) root.removeAttribute('tabindex');
-    if (wasTop && opener?.isConnected && (!stack.length || stack[stack.length - 1]?.contains(opener))) opener.focus({ preventScroll: true });
+    if (options.restoreFocus !== false && wasTop && opener?.isConnected && (!stack.length || stack[stack.length - 1]?.contains(opener))) opener.focus({ preventScroll: true });
   };
 }
-

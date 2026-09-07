@@ -85,7 +85,7 @@ describe("QuickSwitcher", () => {
     render(<QuickSwitcher onClose={vi.fn()} onNavigate={vi.fn()} />);
 
     // "ct" is a subsequence of "chat" but not a substring — only fuzzy matching finds it.
-    await user.type(screen.getByPlaceholderText(/JUMP TO/i), "ct");
+    await user.type(screen.getByRole("combobox", { name: /Search channels/ }), "ct");
     expect(await screen.findByText("chat")).toBeTruthy();
   });
 
@@ -100,4 +100,65 @@ describe("QuickSwitcher", () => {
     const stored = JSON.parse(window.localStorage.getItem("harmolyn-recent-switches") || "[]");
     expect(stored[0]).toBe("chan-1");
   });
+});
+
+describe('QuickSwitcher keyboard navigation', () => {
+  it('links a combobox to the selected result and clears selection when empty', async () => {
+    const user = userEvent.setup();
+    render(<QuickSwitcher onClose={vi.fn()} onNavigate={vi.fn()} />);
+    const input = screen.getByRole('combobox');
+    expect(input).toHaveAttribute('aria-controls', 'quick-switcher-results');
+    expect(input).toHaveAttribute('aria-activedescendant', 'quick-switcher-option-0');
+    await user.keyboard('{ArrowDown}');
+    expect(input).toHaveAttribute('aria-activedescendant', 'quick-switcher-option-1');
+    await user.type(input, 'zzzzzzzzzz');
+    expect(input).not.toHaveAttribute('aria-activedescendant');
+    await user.keyboard('{ArrowDown}{Enter}');
+    expect(screen.getByText('No matching conversations')).toBeInTheDocument();
+    await user.clear(input);
+    expect(input).toHaveAttribute('aria-activedescendant', 'quick-switcher-option-0');
+  });
+  it('moves immediately after a live update removes most destinations', async () => {
+    const user = userEvent.setup();
+    const space = (count: number) => [{ id: 'live', name: 'Live Space', icon: '', ownerId: 'me', members: [],
+      categories: [{ id: 'cat', name: 'Channels', channels: Array.from({ length: count }, (_, index) =>
+        ({ id: `channel-${index}`, name: `channel-${index}`, type: 'text' as const, categoryId: 'cat' })) }] }];
+    const props = { users: [], directMessages: [], onClose: vi.fn(), onNavigate: vi.fn() };
+    const mounted = render(<QuickSwitcher {...props} servers={space(8)} />);
+    await user.keyboard('{ArrowDown}{ArrowDown}{ArrowDown}{ArrowDown}{ArrowDown}{ArrowDown}{ArrowDown}');
+    mounted.rerender(<QuickSwitcher {...props} servers={space(2)} />);
+    expect(screen.getByRole('combobox')).toHaveAttribute('aria-activedescendant', 'quick-switcher-option-1');
+    await user.keyboard('{ArrowUp}');
+    expect(screen.getByRole('combobox')).toHaveAttribute('aria-activedescendant', 'quick-switcher-option-0');
+  });
+  it('does not navigate when Enter confirms composition', async () => {
+    const { fireEvent } = await import('@testing-library/react');
+    const navigate = vi.fn();
+    render(<QuickSwitcher onClose={vi.fn()} onNavigate={navigate} />);
+    fireEvent.keyDown(screen.getByRole('combobox'), { key: 'Enter', isComposing: true });
+    fireEvent.keyDown(screen.getByRole('combobox'), { key: 'Enter', keyCode: 229 });
+    expect(navigate).not.toHaveBeenCalled();
+  });
+  it('closes once for Escape, not once per registered handler', async () => {
+    const user = userEvent.setup(); const close = vi.fn();
+    render(<QuickSwitcher onClose={close} onNavigate={vi.fn()} />);
+    await user.keyboard('{Escape}');
+    expect(close).toHaveBeenCalledTimes(1);
+  });
+  it('ignores oversized persisted recency values', () => {
+    window.localStorage.setItem('harmolyn-recent-switches', '[' + ' '.repeat(10000) + ']');
+    render(<QuickSwitcher onClose={vi.fn()} onNavigate={vi.fn()} />);
+    expect(screen.getByRole('combobox')).toBeInTheDocument();
+  });
+});
+
+it('updates destinations from the live shell rather than only the module-load snapshot', () => {
+  const makeSpace = (name: string) => [{ id: 'live-space', name: 'Space', icon: '', ownerId: 'me', members: [],
+    categories: [{ id: 'cat', name: 'Channels', channels: [{ id: 'new', name, type: 'text' as const, categoryId: 'cat' }] }] }];
+  const props = { users: [], directMessages: [], onClose: vi.fn(), onNavigate: vi.fn() };
+  const mounted = render(<QuickSwitcher {...props} servers={makeSpace('new-channel')} />);
+  expect(screen.getByText('new-channel')).toBeInTheDocument();
+  mounted.rerender(<QuickSwitcher {...props} servers={makeSpace('renamed-channel')} />);
+  expect(screen.queryByText('new-channel')).toBeNull();
+  expect(screen.getByText('renamed-channel')).toBeInTheDocument();
 });

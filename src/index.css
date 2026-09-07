@@ -365,19 +365,20 @@ button,
   box-shadow: none;
 }
 
-/* Reduce all transitions & animations */
+/* A nonzero universal duration creates transitions even on static elements
+   (whose default transition-property is all), including light/dark palettes. */
 .perf-mode *,
 .perf-mode *::before,
 .perf-mode *::after {
   animation-duration: 0.01ms !important;
-  transition-duration: 0.05s !important;
+  transition-duration: 0s !important;
 }
 
 /* Respect prefers-reduced-motion natively too */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: 0.01ms !important;
-    transition-duration: 0.1s !important;
+    transition-duration: 0s !important;
   }
 }
 
@@ -429,7 +430,7 @@ button,
 /* reduce-motion class applied from AccessibilitySection */
 .reduce-motion *, .reduce-motion *::before, .reduce-motion *::after {
   animation-duration: 0.01ms !important;
-  transition-duration: 0.05s !important;
+  transition-duration: 0s !important;
 }
 
 /* dyslexic-font class applied from AccessibilitySection */

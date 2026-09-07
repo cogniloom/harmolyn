@@ -169,7 +169,7 @@ describe("ChatArea persisted-scope merge (live runtime data wins)", () => {
 
     // And the pinned drawer must actually list the message (not the empty state).
     fireEvent.click(pinButton);
-    expect(screen.getByText(/ARCHIVE \/\/ 1 ENTRIES/)).toBeTruthy();
+    expect(screen.getByText("1 saved message")).toBeTruthy();
     expect(screen.queryByText("No Pinned Messages")).toBeNull();
     // Message list + drawer entry — the drawer renders a second copy.
     expect(screen.getAllByText("pin me later").length).toBeGreaterThanOrEqual(2);
@@ -239,7 +239,7 @@ describe("ChatArea reply references", () => {
     fireEvent.click(screen.getByRole("button", { name: "Reply" }));
 
     // The composer must show the reply preview bar before sending.
-    expect(screen.getByText(/REPLYING TO \/\/ NOVA/)).toBeTruthy();
+    expect(screen.getByText(/Replying to Nova/i)).toBeTruthy();
 
     await user.type(screen.getByLabelText("Message Input"), "the actual reply{enter}");
 

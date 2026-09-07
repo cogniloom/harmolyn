@@ -51,7 +51,9 @@ jobs:
       - run: npm ci
       - run: npm run build
       - name: Install lockfile-pinned Chromium
-        run: npx --no-install playwright-core install --with-deps chromium
+        run: npx --no-install playwright-core install --with-deps --only-shell chromium
+        env:
+          PLAYWRIGHT_DOWNLOAD_CONNECTION_TIMEOUT: "120000"
       - name: Boot the production bundle in Chromium
         run: npm run test:browser:ci
         env:
@@ -61,6 +63,12 @@ jobs:
         run: node scripts/appearance-e2e.mjs
         env:
           HARMOLYN_APPEARANCE_EVIDENCE: .generated/appearance-evidence
+      - name: Exercise conversation UI at desktop and touch widths
+        run: node scripts/conversation-ui-e2e.mjs
+      - name: Verify voice-only Space empty states
+        run: node scripts/empty-state-e2e.mjs
+      - name: Verify attachment cancellation and IndexedDB rollback
+        run: node scripts/blob-upload-e2e.mjs
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
@@ -68,6 +76,9 @@ jobs:
           path: |
             .generated/appearance-evidence/
             .generated/browser-evidence/
+            .generated/conversation-evidence/
+            .generated/blob-evidence/
+            .generated/empty-state-evidence/
           if-no-files-found: warn
           retention-days: 7
 

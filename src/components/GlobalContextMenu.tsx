@@ -3,6 +3,9 @@ import { Copy, ExternalLink, Clipboard, Search, Eye, RotateCcw, Link2 } from 'lu
 import { ContextMenuContext, type ContextMenuSection, type ContextMenuState } from '@/components/GlobalContextMenuContext';
 import { ALLOWED_EXTERNAL_SCHEMES, ALLOWED_IMAGE_SCHEMES, copyTextToClipboardSafely, openUrlSafely, safeConfirm, safeGetSelectedText, safeReloadPage } from '@/components/contextMenuUtils';
 import { safeViewportSize } from '@/lib/browserViewport';
+import { useEscapeKey } from '@/hooks/useEscapeKey';
+import { trapDialogFocus } from '@/lib/stabilization/interaction';
+import { isComposingKey } from '@/lib/composerKeys';
 
 // ─── Detect what's under the cursor ──────────────────────────
 
@@ -106,8 +109,39 @@ function buildDefaultItems(target: HTMLElement): ContextMenuSection[] {
 export const ContextMenuProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [menu, setMenu] = useState<ContextMenuState | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+  const openerRef = useRef<HTMLElement | null>(null);
+  const originRef = useRef<Element | null>(null);
+  const activationRef = useRef<Event | null>(null);
+  const openingEventRef = useRef<Event | null>(null);
+
+  useEffect(() => {
+    // Capture the actual target before component handlers run. A right-click
+    // does not necessarily focus its target; keyboard clicks do have a target.
+    let clearActivation: ReturnType<typeof setTimeout> | undefined;
+    const capture = (event: Event) => {
+      activationRef.current = event;
+      clearTimeout(clearActivation);
+      // Native event dispatch can run microtasks between listeners. Keep the
+      // target through the whole dispatch, then release it in the next task.
+      clearActivation = setTimeout(() => { activationRef.current = null; }, 0);
+    };
+    document.addEventListener('click', capture, true);
+    document.addEventListener('contextmenu', capture, true);
+    return () => {
+      document.removeEventListener('click', capture, true);
+      document.removeEventListener('contextmenu', capture, true);
+      clearTimeout(clearActivation);
+      activationRef.current = null;
+    };
+  }, []);
 
   const showMenu = useCallback((x: number, y: number, sections: ContextMenuSection[]) => {
+    if (!menuRef.current?.contains(document.activeElement)) {
+      openerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    }
+    openingEventRef.current = activationRef.current;
+    originRef.current = activationRef.current?.target instanceof Element
+      ? activationRef.current.target : openerRef.current;
     // Clamp to viewport so menu doesn't overflow offscreen
     const menuW = 200;
     const menuH = sections.reduce((h, s) => h + s.items.length * 44 + 9, 8);
@@ -119,25 +153,91 @@ export const ContextMenuProvider: React.FC<{ children: React.ReactNode }> = ({ c
     setMenu({ x: Math.max(4, clampedX), y: Math.max(4, clampedY), sections });
   }, []);
 
-  const closeMenu = useCallback(() => setMenu(null), []);
+  const closeMenu = useCallback(() => {
+    originRef.current = null;
+    openingEventRef.current = null;
+    setMenu(null);
+  }, []);
 
-  // Close on click anywhere or Escape
+  useEscapeKey(closeMenu, menu !== null);
+
+  useEffect(() => {
+    if (!menu || !menuRef.current) return;
+    const element = menuRef.current;
+    const opener = openerRef.current;
+    // Register above a parent dialog while allowing an outside click to keep focus.
+    const releaseFocus = trapDialogFocus(element, { containFocus: false, restoreFocus: false });
+    (element.querySelector<HTMLElement>('[role="menuitem"]:not(:disabled)') ?? element).focus({ preventScroll: true });
+    return () => {
+      // Do not steal focus from an outside click or an action's new dialog.
+      const active = document.activeElement;
+      releaseFocus();
+      if ((active === document.body || element.contains(active)) && opener?.isConnected) {
+        opener.focus({ preventScroll: true });
+      }
+    };
+  }, [menu]);
+
+  const handleMenuKey = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (isComposingKey(event.nativeEvent)) return;
+    const items = Array.from(event.currentTarget.querySelectorAll<HTMLElement>('[role="menuitem"]:not(:disabled)'));
+    const index = items.findIndex(item => item === document.activeElement);
+    const last = items.length - 1;
+    const next = event.key === 'Home' ? 0 : event.key === 'End' ? last
+      : event.key === 'ArrowDown' ? (index + 1) % items.length
+      : event.key === 'ArrowUp' ? (index - 1 + items.length) % items.length : null;
+    if (next !== null && items[next]) {
+      event.preventDefault(); event.stopPropagation();
+      const item = items[next];
+      item.focus({ preventScroll: true });
+      // scrollIntoView may also move the page/ancestors, whose scroll handler
+      // dismisses this menu. Only scroll this menu's own viewport.
+      const viewport = event.currentTarget;
+      const outer = viewport.getBoundingClientRect();
+      const inner = item.getBoundingClientRect();
+      const top = inner.top - outer.top - 4;
+      const bottom = inner.bottom - outer.top - viewport.clientHeight + 4;
+      if (top < 0) viewport.scrollTop += top;
+      else if (bottom > 0) viewport.scrollTop += bottom;
+    } else if (event.key === 'Tab') {
+      // Leave the menu through its invoker, never cycle through hidden actions.
+      event.preventDefault(); closeMenu();
+    }
+  };
+
+  // Close on outside clicks and scrolling; Escape belongs to the overlay stack.
   useEffect(() => {
     if (!menu) return;
-    const handleClick = () => closeMenu();
-    const handleKey = (e: KeyboardEvent) => { if (e.key === 'Escape') closeMenu(); };
+    const handleClick = (event: MouseEvent) => {
+      // React may publish the menu before the opening click reaches window.
+      if (event === openingEventRef.current) return;
+      closeMenu();
+    };
+    // A focus-induced scroll can be queued before the menu opens and delivered
+    // afterwards. Dismiss only when its position changed since opening.
+    const openingScroll = new WeakMap<EventTarget, readonly [number, number]>();
+    for (let ancestor = originRef.current; ancestor; ancestor = ancestor.parentElement) {
+      openingScroll.set(ancestor, [ancestor.scrollLeft, ancestor.scrollTop]);
+    }
+    openingScroll.set(document, [window.scrollX, window.scrollY]);
+    openingScroll.set(window, [window.scrollX, window.scrollY]);
     const handleScroll = (event: Event) => {
       // The menu itself can scroll on short viewports. Only outside scrolling
       // should dismiss it.
       if (event.target instanceof Node && menuRef.current?.contains(event.target)) return;
+      const before = event.target ? openingScroll.get(event.target) : undefined;
+      // Another pane may auto-scroll for a message or resize. It did not move
+      // this menu's anchor and must not dismiss an unrelated open menu.
+      if (!before) return;
+      const left = event.target instanceof Element ? event.target.scrollLeft : window.scrollX;
+      const top = event.target instanceof Element ? event.target.scrollTop : window.scrollY;
+      if (left === before[0] && top === before[1]) return;
       closeMenu();
     };
     window.addEventListener('click', handleClick);
-    window.addEventListener('keydown', handleKey);
     window.addEventListener('scroll', handleScroll, true);
     return () => {
       window.removeEventListener('click', handleClick);
-      window.removeEventListener('keydown', handleKey);
       window.removeEventListener('scroll', handleScroll, true);
     };
   }, [menu, closeMenu]);
@@ -167,6 +267,8 @@ export const ContextMenuProvider: React.FC<{ children: React.ReactNode }> = ({ c
         <div
           ref={menuRef}
           role="menu"
+          tabIndex={-1}
+          onKeyDown={handleMenuKey}
           aria-label="Context menu"
           className="fixed z-[200] max-h-[calc(100dvh-0.5rem)] w-[min(200px,calc(100vw-0.5rem))] overflow-x-hidden overflow-y-auto overscroll-contain rounded-r2 glass-card shadow-2xl animate-in fade-in zoom-in-95 duration-100"
           style={{ top: menu.y, left: menu.x }}
@@ -180,6 +282,8 @@ export const ContextMenuProvider: React.FC<{ children: React.ReactNode }> = ({ c
                   <button
                     key={ii}
                     role="menuitem"
+                    type="button"
+                    tabIndex={-1}
                     onClick={() => { if (!item.disabled) { item.onClick(); closeMenu(); } }}
                     disabled={item.disabled}
                     className={`touch-target flex w-full items-center gap-2 rounded-r1 px-3 py-2 text-left text-[12px] transition-colors ${
