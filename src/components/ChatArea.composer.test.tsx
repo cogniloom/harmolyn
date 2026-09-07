@@ -96,6 +96,9 @@ describe('chat composer submission', () => {
     expect(screen.getByText(/Your current draft is unchanged/)).toBeInTheDocument();
     expect(screen.queryByText(/bearer=SECRET/)).toBeNull();
     expect(within(screen.getByRole('region', { name: 'Unsent message' })).getByText('private draft')).toBeInTheDocument();
+    const recovery = screen.getByRole('region', { name: 'Unsent message' });
+    expect(recovery.closest('.chat-message-list')).not.toBeNull();
+    expect(recovery.closest('.chat-composer')).toBeNull();
     expect(screen.getByRole('button', { name: 'Send Message' })).toBeDisabled();
   });
   it('ignores a failed submission after changing conversations', async () => {

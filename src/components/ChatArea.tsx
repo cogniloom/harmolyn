@@ -535,6 +535,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   // One recoverable submission, held in memory only. Resolve it before sending
   // another so repeated failures cannot silently replace data or grow a queue.
   const failedSubmissionRef = useRef<RetryableSubmission | null>(null);
+  const failedRecoveryRef = useRef<HTMLElement>(null);
   const [failedSubmission, setFailedSubmission] = useState<RetryableSubmission | null>(null);
   const activeFailedSubmission = failedSubmission?.channelId === channel?.id
     && failedSubmission?.identityId === liveShellData.runtimeSnapshot?.identity?.peer_id
@@ -972,7 +973,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
       if (owner.active) {
         failedSubmissionRef.current = submission;
         setFailedSubmission(submission);
-        showFeedback('error', 'Message could not be sent. Retry or discard the unsent message below. Your current draft is unchanged.', 'system');
+        showFeedback('error', 'Message could not be sent. Your current draft is unchanged.', 'system');
       }
     } finally {
       owner.pending = false;
@@ -1270,8 +1271,16 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   };
 
   const scrollToBottom = useCallback(() => {
-    if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    const viewport = scrollRef.current;
+    if (viewport) {
+      const recovery = failedRecoveryRef.current;
+      if (recovery) {
+        // On short screens, keep Retry/Discard visible at the card's start.
+        // Scroll only the conversation, not the page or the focused editor.
+        viewport.scrollTop += recovery.getBoundingClientRect().top - viewport.getBoundingClientRect().top;
+      } else {
+        viewport.scrollTop = viewport.scrollHeight;
+      }
       setIsScrolledUp(false);
     }
   }, []);
@@ -1318,7 +1327,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
       return;
     }
     scrollToBottom();
-  }, [channel, messageLayout, normalizedMessages, normalizedSearch, scrollToBottom]);
+  }, [channel, messageLayout, normalizedMessages, normalizedSearch, activeFailedSubmission, scrollToBottom]);
 
   // Reset the "more history" belief when switching channels, and track the active
   // channel id in a ref so an in-flight history pull can detect a switch and discard
@@ -2278,6 +2287,20 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
             </React.Fragment>
           );
         })}
+        {/* Recovery belongs to the scrollable history, never the editor height. */}
+        {activeFailedSubmission && (
+          <section ref={failedRecoveryRef} className="chat-failed-submission" aria-label="Unsent message">
+            <div className="chat-failed-heading">
+              <span className="font-semibold">Message not sent{activeFailedSubmission.replyToId ? ' · Reply' : ''}</span>
+              <div className="flex shrink-0 gap-1">
+                <button type="button" disabled={isSending || chatSupport.mode === 'offline'} onClick={() => void submitRemoteMessage(activeFailedSubmission)} aria-label="Retry unsent message">{isSending ? 'Retrying…' : 'Retry'}</button>
+                <button type="button" disabled={isSending} onClick={discardFailedSubmission} aria-label="Discard unsent message">Discard</button>
+              </div>
+            </div>
+            <p className="chat-failed-content" tabIndex={0}>{activeFailedSubmission.content}</p>
+            <p className="chat-failed-help">Retry or discard this message before sending another. This copy is kept only while this conversation is open.</p>
+          </section>
+        )}
       </div>
 
       {/* Pinned Messages Drawer */}
@@ -2367,19 +2390,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
               <span className={`${composerFeedback?.tone === 'error' ? 'text-accent-danger/75' : composerFeedback?.tone === 'success' ? 'text-accent-success/80' : 'text-white/45'} text-right`}>{composerFeedback?.text || chatSupport.detail}</span>
             </div>
 
-            {activeFailedSubmission && (
-              <section className="chat-failed-submission" aria-label="Unsent message">
-                <div className="chat-failed-heading">
-                  <span className="font-semibold">Message not sent{activeFailedSubmission.replyToId ? ' · Reply' : ''}</span>
-                  <div className="flex shrink-0 gap-1">
-                    <button type="button" disabled={isSending || chatSupport.mode === 'offline'} onClick={() => void submitRemoteMessage(activeFailedSubmission)} aria-label="Retry unsent message">{isSending ? 'Retrying…' : 'Retry'}</button>
-                    <button type="button" disabled={isSending} onClick={discardFailedSubmission} aria-label="Discard unsent message">Discard</button>
-                  </div>
-                </div>
-                <p className="chat-failed-content" tabIndex={0}>{activeFailedSubmission.content}</p>
-                <p className="chat-failed-help">Retry or discard this message before sending another. This copy is kept only while this conversation is open.</p>
-              </section>
-            )}
+
 
             {/* Reply Preview Bar */}
             {replyingTo && (
