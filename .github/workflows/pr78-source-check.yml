@@ -1,4 +1,4 @@
-name: PR78 recovery layout assembly
+name: PR78 compact height assembly
 on:
   push:
     branches: [codex/harmolyn-pr78-source-check]
@@ -14,9 +14,9 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          ref: d598d158141b553cdc04c2b351b62e8f5f550a32
+          ref: b314ebcf624e7a4c48b40e63367cdf6dd192aa70
           persist-credentials: false
-      - name: Assemble reviewed source and publish hash-verified objects only
+      - name: Publish exact reviewed source objects
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -25,83 +25,70 @@ jobs:
           import path from 'node:path';
           import crypto from 'node:crypto';
           import assert from 'node:assert/strict';
-          const replace = (s, before, after) => { assert.equal(s.split(before).length, 2); return s.replace(before, after); };
-          const chat = 'src/components/ChatArea.tsx';
-          let s = fs.readFileSync(chat, 'utf8');
-          s = replace(s, '  const failedSubmissionRef = useRef<RetryableSubmission | null>(null);', '  const failedSubmissionRef = useRef<RetryableSubmission | null>(null);\n  const failedRecoveryRef = useRef<HTMLElement>(null);');
-          s = replace(s, 'Message could not be sent. Retry or discard the unsent message below. Your current draft is unchanged.', 'Message could not be sent. Your current draft is unchanged.');
-          const start = s.indexOf('            {activeFailedSubmission && (\n');
-          const end = s.indexOf('\n\n            {/* Reply Preview Bar */}', start);
-          assert.ok(start >= 0 && end > start);
-          let block = s.slice(start, end);
-          s = s.slice(0, start) + s.slice(end);
-          block = block.split('\n').map(line => line.startsWith('    ') ? line.slice(4) : line).join('\n');
-          block = replace(block, '<section className="chat-failed-submission"', '<section ref={failedRecoveryRef} className="chat-failed-submission"');
-          s = replace(s, '        })}\n      </div>\n\n      {/* Pinned Messages Drawer */}', '        })}\n        {/* Recovery belongs to the scrollable history, never the editor height. */}\n' + block + '\n      </div>\n\n      {/* Pinned Messages Drawer */}');
-          s = replace(s, `    if (scrollRef.current) {
-                scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-                setIsScrolledUp(false);
+          const replace=(file,before,after)=>{const s=fs.readFileSync(file,'utf8');assert.equal(s.split(before).length,2,file);fs.writeFileSync(file,s.replace(before,after));};
+          const chat='src/components/ChatArea.tsx';
+          replace(chat,`    let frame: number | null = null;
+              const measureAndAnchor = () => {`,`    const workspace = inputArea.parentElement;
+              let frame: number | null = null;
+              const measureAndAnchor = () => {
+                // Use the actual pane height (including native keyboard/viewport resizing),
+                // not the browser width or a guessed device class.
+                const height = workspace?.getBoundingClientRect().height ?? 0;
+                const short = String(height > 0 && height < 440);
+                if (inputArea.dataset.shortViewport !== short) inputArea.dataset.shortViewport = short;`);
+          replace(chat,`    observer?.observe(inputArea);
+              window.addEventListener`,`    observer?.observe(inputArea);
+              if (workspace) observer?.observe(workspace);
+              window.addEventListener`);
+          const css='src/styles/conversation.css';
+          replace(css,'.chat-failed-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: .25rem .5rem; font-size: .8rem; }','.chat-failed-heading { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: .5rem; font-size: .8rem; }');
+          fs.appendFileSync(css,'\n/* Keep the history and recovery actions usable above a virtual keyboard. Only\n   the editable text scrolls; attachment controls and the send action stay visible. */\n.chat-composer[data-short-viewport="true"] .chat-compose-input { max-height: 44px; overflow-y: auto !important; }\n.chat-composer[data-short-viewport="true"] .chat-composer-hint { display: none; }\n');
+          const test='src/components/ChatArea.composer.test.tsx';
+          const needle="  it('does not send when Enter confirms an IME selection', () => {";
+          replace(test,needle,`  it('adapts to the actual short pane and restores normal sizing after resize', () => {
+              render(view()); type('one\\ntwo\\nthree');
+              const input = screen.getByLabelText('Message Input');
+              const composer = input.closest<HTMLElement>('.chat-composer')!;
+              const workspace = composer.parentElement!;
+              const geometry = vi.spyOn(workspace, 'getBoundingClientRect');
+              geometry.mockReturnValue({ height: 366 } as DOMRect);
+              fireEvent(window, new Event('resize'));
+              expect(composer).toHaveAttribute('data-short-viewport', 'true');
+              expect(input).toHaveValue('one\\ntwo\\nthree');
+              geometry.mockReturnValue({ height: 800 } as DOMRect);
+              fireEvent(window, new Event('resize'));
+              expect(composer).toHaveAttribute('data-short-viewport', 'false');
+              expect(input).toHaveValue('one\\ntwo\\nthree');
+              geometry.mockRestore();
+            });
+          `+needle);
+          const browser='scripts/conversation-ui-e2e.mjs';
+          const original='    const original = `Retained submission at ${width}px. `';
+          replace(browser,original,`    if (width === 320) {
+                // A reply adds another fixed composer row: test the most constrained path.
+                await page.locator('.compact-message-trigger').first().click();
+                await page.getByRole('menuitem', { name: 'Reply', exact: true }).click();
               }
-            }, []);`, `    const viewport = scrollRef.current;
-              if (viewport) {
-                const recovery = failedRecoveryRef.current;
-                if (recovery) {
-                  // On short screens, keep Retry/Discard visible at the card's start.
-                  // Scroll only the conversation, not the page or the focused editor.
-                  viewport.scrollTop += recovery.getBoundingClientRect().top - viewport.getBoundingClientRect().top;
-                } else {
-                  viewport.scrollTop = viewport.scrollHeight;
-                }
-                setIsScrolledUp(false);
-              }
-            }, []);`);
-          s = replace(s, '[channel, messageLayout, normalizedMessages, normalizedSearch, scrollToBottom]);', '[channel, messageLayout, normalizedMessages, normalizedSearch, activeFailedSubmission, scrollToBottom]);');
-          fs.writeFileSync(chat,s);
-          const css = 'src/styles/conversation.css';
-          s = replace(fs.readFileSync(css,'utf8'), '/* Keep recoverable submissions bounded and readable without covering the composer. */', '/* Recovery scrolls with history; its actions stay visible while reading the copy. */');
-          s += '\n.chat-failed-heading { position: sticky; top: 0; z-index: 1; background: var(--appearance-surface); }\n';
-          fs.writeFileSync(css,s);
-          const test = 'src/components/ChatArea.composer.test.tsx';
-          const assertion = "    expect(within(screen.getByRole('region', { name: 'Unsent message' })).getByText('private draft')).toBeInTheDocument();";
-          s = replace(fs.readFileSync(test,'utf8'), assertion, assertion + `
-              const recovery = screen.getByRole('region', { name: 'Unsent message' });
-              expect(recovery.closest('.chat-message-list')).not.toBeNull();
-              expect(recovery.closest('.chat-composer')).toBeNull();`);
-          fs.writeFileSync(test,s);
-          const browser = 'scripts/conversation-ui-e2e.mjs';
-          const loop = "    for (const action of ['Retry unsent message', 'Discard unsent message']) {";
-          s = replace(fs.readFileSync(browser,'utf8'), loop, "    const recoveryToolbar = await page.locator('.chat-toolbar').boundingBox();\n    const recoveryComposer = await page.locator('.chat-composer').boundingBox();\n" + loop);
-          const bounds = "      assert.ok(box.x >= 0 && box.y >= 0 && box.x + box.width <= width + 1 && box.y + box.height <= (width === 320 ? 569 : 845), `Unreachable ${action} at ${width}`);";
-          s = replace(s, bounds, bounds + `
-                assert.ok(box.y >= recoveryToolbar.y + recoveryToolbar.height && box.y + box.height <= recoveryComposer.y, \`Recovery action covered by fixed controls at \${width}\`);
-                assert.ok(await recovery.getByRole('button', { name: action, exact: true }).evaluate(button => {
-                  const rect = button.getBoundingClientRect();
-                  return button.contains(document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2));
-                }), \`Recovery action obscured at \${width}\`);`);
-          fs.writeFileSync(browser,s);
-          const expected = {
-            'src/components/ChatArea.tsx':['40e55d849adf6c1eea43850dec51f2c2b30d750b044602b804c7825dfe412004','4dc619a60b851fa52d195e38bce4d94ef99e5f94'],
-            'src/styles/conversation.css':['da0a906eff1e0c2fa12ab74493a1ce9cb31cc42fbd4cf5f000128dcac034ed12','b9df128b7319430ae1e56e8f935136e2fb2168b5'],
-            'src/components/ChatArea.composer.test.tsx':['ba4f3d59be1635cd6337ddf40130cf98b8b1d0ffd1e1a05fce93c7dfdbb499c0','3ab8dc516953716a78083fb141b8de92f1cde278'],
-            'scripts/conversation-ui-e2e.mjs':['6fb014ad0c5ce4f46dbabe59f9f695b02e013acff9a83133a7729f60e70d107f','b917742e20a394807b57d4f2ff1c1d2c78e36acf']
+          `+original);
+          replace(browser,'`Recovery action covered by fixed controls at ${width}`','`Recovery action covered at ${width}: ${JSON.stringify({box, recoveryToolbar, recoveryComposer})}`');
+          const expected={
+            'src/components/ChatArea.tsx':['74f89195a631d4d4700fb3b857dc9ffa2b88aaa467e034a0f5876b6b4350c50e','b6552dbff8dedc968d90584e2db631935f4aaa7a'],
+            'src/styles/conversation.css':['ed54476b066f6b3d1fb65a2a6c6c03613b691a031172e9a1698d4e2017714cb6','cf8e95b4da7abe8487a64b41d4e520386c3f05fd'],
+            'src/components/ChatArea.composer.test.tsx':['286dbe32f6047d296326d753e2b976a936a53c8040070a67bd8113039512c4a1','7c7fd2cf13d1d0eba8dddf670e5bd7e0c25375ca'],
+            'scripts/conversation-ui-e2e.mjs':['d46bf4dffac98d377f10574c5c3b513aea479fe737f47de5bf6eb85e9a803bd6','c808de7d8fb9d5be4b1c742eac26e326cbbea0b7']
           };
           const tree=[];
-          for (const [file,[hash,sha]] of Object.entries(expected)) {
-            const content=fs.readFileSync(file);
-            assert.equal(crypto.createHash('sha256').update(content).digest('hex'),hash,file);
-            const response=await fetch('https://api.github.com/repos/cogniloom/harmolyn/git/blobs', {
-              method:'POST',headers:{Authorization:`Bearer ${process.env.GH_TOKEN}`,Accept:'application/vnd.github+json','Content-Type':'application/json'},
-              body:JSON.stringify({content:content.toString('base64'),encoding:'base64'})
-            });
+          for(const [file,[hash,sha]] of Object.entries(expected)){
+            const content=fs.readFileSync(file);assert.equal(crypto.createHash('sha256').update(content).digest('hex'),hash,file);
+            const response=await fetch('https://api.github.com/repos/cogniloom/harmolyn/git/blobs',{method:'POST',headers:{Authorization:`Bearer ${process.env.GH_TOKEN}`,Accept:'application/vnd.github+json','Content-Type':'application/json'},body:JSON.stringify({content:content.toString('base64'),encoding:'base64'})});
             if(!response.ok)throw new Error(`Object API status ${response.status}`);
             const blob=await response.json();assert.equal(blob.sha,sha);tree.push({path:file,mode:'100644',type:'blob',sha});
           }
-          const out=path.join(process.env.RUNNER_TEMP,'recovery-objects');fs.mkdirSync(out,{recursive:true});
-          fs.writeFileSync(path.join(out,'tree.json'),JSON.stringify(tree));
+          const out=path.join(process.env.RUNNER_TEMP,'compact-objects');fs.mkdirSync(out,{recursive:true});fs.writeFileSync(path.join(out,'tree.json'),JSON.stringify(tree));
           NODE
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: pr78-recovery-layout-manifest
-          path: ${{ runner.temp }}/recovery-objects/
+          name: pr78-compact-height-manifest
+          path: ${{ runner.temp }}/compact-objects/
           retention-days: 1
           if-no-files-found: error
