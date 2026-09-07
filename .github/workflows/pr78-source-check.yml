@@ -1,0 +1,28 @@
+name: PR78 source snapshot
+on:
+  push:
+    branches: [codex/harmolyn-pr78-source-check]
+permissions:
+  contents: read
+jobs:
+  snapshot:
+    runs-on: self-hosted
+    container: node:26-bookworm
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: da9b5475ff8fd5c5fc5a8ebbadf39816f8756ad3
+          persist-credentials: false
+      - name: Export only tracked source from the verified PR head
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/pr78-source"
+          git -c safe.directory="$GITHUB_WORKSPACE" archive --format=zip HEAD > "$RUNNER_TEMP/pr78-source/source.zip"
+          git -c safe.directory="$GITHUB_WORKSPACE" rev-parse HEAD > "$RUNNER_TEMP/pr78-source/commit.txt"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: pr78-verified-source
+          path: ${{ runner.temp }}/pr78-source/
+          retention-days: 1
+          if-no-files-found: error
