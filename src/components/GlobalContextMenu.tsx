@@ -117,15 +117,20 @@ export const ContextMenuProvider: React.FC<{ children: React.ReactNode }> = ({ c
   useEffect(() => {
     // Capture the actual target before component handlers run. A right-click
     // does not necessarily focus its target; keyboard clicks do have a target.
+    let clearActivation: ReturnType<typeof setTimeout> | undefined;
     const capture = (event: Event) => {
       activationRef.current = event;
-      queueMicrotask(() => { if (activationRef.current === event) activationRef.current = null; });
+      clearTimeout(clearActivation);
+      // Native event dispatch can run microtasks between listeners. Keep the
+      // target through the whole dispatch, then release it in the next task.
+      clearActivation = setTimeout(() => { activationRef.current = null; }, 0);
     };
     document.addEventListener('click', capture, true);
     document.addEventListener('contextmenu', capture, true);
     return () => {
       document.removeEventListener('click', capture, true);
       document.removeEventListener('contextmenu', capture, true);
+      clearTimeout(clearActivation);
       activationRef.current = null;
     };
   }, []);
@@ -148,7 +153,11 @@ export const ContextMenuProvider: React.FC<{ children: React.ReactNode }> = ({ c
     setMenu({ x: Math.max(4, clampedX), y: Math.max(4, clampedY), sections });
   }, []);
 
-  const closeMenu = useCallback(() => setMenu(null), []);
+  const closeMenu = useCallback(() => {
+    originRef.current = null;
+    openingEventRef.current = null;
+    setMenu(null);
+  }, []);
 
   useEscapeKey(closeMenu, menu !== null);
 
@@ -220,11 +229,9 @@ export const ContextMenuProvider: React.FC<{ children: React.ReactNode }> = ({ c
       // Another pane may auto-scroll for a message or resize. It did not move
       // this menu's anchor and must not dismiss an unrelated open menu.
       if (!before) return;
-      if (before) {
-        const left = event.target instanceof Element ? event.target.scrollLeft : window.scrollX;
-        const top = event.target instanceof Element ? event.target.scrollTop : window.scrollY;
-        if (left === before[0] && top === before[1]) return;
-      }
+      const left = event.target instanceof Element ? event.target.scrollLeft : window.scrollX;
+      const top = event.target instanceof Element ? event.target.scrollTop : window.scrollY;
+      if (left === before[0] && top === before[1]) return;
       closeMenu();
     };
     window.addEventListener('click', handleClick);
