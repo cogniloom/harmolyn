@@ -1,4 +1,4 @@
-name: PR78 verified menu fix assembly
+name: PR78 settled drawer verification assembly
 on:
   push:
     branches: [codex/harmolyn-pr78-source-check]
@@ -14,9 +14,9 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          ref: c0ee38411601c388523d53d6ecfd925061dc8872
+          ref: 85e5b72dfaa2bf53c9271f4fbb01a7b7d010e0b5
           persist-credentials: false
-      - name: Verify reviewed files and publish immutable objects
+      - name: Verify exact browser test and publish immutable object
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -24,114 +24,39 @@ jobs:
           import fs from 'node:fs';
           import path from 'node:path';
           import crypto from 'node:crypto';
-          import { execFileSync } from 'node:child_process';
           import assert from 'node:assert/strict';
-          const git = (...args) => execFileSync('git', ['-c', `safe.directory=${process.cwd()}`, ...args], { encoding:'utf8' });
-          assert.equal(git('rev-parse','HEAD').trim(), 'c0ee38411601c388523d53d6ecfd925061dc8872');
-          const replace = (file, before, after) => {
-            const source = fs.readFileSync(file, 'utf8');
-            assert.equal(source.split(before).length, 2, file + ': replacement must match exactly once');
-            fs.writeFileSync(file, source.replace(before, after));
-          };
-          const menu = 'src/components/GlobalContextMenu.tsx';
-          replace(menu, `      items[next].focus({ preventScroll: true });
-                items[next].scrollIntoView?.({ block: 'nearest' });`, `      const item = items[next];
-                item.focus({ preventScroll: true });
-                // scrollIntoView may also move the page/ancestors, whose scroll handler
-                // dismisses this menu. Only scroll this menu's own viewport.
-                const viewport = event.currentTarget;
-                const outer = viewport.getBoundingClientRect();
-                const inner = item.getBoundingClientRect();
-                const top = inner.top - outer.top - 4;
-                const bottom = inner.bottom - outer.top - viewport.clientHeight + 4;
-                if (top < 0) viewport.scrollTop += top;
-                else if (bottom > 0) viewport.scrollTop += bottom;`);
-          replace(menu, `    const handleClick = () => closeMenu();
-              const handleScroll`, `    const handleClick = () => closeMenu();
-              // A focus-induced scroll can be queued before the menu opens and delivered
-              // afterwards. Dismiss only when its position changed since opening.
-              const openingScroll = new WeakMap<EventTarget, readonly [number, number]>();
-              for (let ancestor = openerRef.current; ancestor; ancestor = ancestor.parentElement) {
-                openingScroll.set(ancestor, [ancestor.scrollLeft, ancestor.scrollTop]);
-              }
-              openingScroll.set(document, [window.scrollX, window.scrollY]);
-              openingScroll.set(window, [window.scrollX, window.scrollY]);
-              const handleScroll`);
-          replace(menu, `      if (event.target instanceof Node && menuRef.current?.contains(event.target)) return;
-                closeMenu();`, `      if (event.target instanceof Node && menuRef.current?.contains(event.target)) return;
-                const before = event.target ? openingScroll.get(event.target) : undefined;
-                if (before) {
-                  const left = event.target instanceof Element ? event.target.scrollLeft : window.scrollX;
-                  const top = event.target instanceof Element ? event.target.scrollTop : window.scrollY;
-                  if (left === before[0] && top === before[1]) return;
-                }
-                closeMenu();`);
-          const test = 'src/components/ContextMenu.keyboard.test.tsx';
-          replace(test, "import { render, screen } from '@testing-library/react';", "import { fireEvent, render, screen } from '@testing-library/react';");
-          replace(test, `  it('closes only the topmost overlay and restores the invoking button',`, `  it('scrolls only the menu when moving to an offscreen action', async () => {
-              const user = userEvent.setup(); render(view());
-              await user.click(screen.getByRole('button', { name: 'Message actions' }));
-              const menu = screen.getByRole('menu');
-              const last = screen.getByRole('menuitem', { name: 'Last action' });
-              const scrollIntoView = vi.fn();
-              Object.defineProperty(last, 'scrollIntoView', { configurable: true, value: scrollIntoView });
-              Object.defineProperty(menu, 'clientHeight', { configurable: true, value: 100 });
-              vi.spyOn(menu, 'getBoundingClientRect').mockReturnValue({ top: 50, bottom: 150 } as DOMRect);
-              vi.spyOn(last, 'getBoundingClientRect').mockReturnValue({ top: 220, bottom: 260 } as DOMRect);
-              await user.keyboard('{End}');
-              expect(menu.scrollTop).toBe(114);
-              expect(last).toHaveFocus();
-              expect(scrollIntoView).not.toHaveBeenCalled();
-              fireEvent.scroll(menu);
-              expect(screen.getByRole('menu')).toBeInTheDocument();
-              // Actual scrolling elsewhere still dismisses the menu.
-              fireEvent.scroll(screen.getByRole('textbox', { name: 'Outside field' }));
-              expect(screen.queryByRole('menu')).toBeNull();
-            });
-            it('ignores an already-applied focus scroll but dismisses for new ancestor scrolling', async () => {
-              const user = userEvent.setup();
-              render(<div data-testid="scroll-parent">{view()}</div>);
-              const parent = screen.getByTestId('scroll-parent');
-              parent.scrollTop = 30;
-              await user.click(screen.getByRole('button', { name: 'Message actions' }));
-              fireEvent.scroll(parent);
-              expect(screen.getByRole('menu')).toBeInTheDocument();
-              parent.scrollTop = 31;
-              fireEvent.scroll(parent);
-              expect(screen.queryByRole('menu')).toBeNull();
-            });
-            it('closes only the topmost overlay and restores the invoking button',`);
-          const browser = 'scripts/conversation-ui-e2e.mjs';
-          replace(browser, `    assert.ok(await menu.getByRole('menuitem').last().evaluate(el => el === document.activeElement));`, `    const focusState = await page.evaluate(() => {
-                const menu = document.querySelector('[role="menu"][aria-label="Context menu"]');
-                const items = menu?.querySelectorAll('[role="menuitem"]:not(:disabled)');
-                return { open: !!menu, lastFocused: !!items?.length && items[items.length - 1] === document.activeElement,
-                  active: document.activeElement?.outerHTML.slice(0, 500), scrollY, menuScroll: menu?.scrollTop };
-              });
-              assert.ok(focusState.open && focusState.lastFocused, \`End lost menu focus at \${width}: \${JSON.stringify(focusState)}\`);`);
-          const expected = {
-            'src/components/GlobalContextMenu.tsx':'01a5db698986154b56476d0606d24df13dbfa4ea227607910906d8b075c2ac4d',
-            'src/components/ContextMenu.keyboard.test.tsx':'d30bb6ca4c1ad784576941ece7a97f957d0862623afb093c3ca2bf60e20d18e5',
-            'scripts/conversation-ui-e2e.mjs':'73e87305c7ad45e122c25758c2b008237492d036d36703b03c71e48c011dffa3'
-          };
-          assert.deepEqual(git('diff','--name-only').trim().split('\n').sort(), Object.keys(expected).sort());
-          const tree=[];
-          for (const [file, hash] of Object.entries(expected)) {
-            const content=fs.readFileSync(file);
-            assert.equal(crypto.createHash('sha256').update(content).digest('hex'),hash,file);
-            const response=await fetch('https://api.github.com/repos/cogniloom/harmolyn/git/blobs', {
-              method:'POST',headers:{ Authorization:`Bearer ${process.env.GH_TOKEN}`, Accept:'application/vnd.github+json', 'Content-Type':'application/json' },
-              body:JSON.stringify({ content:content.toString('base64'), encoding:'base64' })
-            });
-            if(!response.ok) throw new Error(`Object API status ${response.status}`);
-            const blob=await response.json(); tree.push({path:file,mode:'100644',type:'blob',sha:blob.sha});
-          }
-          const out=path.join(process.env.RUNNER_TEMP,'menu-objects');fs.mkdirSync(out,{recursive:true});
-          fs.writeFileSync(path.join(out,'tree.json'),JSON.stringify(tree));
+          const file = 'scripts/conversation-ui-e2e.mjs';
+          const before = `    await drawer.waitFor();
+              assert.ok(await drawer.evaluate(el => el.contains(document.activeElement)));
+              const rect = await drawer.boundingBox();
+              assert.ok(rect.x >= 0 && rect.y >= 0 && rect.x + rect.width <= width + 1 && rect.y + rect.height <= (width === 320 ? 569 : 845));`;
+          const after = `    await drawer.waitFor();
+              assert.ok(await drawer.evaluate(el => el.contains(document.activeElement)));
+              // Normal motion deliberately enters from outside the viewport. Measure the
+              // settled drawer, rather than whichever animation frame follows visibility.
+              await page.waitForFunction(() => {
+                const dialog = document.querySelector('[role="dialog"][aria-label="Pinned messages"]');
+                return dialog && dialog.getAnimations().every(animation => animation.playState !== 'running');
+              }, undefined, { timeout: 3000 });
+              const rect = await drawer.boundingBox();
+              assert.ok(rect.x >= 0 && rect.y >= 0 && rect.x + rect.width <= width + 1 && rect.y + rect.height <= (width === 320 ? 569 : 845), \`Pinned drawer clipped at \${width}: \${JSON.stringify(rect)}\`);`;
+          const source = fs.readFileSync(file, 'utf8');
+          assert.equal(source.split(before).length, 2);
+          const content = Buffer.from(source.replace(before, after));
+          assert.equal(crypto.createHash('sha256').update(content).digest('hex'), '808a6302a452add767a34ab1326ec0ff28f93d06ebd7292aa01cb4bac3b96dbf');
+          const response = await fetch('https://api.github.com/repos/cogniloom/harmolyn/git/blobs', {
+            method: 'POST', headers: { Authorization: `Bearer ${process.env.GH_TOKEN}`, Accept:'application/vnd.github+json', 'Content-Type':'application/json' },
+            body: JSON.stringify({ content: content.toString('base64'), encoding: 'base64' })
+          });
+          if(!response.ok) throw new Error(`Object API status ${response.status}`);
+          const blob = await response.json();
+          assert.equal(blob.sha, '38fa8ec5c9fe6dc71849f8ac7a479172278cf585');
+          const out = path.join(process.env.RUNNER_TEMP, 'drawer-object'); fs.mkdirSync(out, { recursive:true });
+          fs.writeFileSync(path.join(out, 'tree.json'), JSON.stringify([{ path:file, mode:'100644', type:'blob', sha:blob.sha }]));
           NODE
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: pr78-menu-scroll-object-manifest
-          path: ${{ runner.temp }}/menu-objects/
+          name: pr78-drawer-test-manifest
+          path: ${{ runner.temp }}/drawer-object/
           retention-days: 1
           if-no-files-found: error
