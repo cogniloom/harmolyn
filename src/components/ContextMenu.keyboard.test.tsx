@@ -51,9 +51,12 @@ describe('context menu keyboard access', () => {
     expect(scrollIntoView).not.toHaveBeenCalled();
     fireEvent.scroll(menu);
     expect(screen.getByRole('menu')).toBeInTheDocument();
-    // Actual scrolling elsewhere still dismisses the menu.
-    fireEvent.scroll(screen.getByRole('textbox', { name: 'Outside field' }));
-    expect(screen.queryByRole('menu')).toBeNull();
+    // An unrelated scroll does not move the invoker or dismiss its menu.
+    const outside = screen.getByRole('textbox', { name: 'Outside field' });
+    outside.scrollLeft = 10;
+    fireEvent.scroll(outside);
+    expect(screen.getByRole('menu')).toBeInTheDocument();
+    expect(last).toHaveFocus();
   });
   it('ignores an already-applied focus scroll but dismisses for new ancestor scrolling', async () => {
     const user = userEvent.setup();
