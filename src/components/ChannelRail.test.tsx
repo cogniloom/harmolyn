@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { ReactElement } from 'react';
 import { ChannelRail } from './ChannelRail';
+import { ContextMenuContext } from './GlobalContextMenuContext';
 import type { ConnectionState, Server, User } from '@/types';
 
 // ChannelRail uses react-query (useCreateChannel/useUpdatePresence), so every render
@@ -52,7 +53,7 @@ vi.mock('@/components/AccountSwitcher', () => ({
 }));
 
 vi.mock('@/components/voice/VoiceControlBar', () => ({
-  VoiceControlBar: () => null,
+  VoiceControlBar: ({ channelName }: { channelName: string }) => <output data-testid="call-room-name">{channelName}</output>,
 }));
 
 const currentUser: User = {
@@ -314,17 +315,20 @@ describe('ChannelRail status picker', () => {
     // While expanded, the channel list wrapper is not hidden.
     const listWhenOpen = screen.getByText('lobby').closest('div.space-y-0\\.5');
     expect(listWhenOpen).not.toBeNull();
-    expect(listWhenOpen).not.toHaveClass('hidden');
+    expect(listWhenOpen).not.toHaveAttribute('hidden');
+    expect(screen.getByText('lobby')).toBeVisible();
 
     await user.click(toggle);
 
     const expandToggle = screen.getByRole('button', { name: /expand general/i });
     expect(expandToggle).toHaveAttribute('aria-expanded', 'false');
-    // The channel button stays mounted but its wrapper gets the `hidden` class.
-    // (Tailwind's stylesheet is not loaded in jsdom, so we assert on the class
-    // rather than computed visibility.)
+    // Semantic hiding removes collapsed destinations from visual and keyboard navigation.
     const listWhenCollapsed = screen.getByText('lobby').closest('div.space-y-0\\.5');
-    expect(listWhenCollapsed).toHaveClass('hidden');
+    expect(listWhenCollapsed).toHaveAttribute('hidden');
+    expect(screen.getByText('lobby')).not.toBeVisible();
+    expect(screen.queryByRole('button', { name: 'lobby' })).toBeNull();
+    await user.click(expandToggle);
+    expect(screen.getByText('lobby')).toBeVisible();
   });
 
   it('offers a receive-only watch action when a member is streaming video', async () => {
@@ -470,5 +474,76 @@ describe('ChannelRail channel creation (owner)', () => {
     await user.click(screen.getByRole('button', { name: 'Add channel' }));
     expect(screen.queryByRole('button', { name: /announce/i })).toBeNull();
     expect(screen.getByRole('button', { name: /text/i })).toBeTruthy();
+  });
+});
+
+describe('ChannelRail local navigation filter', () => {
+  const space: Server = { id: 'filter-space', name: 'Design studio', icon: '', ownerId: 'someone-else', members: [],
+    categories: [{ id: 'discussion', name: 'Discussion', channels: [
+      { id: 'design', name: 'design-review', type: 'text', categoryId: 'discussion' },
+      { id: 'general', name: 'general', type: 'text', categoryId: 'discussion' },
+    ] }, { id: 'voice', name: 'Voice', channels: [
+      { id: 'lounge', name: 'lounge', type: 'voice', categoryId: 'voice' },
+    ] }] };
+  function navigation() {
+    return <ChannelRail server={space} activeChannelId="general" currentUser={currentUser} users={[]}
+      directMessages={[]} connectionState={connectionState} connectedVoiceChannelId={null}
+      collapsed={false} onToggleCollapse={() => {}} onSelectChannel={() => {}}
+      onJoinVoice={() => {}} onOpenSettings={() => {}} />;
+  }
+  it('finds channels inside collapsed categories and restores the collapsed state on clear', async () => {
+    const user = userEvent.setup(); renderRail(navigation());
+    await user.click(screen.getByRole('button', { name: 'Collapse Discussion' }));
+    expect(screen.getByText('design-review')).not.toBeVisible();
+    await user.type(screen.getByRole('searchbox', { name: 'Filter channels' }), 'DESIGN');
+    expect(screen.getByText('design-review')).toBeVisible();
+    expect(screen.queryByText('general')).toBeNull();
+    const category = screen.getByRole('button', { name: 'Discussion (filtered results)' });
+    expect(category).toBeDisabled();
+    await user.click(category);
+    await user.click(screen.getByRole('button', { name: 'Clear navigation filter' }));
+    expect(screen.getByText('design-review')).not.toBeVisible();
+  });
+  it.each(['Channel actions', 'Category actions'])('anchors keyboard %s to its invoking control', async (label) => {
+    const showMenu = vi.fn();
+    renderRail(<ContextMenuContext.Provider value={{ showMenu, closeMenu: () => {} }}>{navigation()}</ContextMenuContext.Provider>);
+    const control = screen.getAllByRole('button', { name: label })[0];
+    vi.spyOn(control, 'getBoundingClientRect').mockReturnValue(new DOMRect(120, 240, 44, 44));
+    const user = userEvent.setup();
+    control.focus();
+    await user.keyboard('{Enter}');
+    expect(showMenu).toHaveBeenLastCalledWith(164, 284, expect.any(Array));
+    await user.keyboard(' ');
+    expect(showMenu).toHaveBeenLastCalledWith(164, 284, expect.any(Array));
+  });
+  it('preserves pointer coordinates for context clicks', () => {
+    const showMenu = vi.fn();
+    renderRail(<ContextMenuContext.Provider value={{ showMenu, closeMenu: () => {} }}>{navigation()}</ContextMenuContext.Provider>);
+    fireEvent.contextMenu(screen.getByText('design-review'), { clientX: 131, clientY: 262 });
+    expect(showMenu).toHaveBeenCalledWith(131, 262, expect.any(Array));
+  });
+  it('matches category names and provides recovery for an empty result', async () => {
+    const user = userEvent.setup(); renderRail(navigation());
+    const input = screen.getByRole('searchbox', { name: 'Filter channels' });
+    await user.type(input, 'discussion');
+    expect(screen.getByText('design-review')).toBeVisible();
+    expect(screen.getByText('general')).toBeInTheDocument();
+    expect(screen.queryByText('lounge')).toBeNull();
+    await user.clear(input); await user.type(input, 'no-channel');
+    expect(screen.getByText('No channels found.')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Clear filter' }));
+    expect(screen.getByText('lounge')).toBeInTheDocument();
+  });
+});
+
+describe('retained voice room labels', () => {
+  afterEach(() => { delete featureFlags.voiceControlBar; delete featureFlags.voiceTextChat; });
+  it('shows the connected room in both voice surfaces when browsing Home', () => {
+    featureFlags.voiceControlBar = true; featureFlags.voiceTextChat = true;
+    renderRail(<ChannelRail activeChannelId="dm" currentUser={currentUser} users={[]} directMessages={[]}
+      connectionState={connectionState} connectedVoiceChannelId="remote-room" connectedVoiceChannelName="Garden lounge"
+      collapsed={false} onToggleCollapse={() => {}} onSelectChannel={() => {}} onJoinVoice={() => {}} onOpenSettings={() => {}} isHome />);
+    expect(screen.getByTestId('call-room-name')).toHaveTextContent('Garden lounge');
+    expect(screen.getByRole('button', { name: /Garden lounge \/\/ TEXT/i })).toBeInTheDocument();
   });
 });

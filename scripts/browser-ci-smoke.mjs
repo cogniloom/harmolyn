@@ -118,9 +118,12 @@ function unavailableBrowser(reason) {
   return 0;
 }
 
-const executablePath = resolveChromeExecutable();
+// Required CI uses the exact browser revision resolved by the locked Playwright.
+// Optional local development retains the explicit/system-browser fallback.
+const requireManagedBrowser = process.env.HARMOLYN_REQUIRE_BROWSER === '1';
+const executablePath = requireManagedBrowser ? undefined : resolveChromeExecutable();
 let browser;
-if (!executablePath) {
+if (!executablePath && !requireManagedBrowser) {
   const unavailableCode = unavailableBrowser('no Chromium executable available on this runner (set PLAYWRIGHT_CHROME_PATH or install one to run the smoke).');
   await viteServer.close();
   process.exitCode = unavailableCode;
@@ -153,8 +156,9 @@ if (browser) {
     // break the smoke: the boot shell always surfaces the product and network names.
     await page.waitForFunction(() => {
       const root = document.getElementById('root');
-      return !!root && /HARMOLYN/i.test(root.innerText);
-    }, { timeout: 45000 });
+      return !!root && /HARMOLYN/i.test(root.innerText) && /XOREIN/i.test(root.innerText)
+        && !!root.querySelector('button');
+    }, null, { timeout: 45000 });
 
     const bodyText = (await page.locator('body').innerText()).toUpperCase();
     const markers = ['HARMOLYN', 'XOREIN'];

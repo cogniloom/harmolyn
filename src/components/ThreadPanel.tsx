@@ -3,6 +3,7 @@ import { resolveAvatarSrc } from '@/lib/avatar';
 import { Message, User } from '@/types';
 import { renderMarkdown } from '@/utils/markdown';
 import { useEscapeKey } from '@/hooks/useEscapeKey';
+import { isComposingKey } from '@/lib/composerKeys';
 import { X, Send, MessageSquare } from 'lucide-react';
 
 interface ThreadPanelProps {
@@ -10,8 +11,9 @@ interface ThreadPanelProps {
   parentUser: User;
   allUsers: User[];
   replies: Message[];
-  onSend: (content: string) => void;
+  onSend: (content: string) => void | boolean;
   onClose: () => void;
+  sendDisabledReason?: string;
 }
 
 function isThreadRecord(value: unknown): value is Record<string, unknown> {
@@ -64,7 +66,7 @@ function getUnknownThreadUser(): User {
   return { id: 'unknown', username: 'Unknown User', avatar: '', status: 'offline' as const };
 }
 
-export const ThreadPanel: React.FC<ThreadPanelProps> = ({ parentMessage, parentUser, allUsers, replies, onSend, onClose }) => {
+export const ThreadPanel: React.FC<ThreadPanelProps> = ({ parentMessage, parentUser, allUsers, replies, onSend, onClose, sendDisabledReason }) => {
   const [input, setInput] = useState('');
 
   useEscapeKey(onClose);
@@ -73,12 +75,11 @@ export const ThreadPanel: React.FC<ThreadPanelProps> = ({ parentMessage, parentU
   const normalizedUsers = React.useMemo(() => normalizeThreadUsers(allUsers), [allUsers]);
   const getUser = (id: string): User => normalizedUsers.find(u => u.id === id) || getUnknownThreadUser();
 
-  const canSend = input.trim().length > 0;
+  const canSend = !sendDisabledReason && input.trim().length > 0;
 
   const handleSend = () => {
     if (!canSend) return;
-    onSend(input.trim());
-    setInput('');
+    if (onSend(input.trim()) !== false) setInput('');
   };
 
   return (
@@ -135,6 +136,7 @@ export const ThreadPanel: React.FC<ThreadPanelProps> = ({ parentMessage, parentU
 
         {/* Input */}
         <div className="shrink-0 border-t border-white/5 px-3 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
+          {sendDisabledReason && <p role="status" className="mb-2 text-xs theme-text-dim">{sendDisabledReason}</p>}
           <label htmlFor="thread-reply-input" className="sr-only">Reply to thread</label>
           <div className="glass-realistic rounded-r2 flex items-center p-1 focus-within:border-primary/50 transition-all">
             <input
@@ -142,7 +144,7 @@ export const ThreadPanel: React.FC<ThreadPanelProps> = ({ parentMessage, parentU
               type="text"
               value={input}
               onChange={e => setInput(e.target.value)}
-              onKeyDown={e => { if (e.key === 'Enter') handleSend(); }}
+              onKeyDown={e => { if (e.key === 'Enter' && !e.defaultPrevented && !isComposingKey(e.nativeEvent)) { e.preventDefault(); handleSend(); } }}
               placeholder="REPLY // THREAD"
               className="flex-1 bg-transparent border-none focus:outline-none text-white px-3 font-mono text-xs placeholder-white/30"
             />

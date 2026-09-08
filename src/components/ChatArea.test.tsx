@@ -31,8 +31,6 @@ function renderChatArea(securityMode?: string, messages: Message[] = []) {
       isDM={false}
       messageLayout="modern"
       onToggleLayout={() => {}}
-      bgSeed="seed"
-      setBgSeed={() => {}}
       securityMode={securityMode}
       hasIdentity
     />
@@ -126,8 +124,6 @@ describe("ChatArea", () => {
           isDM={false}
           messageLayout="modern"
           onToggleLayout={() => {}}
-          bgSeed="seed"
-          setBgSeed={() => {}}
         />
       </QueryClientProvider>,
     );
@@ -186,8 +182,6 @@ describe("ChatArea", () => {
           isDM={false}
           messageLayout="modern"
           onToggleLayout={() => {}}
-          bgSeed="seed"
-          setBgSeed={() => {}}
         />
       </QueryClientProvider>,
     );
@@ -209,8 +203,6 @@ describe("ChatArea", () => {
           isDM={false}
           messageLayout="modern"
           onToggleLayout={() => {}}
-          bgSeed="seed"
-          setBgSeed={() => {}}
         />
       </QueryClientProvider>,
     );
@@ -237,8 +229,6 @@ describe("ChatArea", () => {
           isDM={false}
           messageLayout="modern"
           onToggleLayout={() => {}}
-          bgSeed="seed"
-          setBgSeed={() => {}}
           hasIdentity
         />
       </QueryClientProvider>,
@@ -290,8 +280,6 @@ describe("ChatArea", () => {
           isDM={false}
           messageLayout="modern"
           onToggleLayout={() => {}}
-          bgSeed="seed"
-          setBgSeed={() => {}}
         />
       </QueryClientProvider>,
     );

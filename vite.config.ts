@@ -3,7 +3,7 @@ import { readFileSync } from 'fs';
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
-const pkg = JSON.parse(readFileSync(path.resolve(__dirname, 'package.json'), 'utf-8')) as { version: string };
+const pkg = JSON.parse(readFileSync(path.resolve(import.meta.dirname, 'package.json'), 'utf-8')) as { version: string };
 
 export default defineConfig({
       base: process.env.TAURI_ENV_PLATFORM ? './' : '/',
@@ -22,14 +22,29 @@ export default defineConfig({
           'Permissions-Policy': 'camera=(self), microphone=(self), geolocation=(), payment=(), usb=()'
         },
       },
-      plugins: [react()],
+      plugins: [react(), {
+        name: 'harmolyn-browser-dependency-boundary',
+        generateBundle(_options, bundle) {
+          const forbidden = new Set<string>();
+          for (const output of Object.values(bundle)) {
+            if (output.type !== 'chunk') continue;
+            for (const [id, info] of Object.entries(output.modules)) {
+              // React Native / Metro are installed through a libp2p peer dependency,
+              // but must never enter a browser or Tauri frontend artifact.
+              const match = id.replace(/\\/g, '/').match(/\/node_modules\/(image-size|metro(?:-[^/]+)?|react-native(?:-[^/]+)?)\//);
+              if (match && info.renderedLength > 0) forbidden.add(match[1]);
+            }
+          }
+          if (forbidden.size) this.error(`Non-browser image/native tooling entered the frontend: ${[...forbidden].join(', ')}`);
+          this.emitFile({ type: 'asset', fileName: 'dependency-boundary.json', source: JSON.stringify({ forbiddenModulesBundled: [], checked: ['image-size', 'metro*', 'react-native*'] }) });
+        },
+      }],
       // SECURITY: Never inject secret API keys into client bundles via define.
       // Use edge functions / backend proxies for any external API calls.
       build: {
         rollupOptions: {
           input: {
-            main: path.resolve(__dirname, 'index.html'),
-            p0test: path.resolve(__dirname, 'p0-test.html'),
+            main: path.resolve(import.meta.dirname, 'index.html'),
           },
           output: {
             manualChunks(id: string) {
@@ -54,7 +69,7 @@ export default defineConfig({
       },
       resolve: {
         alias: {
-          '@': path.resolve(__dirname, './src'),
+          '@': path.resolve(import.meta.dirname, './src'),
         }
       }
 });

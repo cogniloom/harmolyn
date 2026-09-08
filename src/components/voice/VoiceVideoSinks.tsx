@@ -1,123 +1,68 @@
-// VoiceVideoSinks — the in-call video stage.
-//
-// Renders remote SCREEN shares as large tiles (click to fullscreen), remote
-// CAMERA feeds as smaller thumbnails, and a self-preview of your own screen share.
-// EVENT-DRIVEN: subscribes to the live VoiceSession (which is mutable and outside
-// the React snapshot) via onRosterChanged, so a new share/camera tile mounts
-// within one render of the track arriving; a low-frequency fallback re-sync
-// guards against a missed event.
 import React, { useEffect, useRef, useState } from 'react';
-import { Maximize2, MonitorUp, Video as VideoIcon } from 'lucide-react';
-import { getVoiceSession } from '@/native/voice/registry';
+import { Maximize2, MonitorUp, Video as VideoIcon, ChevronDown, ChevronUp, Play } from 'lucide-react';
+import { getVoiceSession, subscribeVoiceSession } from '@/native/voice/registry';
 import { resolveFeatureFlag } from '@/config/featureFlags';
 import { shortFingerprint } from '@/lib/peerLabel';
+import { attachMediaPlayback, type PlaybackState } from '@/lib/stabilization/playback';
 
-interface Tile {
-  key: string;
-  peerId: string;
-  stream: MediaStream;
-  kind: 'screen' | 'camera';
-  self?: boolean;
-}
+interface Tile { key: string; peerId: string; stream: MediaStream; kind: 'screen' | 'camera'; self?: boolean }
 
 function VideoTile({ tile }: { tile: Tile }) {
   const ref = useRef<HTMLVideoElement>(null);
+  const retry = useRef<(() => void) | null>(null);
+  const [status, setStatus] = useState<PlaybackState>('waiting');
   useEffect(() => {
-    if (ref.current && ref.current.srcObject !== tile.stream) ref.current.srcObject = tile.stream;
+    if (!ref.current) return;
+    const binding = attachMediaPlayback(ref.current, tile.stream, 'video', setStatus);
+    retry.current = binding.retry;
+    return () => { retry.current = null; binding.dispose(); };
   }, [tile.stream]);
-
-  const goFullscreen = () => { void ref.current?.requestFullscreen?.().catch(() => undefined); };
   const isScreen = tile.kind === 'screen';
-  const label = tile.self ? 'Your screen' : `${shortFingerprint(tile.peerId, 6, 4)}${isScreen ? ' · screen' : ''}`;
-
-  return (
-    <div
-      className={`group/tile relative max-w-full shrink-0 overflow-hidden rounded-xl border border-white/10 bg-black shadow-2xl ${isScreen ? 'aspect-video w-[min(340px,100%)]' : 'aspect-[4/3] w-[140px]'}`}
-    >
-      <video ref={ref} autoPlay playsInline muted={tile.self} className="w-full h-full object-contain bg-black" />
-      <div className="absolute bottom-0 inset-x-0 px-2 py-1 bg-gradient-to-t from-black/80 to-transparent flex items-center gap-1.5">
-        {isScreen ? <MonitorUp size={11} className="text-accent-success shrink-0" /> : <VideoIcon size={11} className="text-white/70 shrink-0" />}
-        <span className="text-[10px] text-white/90 font-medium truncate">{label}</span>
-      </div>
-      {isScreen && (
-        <button
-          type="button"
-          onClick={goFullscreen}
-          aria-label="Fullscreen"
-          className="compact-touch-target absolute right-1.5 top-1.5 flex items-center justify-center rounded-lg bg-black/60 p-1.5 text-white/90 opacity-80 transition-all hover:bg-black/80 hover:opacity-100 focus-visible:opacity-100"
-        >
-          <Maximize2 size={13} />
-        </button>
-      )}
+  const label = tile.self ? 'Your screen' : `${shortFingerprint(tile.peerId, 6, 4)} · ${isScreen ? 'screen' : 'camera'}`;
+  return <div className="relative min-w-0 overflow-hidden rounded-lg border border-white/10 bg-black">
+    <video ref={ref} playsInline muted aria-label={label} className="aspect-video w-full object-contain" />
+    {(status === 'blocked' || status === 'error') && <div className="absolute inset-0 flex items-center justify-center bg-black/80"><button type="button" onClick={() => retry.current?.()} className="flex items-center gap-2 rounded-lg bg-white/10 px-3 text-sm text-white"><Play size={16} />Retry video</button></div>}
+    <div className="flex min-w-0 items-center gap-2 px-2 text-xs text-white/80">
+      {isScreen ? <MonitorUp size={14} /> : <VideoIcon size={14} />}
+      <span className="min-w-0 flex-1 truncate">{label}</span>
+      <button type="button" aria-label={`Fullscreen ${label}`} onClick={() => { void ref.current?.requestFullscreen?.().catch(() => undefined); }}><Maximize2 size={18} /></button>
     </div>
-  );
+  </div>;
 }
 
 export function VoiceVideoSinks({ channelId }: { channelId?: string | null }) {
-  const [tiles, setTiles] = useState<Tile[]>([]);
-
+  const [snapshot, setSnapshot] = useState<{ channelId?: string | null; tiles: Tile[] }>({ tiles: [] });
+  const [minimized, setMinimized] = useState(false);
+  const enabled = resolveFeatureFlag('voiceVideo');
+  const tiles = enabled && snapshot.channelId === channelId ? snapshot.tiles : [];
   useEffect(() => {
-    if (!channelId || !resolveFeatureFlag('voiceVideo')) { setTiles([]); return; }
-
-    // Snapshot the live session's stream maps into React state. Skips the state
-    // update when nothing changed so fallback ticks don't cause re-renders.
+    if (!channelId || !enabled) return;
+    let subscribed: ReturnType<typeof getVoiceSession> = null;
+    let unsubscribe: (() => void) | undefined;
     const collect = () => {
       const session = getVoiceSession(channelId);
       const next: Tile[] = [];
       if (session) {
-        // Local screen-share self-preview.
-        const localScreen = session.localScreenStream;
-        if (localScreen && localScreen.getVideoTracks().length) {
-          next.push({ key: 'self:screen', peerId: 'self', stream: localScreen, kind: 'screen', self: true });
-        }
-        // Remote screen shares (large).
-        for (const [peerId, stream] of session.remoteScreensMap) {
-          if (stream.getVideoTracks().length) next.push({ key: `${peerId}:screen`, peerId, stream, kind: 'screen' });
-        }
-        // Remote cameras (thumbnails) — primary streams that carry a video track.
-        for (const [peerId, stream] of session.remoteStreamsMap) {
-          if (stream.getVideoTracks().length) next.push({ key: `${peerId}:cam`, peerId, stream, kind: 'camera' });
-        }
+        if (session.localScreenStream?.getVideoTracks().some(track => track.readyState !== 'ended')) next.push({ key: `${channelId}:self:screen`, peerId: 'self', stream: session.localScreenStream, kind: 'screen', self: true });
+        for (const [peerId, stream] of session.remoteScreensMap) if (stream.getVideoTracks().some(track => track.readyState !== 'ended')) next.push({ key: `${channelId}:${peerId}:screen`, peerId, stream, kind: 'screen' });
+        for (const [peerId, stream] of session.remoteStreamsMap) if (stream.getVideoTracks().some(track => track.readyState !== 'ended')) next.push({ key: `${channelId}:${peerId}:camera`, peerId, stream, kind: 'camera' });
       }
-      setTiles(prev =>
-        prev.length === next.length && prev.every((t, i) => t.key === next[i].key && t.stream === next[i].stream)
-          ? prev
-          : next);
+      setSnapshot(previous => previous.channelId === channelId && previous.tiles.length === next.length && previous.tiles.every((tile, index) => tile.key === next[index].key && tile.stream === next[index].stream) ? previous : { channelId, tiles: next });
     };
-
-    // Event-driven attach: the session notifies on every stream/roster change.
-    // subscribe() also handles the session being created/replaced after mount.
-    let unsubscribe: (() => void) | null = null;
-    let subscribed: ReturnType<typeof getVoiceSession> = null;
-    const subscribe = () => {
+    const bind = () => {
       const session = getVoiceSession(channelId);
-      if (session === subscribed) return;
-      unsubscribe?.();
-      subscribed = session;
-      unsubscribe = session ? session.onRosterChanged(collect) : null;
+      if (session !== subscribed) { unsubscribe?.(); subscribed = session; unsubscribe = session?.onRosterChanged(collect); }
+      collect();
     };
-
-    subscribe();
-    collect();
-
-    // FALLBACK ONLY: a low-frequency re-sync as a safety net against a missed
-    // event (or a session that appeared after mount). The onRosterChanged
-    // subscription above is the primary update path.
-    const fallback = setInterval(() => { subscribe(); collect(); }, 2000);
-
-    return () => {
-      clearInterval(fallback);
-      unsubscribe?.();
-    };
-  }, [channelId]);
-
-  if (tiles.length === 0) return null;
-
-  return (
-    <div className="no-scrollbar pointer-events-auto fixed bottom-[calc(6rem+env(safe-area-inset-bottom))] left-[max(0.75rem,env(safe-area-inset-left))] right-[max(0.75rem,env(safe-area-inset-right))] z-[120] flex max-h-[calc(100dvh-7rem-env(safe-area-inset-top)-env(safe-area-inset-bottom))] min-h-0 flex-col items-end gap-2 overflow-y-auto overscroll-contain">
-      {tiles.map((tile) => (
-        <React.Fragment key={tile.key}><VideoTile tile={tile} /></React.Fragment>
-      ))}
-    </div>
-  );
+    const releaseRegistry = subscribeVoiceSession(channelId, bind);
+    bind();
+    return () => { releaseRegistry(); unsubscribe?.(); };
+  }, [channelId, enabled]);
+  if (!tiles.length) return null;
+  return <section className="voice-stage appearance-media-island" aria-label="Call video">
+    <button type="button" className="flex w-full shrink-0 items-center gap-2 px-3 text-sm text-white/90" aria-expanded={!minimized} onClick={() => setMinimized(value => !value)}>
+      <VideoIcon size={18} /><span className="flex-1 text-left">Video · {tiles.length}</span><span className="text-xs">{minimized ? 'Show' : 'Minimize'}</span>{minimized ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
+    </button>
+    {!minimized && <div className="voice-stage-body">{tiles.map(tile => <VideoTile key={tile.key} tile={tile} />)}</div>}
+  </section>;
 }

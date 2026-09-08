@@ -477,7 +477,7 @@ function mapDirectMessage(
   const user = otherParticipant === 'unknown'
     ? ensureUser(otherParticipant, { fallbackName: 'Unknown User' })
     : ensureUser(otherParticipant);
-  const latestMessage = messagesByScope.get(dm.id)?.at(-1);
+  const latestMessage = messagesByScope.get(dm.id)?.slice(-1)[0];
   const unreadCount = unreadByScope[dm.id] ?? 0;
   return {
     id: dm.id,

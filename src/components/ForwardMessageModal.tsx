@@ -1,12 +1,15 @@
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Send, X, Hash, AtSign, Search, ChevronRight } from 'lucide-react';
 import { useEscapeKey } from '@/hooks/useEscapeKey';
+import { trapDialogFocus } from '@/lib/stabilization/interaction';
 
 interface ForwardMessageModalProps {
   messageContent: string;
   destinations: Destination[];
-  onForward: (destinations: Destination[], note: string) => void;
+  // The parent owns dismissal after its activation guard accepts the batch.
+  onForward: (destinations: Destination[], note: string) => void | Promise<void>;
   onClose: () => void;
+  sendDisabledReason?: string;
 }
 
 interface Destination {
@@ -62,10 +65,19 @@ function normalizeDestinations(value: unknown): Destination[] {
   return normalized;
 }
 
-export const ForwardMessageModal: React.FC<ForwardMessageModalProps> = ({ messageContent, destinations, onForward, onClose }) => {
+export const ForwardMessageModal: React.FC<ForwardMessageModalProps> = ({ messageContent, destinations, onForward, onClose, sendDisabledReason }) => {
   const [query, setQuery] = useState('');
   const [selected, setSelected] = useState<Destination[]>([]);
   const [note, setNote] = useState('');
+  const [submissionError, setSubmissionError] = useState('');
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const pendingRef = useRef(false);
+  const mountedRef = useRef(false);
+  useEffect(() => {
+    mountedRef.current = true;
+    const release = dialogRef.current ? trapDialogFocus(dialogRef.current) : undefined;
+    return () => { mountedRef.current = false; release?.(); };
+  }, []);
   const normalizedDestinations = useMemo(() => normalizeDestinations(destinations), [destinations]);
   const listRef = useRef<HTMLDivElement>(null);
 
@@ -87,8 +99,9 @@ export const ForwardMessageModal: React.FC<ForwardMessageModalProps> = ({ messag
     items[nextIndex]?.focus();
   };
 
-  const filtered = query.trim()
-    ? normalizedDestinations.filter(d => d.label.toLowerCase().includes(query.toLowerCase()))
+  const normalizedQuery = query.trim().toLowerCase();
+  const filtered = normalizedQuery
+    ? normalizedDestinations.filter(d => d.label.toLowerCase().includes(normalizedQuery))
     : normalizedDestinations;
 
   const toggleSelect = (dest: Destination) => {
@@ -99,15 +112,26 @@ export const ForwardMessageModal: React.FC<ForwardMessageModalProps> = ({ messag
     }
   };
 
-  const handleForward = () => {
-    onForward(selected, note);
-    onClose();
+  const handleForward = async () => {
+    if (pendingRef.current || sendDisabledReason || selected.length === 0) return;
+    pendingRef.current = true;
+    setSubmissionError('');
+    try {
+      // A stale dialog can pass its prop check while the parent's synchronous
+      // guard rejects activation. Do not dismiss or erase fields on that path.
+      await onForward(selected, note);
+    } catch {
+      if (mountedRef.current) setSubmissionError('Unable to forward. Your selections and note are still here.');
+    } finally {
+      pendingRef.current = false;
+    }
   };
 
   return (
     <div className="responsive-overlay-scroll fixed inset-0 z-[200] flex items-center justify-center" onClick={onClose}>
       <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" />
       <div
+        ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby="forward-message-title"
@@ -117,8 +141,8 @@ export const ForwardMessageModal: React.FC<ForwardMessageModalProps> = ({ messag
         {/* Header */}
         <div className="flex flex-shrink-0 items-center justify-between gap-3 border-b border-white/5 px-4 py-3 sm:px-5 sm:py-4">
           <div>
-            <h2 id="forward-message-title" className="text-sm font-bold text-white font-display">FORWARD // MESSAGE</h2>
-            <span className="text-[9px] text-white/30 font-mono">SELECT UP TO 5 DESTINATIONS</span>
+            <h2 id="forward-message-title" className="text-sm font-bold text-white font-display">Forward message</h2>
+            <span className="text-[9px] text-white/30 font-mono">Choose up to 5 conversations</span>
           </div>
           <button onClick={onClose} aria-label="Close" className="touch-target flex flex-shrink-0 items-center justify-center rounded-full text-white/30 transition-colors hover:bg-white/5 hover:text-white focus-ring">
             <X size={16} />
@@ -126,6 +150,8 @@ export const ForwardMessageModal: React.FC<ForwardMessageModalProps> = ({ messag
         </div>
 
         <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+          {sendDisabledReason && <p role="status" className="px-4 pt-3 text-xs theme-text-dim">{sendDisabledReason}</p>}
+          {submissionError && <p role="alert" className="px-4 pt-3 text-xs text-accent-danger">{submissionError}</p>}
           {/* Forwarded message */}
           <div className="mx-4 mt-3 rounded-r1 border border-white/5 bg-white/5 p-3">
             <div className="micro-label text-white/30 mb-1">MESSAGE</div>
@@ -206,6 +232,7 @@ export const ForwardMessageModal: React.FC<ForwardMessageModalProps> = ({ messag
               type="text"
               value={note}
               onChange={e => setNote(e.target.value)}
+              aria-label="Forwarding note"
               placeholder="Add a note (optional)..."
               className="compact-touch-target w-full rounded-r1 border border-white/5 bg-surface-dark px-3 py-2 text-xs text-white font-mono placeholder-white/20 focus:border-primary/50 focus:outline-none"
             />
@@ -219,7 +246,7 @@ export const ForwardMessageModal: React.FC<ForwardMessageModalProps> = ({ messag
           </button>
           <button
             onClick={handleForward}
-            disabled={selected.length === 0}
+            disabled={Boolean(sendDisabledReason) || selected.length === 0}
             className="compact-touch-target flex items-center gap-1.5 rounded-full bg-primary px-5 py-2 text-xs font-bold text-bg-0 shadow-glow-sm transition-all hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-30"
           >
             <Send size={12} /> Forward ({selected.length})

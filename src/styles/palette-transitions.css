@@ -1,0 +1,10 @@
+/* Interpolating light/dark text and backgrounds independently creates a brief
+   unreadable middle palette. Apply color tokens together, without a layout read
+   or timer on every native color-picker event. Keep compositor hover feedback. */
+html[data-appearance] .transition-all,
+html[data-appearance] .transition-colors {
+  transition-property: opacity, transform, box-shadow;
+}
+html[data-appearance] [data-appearance-rail] button {
+  transition-property: opacity, transform;
+}

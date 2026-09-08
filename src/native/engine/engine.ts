@@ -616,7 +616,7 @@ export class XoreinNativeEngine {
             await serveFamilyStream(stream, async (req: PeerStreamRequest) => {
               const framedReply = (obj: unknown) =>
                 frameMessage(encodePeerStreamResponse({ payload: new TextEncoder().encode(JSON.stringify(obj)), requestId: req.requestId }));
-              let payload: Record<string, unknown> = {};
+              let payload: Record<string, unknown>;
               try {
                 payload = req.payload ? (JSON.parse(new TextDecoder().decode(req.payload)) as Record<string, unknown>) : {};
               } catch { return framedReply({ ok: false, error: 'bad_frame' }); }
@@ -673,7 +673,7 @@ export class XoreinNativeEngine {
             await serveFamilyStream(stream, async (req: PeerStreamRequest) => {
               const framedReply = (obj: unknown) =>
                 frameMessage(encodePeerStreamResponse({ payload: new TextEncoder().encode(JSON.stringify(obj)), requestId: req.requestId }));
-              let payload: Record<string, unknown> = {};
+              let payload: Record<string, unknown>;
               try {
                 payload = req.payload ? (JSON.parse(new TextDecoder().decode(req.payload)) as Record<string, unknown>) : {};
               } catch { return framedReply({ ok: false, error: 'bad_frame' }); }
@@ -788,7 +788,7 @@ export class XoreinNativeEngine {
       const connected = [...new Set(this._wiredNode.getConnections()
         .map(connection => connection.remotePeer?.toString())
         .filter((peer): peer is string => Boolean(peer))
-        .filter(peer => peer !== activeRelay?.split('/p2p/').at(-1)))]
+        .filter(peer => peer !== activeRelay?.split('/p2p/').slice(-1)[0]))]
         .slice(0, 4);
       batches.push(...await Promise.all(connected.map(peer =>
         this.peerSync.exchangePeersWith(peer, knownIDs),
@@ -875,7 +875,7 @@ export class XoreinNativeEngine {
           .map(member => server.member_since?.[member])
           .filter((value): value is string => Boolean(value))
           .sort();
-        const newestJoin = currentBoundaries.at(-1);
+        const newestJoin = currentBoundaries.slice(-1)[0];
         for (const channelId of Object.keys(server.channels ?? {})) {
           const scoped = state.messages
             .filter(message => message.server_id === server.id

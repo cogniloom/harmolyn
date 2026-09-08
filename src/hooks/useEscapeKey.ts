@@ -1,22 +1,12 @@
-import { useEffect } from 'react';
+import { useEffect, useLayoutEffect, useRef } from 'react';
+import { registerEscapeHandler } from '@/lib/stabilization/interaction';
 
-/**
- * Invokes `onEscape` when the Escape key is pressed while `enabled` is true.
- *
- * Shared overlay/modal affordance: pairs with the click-outside handlers that
- * most overlays already implement so keyboard users get the same "dismiss"
- * escape hatch as mouse users. Registers a single document-level `keydown`
- * listener and cleans it up on unmount or when disabled.
- */
-export function useEscapeKey(onEscape: () => void, enabled: boolean = true): void {
+/** Stable registrations keep a rerendered parent from stealing its child's Escape. */
+export function useEscapeKey(onEscape: () => void, enabled = true): void {
+  const callback = useRef(onEscape);
+  useLayoutEffect(() => { callback.current = onEscape; }, [onEscape]);
   useEffect(() => {
-    if (!enabled) return;
-    const handler = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape' || event.defaultPrevented) return;
-      event.preventDefault();
-      onEscape();
-    };
-    document.addEventListener('keydown', handler);
-    return () => document.removeEventListener('keydown', handler);
-  }, [onEscape, enabled]);
+    if (!enabled || typeof document === 'undefined') return;
+    return registerEscapeHandler(document, () => callback.current());
+  }, [enabled]);
 }

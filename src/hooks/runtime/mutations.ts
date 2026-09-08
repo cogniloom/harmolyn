@@ -13,7 +13,7 @@ import type { AutoModRuleType, AutoModAction } from '@/lib/xoreinControl';
 export function useSendChannelMessage() {
   const m = useRuntimeMutations();
   return useMutation({
-    mutationFn: ({ channelId, content, replyTo, media }: { channelId: string; content: string; replyTo?: string; media?: XoreinAttachment[] }) =>
+    mutationFn: async ({ channelId, content, replyTo, media }: { channelId: string; content: string; replyTo?: string; media?: XoreinAttachment[] }) =>
       m.sendChannelMessage(channelId, content, {
         ...(replyTo ? { reply_to: replyTo } : {}),
         ...(media && media.length ? { media } : {}),
@@ -24,7 +24,7 @@ export function useSendChannelMessage() {
 export function useSendDmMessage() {
   const m = useRuntimeMutations();
   return useMutation({
-    mutationFn: ({ dmId, content, forwardedFrom, media }: { dmId: string; content: string; forwardedFrom?: string; media?: XoreinAttachment[] }) =>
+    mutationFn: async ({ dmId, content, forwardedFrom, media }: { dmId: string; content: string; forwardedFrom?: string; media?: XoreinAttachment[] }) =>
       m.sendDmMessage(dmId, content, {
         ...(forwardedFrom ? { forwarded_from: forwardedFrom } : {}),
         ...(media && media.length ? { media } : {}),
@@ -35,7 +35,7 @@ export function useSendDmMessage() {
 export function useLoadOlderHistory() {
   const m = useRuntimeMutations();
   return useMutation({
-    mutationFn: ({ serverId, channelId }: { serverId: string; channelId: string }) =>
+    mutationFn: async ({ serverId, channelId }: { serverId: string; channelId: string }) =>
       m.loadOlderHistory(serverId, channelId),
   });
 }
@@ -43,7 +43,7 @@ export function useLoadOlderHistory() {
 export function useEditMessage() {
   const m = useRuntimeMutations();
   return useMutation({
-    mutationFn: ({ messageId, content }: { messageId: string; content: string }) =>
+    mutationFn: async ({ messageId, content }: { messageId: string; content: string }) =>
       m.editMessage(messageId, content),
   });
 }
@@ -51,14 +51,14 @@ export function useEditMessage() {
 export function useDeleteMessage() {
   const m = useRuntimeMutations();
   return useMutation({
-    mutationFn: ({ messageId }: { messageId: string }) => m.deleteMessage(messageId),
+    mutationFn: async ({ messageId }: { messageId: string }) => m.deleteMessage(messageId),
   });
 }
 
 export function useAddReaction() {
   const m = useRuntimeMutations();
   return useMutation({
-    mutationFn: ({ messageId, emoji }: { messageId: string; emoji: string }) =>
+    mutationFn: async ({ messageId, emoji }: { messageId: string; emoji: string }) =>
       m.addReaction(messageId, emoji),
   });
 }
@@ -66,7 +66,7 @@ export function useAddReaction() {
 export function useRemoveReaction() {
   const m = useRuntimeMutations();
   return useMutation({
-    mutationFn: ({ messageId, emoji }: { messageId: string; emoji: string }) =>
+    mutationFn: async ({ messageId, emoji }: { messageId: string; emoji: string }) =>
       m.removeReaction(messageId, emoji),
   });
 }
@@ -74,7 +74,7 @@ export function useRemoveReaction() {
 export function useUpdatePresence() {
   const m = useRuntimeMutations();
   return useMutation({
-    mutationFn: ({ status, statusText, typingInScope }: { status: string; statusText?: string; typingInScope?: string }) =>
+    mutationFn: async ({ status, statusText, typingInScope }: { status: string; statusText?: string; typingInScope?: string }) =>
       m.updatePresence({ status, status_text: statusText, typing_in_scope: typingInScope }),
   });
 }
@@ -82,7 +82,7 @@ export function useUpdatePresence() {
 export function usePinMessage() {
   const m = useRuntimeMutations();
   return useMutation({
-    mutationFn: ({ channelId, messageId }: { channelId: string; messageId: string }) =>
+    mutationFn: async ({ channelId, messageId }: { channelId: string; messageId: string }) =>
       m.pinMessage(channelId, messageId),
   });
 }
@@ -91,7 +91,7 @@ export function usePinMessage() {
 export function useSetPeerVerified() {
   const m = useRuntimeMutations();
   return useMutation({
-    mutationFn: ({ peerId, verified }: { peerId: string; verified: boolean }) =>
+    mutationFn: async ({ peerId, verified }: { peerId: string; verified: boolean }) =>
       m.setPeerVerified(peerId, verified),
   });
 }
@@ -100,7 +100,7 @@ export function useSetPeerVerified() {
 export function useSubmitReport() {
   const m = useRuntimeMutations();
   return useMutation({
-    mutationFn: (input: Parameters<typeof m.submitReport>[0]) => m.submitReport(input),
+    mutationFn: async (input: Parameters<typeof m.submitReport>[0]) => m.submitReport(input),
   });
 }
 
@@ -108,7 +108,7 @@ export function useSubmitReport() {
 export function useResolveReport() {
   const m = useRuntimeMutations();
   return useMutation({
-    mutationFn: ({ reportId, resolved }: { reportId: string; resolved?: boolean }) =>
+    mutationFn: async ({ reportId, resolved }: { reportId: string; resolved?: boolean }) =>
       m.resolveReport(reportId, resolved),
   });
 }
@@ -116,7 +116,7 @@ export function useResolveReport() {
 export function useUnpinMessage() {
   const m = useRuntimeMutations();
   return useMutation({
-    mutationFn: ({ channelId, messageId }: { channelId: string; messageId: string }) =>
+    mutationFn: async ({ channelId, messageId }: { channelId: string; messageId: string }) =>
       m.unpinMessage(channelId, messageId),
   });
 }
@@ -124,21 +124,21 @@ export function useUnpinMessage() {
 export function useCreateServer() {
   const m = useRuntimeMutations();
   return useMutation({
-    mutationFn: (input: { name: string; description?: string }) => m.createServer(input),
+    mutationFn: async (input: { name: string; description?: string }) => m.createServer(input),
   });
 }
 
 export function useJoinServer() {
   const m = useRuntimeMutations();
   return useMutation({
-    mutationFn: ({ deeplink }: { deeplink: string }) => m.joinServerByInvite(deeplink),
+    mutationFn: async ({ deeplink }: { deeplink: string }) => m.joinServerByInvite(deeplink),
   });
 }
 
 export function useCreateChannel() {
   const m = useRuntimeMutations();
   return useMutation({
-    mutationFn: ({ serverId, name, voice }: { serverId: string; name: string; voice?: boolean }) =>
+    mutationFn: async ({ serverId, name, voice }: { serverId: string; name: string; voice?: boolean }) =>
       m.createChannel(serverId, name, voice),
   });
 }
@@ -146,7 +146,7 @@ export function useCreateChannel() {
 export function useUpdateChannel() {
   const m = useRuntimeMutations();
   return useMutation({
-    mutationFn: ({ serverId, channelId, patch }: { serverId: string; channelId: string; patch: { name?: string; topic?: string; bitrate?: number; user_limit?: number } }) =>
+    mutationFn: async ({ serverId, channelId, patch }: { serverId: string; channelId: string; patch: { name?: string; topic?: string; bitrate?: number; user_limit?: number } }) =>
       m.updateChannel(serverId, channelId, patch),
   });
 }
@@ -154,7 +154,7 @@ export function useUpdateChannel() {
 export function useDeleteChannel() {
   const m = useRuntimeMutations();
   return useMutation({
-    mutationFn: ({ serverId, channelId }: { serverId: string; channelId: string }) =>
+    mutationFn: async ({ serverId, channelId }: { serverId: string; channelId: string }) =>
       m.deleteChannel(serverId, channelId),
   });
 }
@@ -162,7 +162,7 @@ export function useDeleteChannel() {
 export function useCreateRole() {
   const m = useRuntimeMutations();
   return useMutation({
-    mutationFn: ({ serverId, roleName }: { serverId: string; roleName: string }) =>
+    mutationFn: async ({ serverId, roleName }: { serverId: string; roleName: string }) =>
       m.createRole(serverId, { role_name: roleName }),
   });
 }
@@ -170,7 +170,7 @@ export function useCreateRole() {
 export function useUpdateRole() {
   const m = useRuntimeMutations();
   return useMutation({
-    mutationFn: ({ serverId, roleId, patch }: { serverId: string; roleId: string; patch: { name?: string; color?: string; permissions?: string[] } }) =>
+    mutationFn: async ({ serverId, roleId, patch }: { serverId: string; roleId: string; patch: { name?: string; color?: string; permissions?: string[] } }) =>
       m.updateRole(serverId, roleId, patch),
   });
 }
@@ -178,7 +178,7 @@ export function useUpdateRole() {
 export function useDeleteRole() {
   const m = useRuntimeMutations();
   return useMutation({
-    mutationFn: ({ serverId, roleId }: { serverId: string; roleId: string }) =>
+    mutationFn: async ({ serverId, roleId }: { serverId: string; roleId: string }) =>
       m.deleteRole(serverId, roleId),
   });
 }
@@ -186,7 +186,7 @@ export function useDeleteRole() {
 export function useAssignRole() {
   const m = useRuntimeMutations();
   return useMutation({
-    mutationFn: ({ serverId, peerId, roleId }: { serverId: string; peerId: string; roleId: string }) =>
+    mutationFn: async ({ serverId, peerId, roleId }: { serverId: string; peerId: string; roleId: string }) =>
       m.assignRole(serverId, peerId, roleId),
   });
 }
@@ -194,7 +194,7 @@ export function useAssignRole() {
 export function useCastPollVote() {
   const m = useRuntimeMutations();
   return useMutation({
-    mutationFn: ({ messageId, optionIndex }: { messageId: string; optionIndex: number }) =>
+    mutationFn: async ({ messageId, optionIndex }: { messageId: string; optionIndex: number }) =>
       m.castPollVote(messageId, optionIndex),
   });
 }
@@ -202,7 +202,7 @@ export function useCastPollVote() {
 export function useModerationAction() {
   const m = useRuntimeMutations();
   return useMutation({
-    mutationFn: ({
+    mutationFn: async ({
       serverId, action, input,
     }: {
       serverId: string;
@@ -215,7 +215,7 @@ export function useModerationAction() {
 export function useCreateIdentity() {
   const m = useRuntimeMutations();
   return useMutation({
-    mutationFn: ({ displayName, bio, passphrase }: { displayName: string; bio?: string; passphrase: string }) =>
+    mutationFn: async ({ displayName, bio, passphrase }: { displayName: string; bio?: string; passphrase: string }) =>
       m.createIdentity(displayName, bio, passphrase),
   });
 }
@@ -223,7 +223,7 @@ export function useCreateIdentity() {
 export function useUpdateProfile() {
   const m = useRuntimeMutations();
   return useMutation({
-    mutationFn: ({ displayName, bio, avatar }: { displayName: string; bio?: string; avatar?: string }) =>
+    mutationFn: async ({ displayName, bio, avatar }: { displayName: string; bio?: string; avatar?: string }) =>
       m.updateProfile(displayName, bio, avatar),
   });
 }
@@ -231,7 +231,7 @@ export function useUpdateProfile() {
 export function useRestoreIdentity() {
   const m = useRuntimeMutations();
   return useMutation({
-    mutationFn: ({ backup, passphrase }: { backup: string; passphrase: string }) =>
+    mutationFn: async ({ backup, passphrase }: { backup: string; passphrase: string }) =>
       m.restoreIdentity(backup, passphrase),
   });
 }
@@ -239,14 +239,14 @@ export function useRestoreIdentity() {
 export function useBackupIdentity() {
   const m = useRuntimeMutations();
   return useMutation({
-    mutationFn: ({ passphrase }: { passphrase: string }) => m.getIdentityBackup(passphrase),
+    mutationFn: async ({ passphrase }: { passphrase: string }) => m.getIdentityBackup(passphrase),
   });
 }
 
 export function useJoinVoice() {
   const m = useRuntimeMutations();
   return useMutation({
-    mutationFn: ({ channelId }: { channelId: string; muted?: boolean }) =>
+    mutationFn: async ({ channelId }: { channelId: string; muted?: boolean }) =>
       m.joinVoiceChannel(channelId),
   });
 }
@@ -254,14 +254,14 @@ export function useJoinVoice() {
 export function useLeaveVoice() {
   const m = useRuntimeMutations();
   return useMutation({
-    mutationFn: ({ channelId }: { channelId: string }) => m.leaveVoiceChannel(channelId),
+    mutationFn: async ({ channelId }: { channelId: string }) => m.leaveVoiceChannel(channelId),
   });
 }
 
 export function useMuteVoice() {
   const m = useRuntimeMutations();
   return useMutation({
-    mutationFn: ({ channelId, muted }: { channelId: string; muted: boolean }) =>
+    mutationFn: async ({ channelId, muted }: { channelId: string; muted: boolean }) =>
       m.setVoiceMuted(channelId, muted),
   });
 }
@@ -269,14 +269,14 @@ export function useMuteVoice() {
 export function useRegisterRelay() {
   const m = useRuntimeMutations();
   return useMutation({
-    mutationFn: ({ multiaddr }: { multiaddr: string }) => m.registerRelay(multiaddr),
+    mutationFn: async ({ multiaddr }: { multiaddr: string }) => m.registerRelay(multiaddr),
   });
 }
 
 export function useRemoveRelay() {
   const m = useRuntimeMutations();
   return useMutation({
-    mutationFn: ({ multiaddr }: { multiaddr: string }) => m.removeRelay(multiaddr),
+    mutationFn: async ({ multiaddr }: { multiaddr: string }) => m.removeRelay(multiaddr),
   });
 }
 
@@ -311,7 +311,7 @@ export function useCreateAutoModRule(serverId: string) {
   const snapshot = useRuntimeSnapshot();
   const featureEnabled = resolveFeatureFlag('autoMod');
   return useMutation({
-    mutationFn: (input: { name: string; type: AutoModRuleType; enabled: boolean; keyword_patterns?: string[]; actions: AutoModAction[] }) => {
+    mutationFn: async (input: { name: string; type: AutoModRuleType; enabled: boolean; keyword_patterns?: string[]; actions: AutoModAction[] }) => {
       if (!featureEnabled) return Promise.reject(new Error('AutoMod is not available in this runtime.'));
       return createAutoModRule(snapshot, serverId, input);
     },
@@ -322,7 +322,7 @@ export function useUpdateAutoModRule(serverId: string) {
   const snapshot = useRuntimeSnapshot();
   const featureEnabled = resolveFeatureFlag('autoMod');
   return useMutation({
-    mutationFn: ({ ruleId, patch }: { ruleId: string; patch: { name?: string; enabled?: boolean; keyword_patterns?: string[]; actions?: AutoModAction[] } }) => {
+    mutationFn: async ({ ruleId, patch }: { ruleId: string; patch: { name?: string; enabled?: boolean; keyword_patterns?: string[]; actions?: AutoModAction[] } }) => {
       if (!featureEnabled) return Promise.reject(new Error('AutoMod is not available in this runtime.'));
       return updateAutoModRule(snapshot, serverId, ruleId, patch);
     },
@@ -333,7 +333,7 @@ export function useDeleteAutoModRule(serverId: string) {
   const snapshot = useRuntimeSnapshot();
   const featureEnabled = resolveFeatureFlag('autoMod');
   return useMutation({
-    mutationFn: ({ ruleId }: { ruleId: string }) => {
+    mutationFn: async ({ ruleId }: { ruleId: string }) => {
       if (!featureEnabled) return Promise.reject(new Error('AutoMod is not available in this runtime.'));
       return deleteAutoModRule(snapshot, serverId, ruleId);
     },
@@ -356,7 +356,7 @@ export function useCreateBot(serverId: string) {
   const snapshot = useRuntimeSnapshot();
   const featureEnabled = resolveFeatureFlag('bots');
   return useMutation({
-    mutationFn: ({ name }: { name: string }) => {
+    mutationFn: async ({ name }: { name: string }) => {
       if (!featureEnabled) return Promise.reject(new Error('Bots are not available in this runtime.'));
       return createBot(snapshot, serverId, name);
     },
@@ -367,7 +367,7 @@ export function useDeleteBot(serverId: string) {
   const snapshot = useRuntimeSnapshot();
   const featureEnabled = resolveFeatureFlag('bots');
   return useMutation({
-    mutationFn: ({ botId }: { botId: string }) => {
+    mutationFn: async ({ botId }: { botId: string }) => {
       if (!featureEnabled) return Promise.reject(new Error('Bots are not available in this runtime.'));
       return deleteBot(snapshot, serverId, botId);
     },

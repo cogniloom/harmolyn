@@ -1,74 +1,75 @@
-import React, { useState, useCallback, useEffect } from 'react';
-import { Paperclip, Download } from 'lucide-react';
+import React, { useState, useMemo, useEffect, useCallback } from 'react';
+import { Paperclip, Download, X, RotateCcw } from 'lucide-react';
 import type { XoreinAttachment } from '@/types';
 import { downloadDecryptedAttachment } from '@/native/blobs/blobs';
 import { Spinner } from '@/components/ui/Spinner';
+import { createObjectUrlLease, safeDownloadName, safePreviewMime } from '@/lib/stabilization/previews';
 
-const isImage = (ct: string) => /^image\//i.test(ct);
+type PreviewState = { lease: ReturnType<typeof createObjectUrlLease>; status: 'loading' | 'ready' | 'error'; url?: string; imageFailed?: boolean } | null;
 
-/**
- * Renders an end-to-end encrypted attachment. Opaque ciphertext is fetched from
- * authenticated Xorein nodes when available, otherwise from scope peers. Nothing
- * is fetched until the user clicks "decrypt". The client verifies, decrypts, and
- * exposes the file locally; providers never receive its key or plaintext.
- */
+/** Only explicit user actions fetch ciphertext; stale completions never expose plaintext. */
 export const AttachmentView: React.FC<{ attachment: XoreinAttachment }> = ({ attachment }) => {
-  const [state, setState] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
-  const [url, setUrl] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  // Includes the authenticated manifest, not just the reusable display name/id.
+  // This identity stays in memory; it is never a DOM key, attribute or log value.
+  const identity = JSON.stringify(attachment);
+  const lease = useMemo(() => createObjectUrlLease(), [identity]);
+  const [preview, setPreview] = useState<PreviewState>(null);
+  const current = preview?.lease === lease ? preview : null;
+  const name = safeDownloadName(attachment.name);
+  const mime = safePreviewMime(attachment.content_type || '');
+  const image = mime.startsWith('image/');
+  const size = Number.isFinite(attachment.size) && attachment.size >= 0 ? `${Math.max(1, Math.round(attachment.size / 1024))} KB` : 'Unknown size';
 
-  useEffect(() => () => { if (url) URL.revokeObjectURL(url); }, [url]);
+  useEffect(() => {
+    lease.activate();
+    return () => lease.dispose();
+  }, [lease]);
 
   const load = useCallback(async () => {
-    setState('loading');
-    setError(null);
+    const token = lease.begin();
+    if (token === null) return;
+    setPreview({ lease, status: 'loading' });
     try {
       const bytes = await downloadDecryptedAttachment(attachment);
-      const blob = new Blob([bytes as BlobPart], { type: attachment.content_type || 'application/octet-stream' });
-      setUrl(URL.createObjectURL(blob));
-      setState('ready');
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to decrypt attachment');
-      setState('error');
+      if (!lease.isCurrent(token)) return;
+      const blob = new Blob([bytes as BlobPart], { type: safePreviewMime(attachment.content_type || '') });
+      const url = lease.complete(token, blob);
+      if (url) setPreview({ lease, status: 'ready', url });
+    } catch {
+      if (lease.fail(token)) setPreview({ lease, status: 'error' });
     }
-  }, [attachment]);
+  }, [attachment, lease]);
 
-  const sizeKb = Math.max(1, Math.round(attachment.size / 1024));
-
-  if (state === 'ready' && url) {
-    return (
-      <div className="mt-2 max-w-sm">
-        {isImage(attachment.content_type) && (
-          <img data-context-image src={url} alt={attachment.name} className="rounded-lg max-h-80 border border-white/10" />
-        )}
-        <a
-          href={url}
-          download={attachment.name}
-          className="mt-1 inline-flex items-center gap-1 text-xs text-primary hover:underline"
-        >
-          <Download size={12} /> {attachment.name} <span className="text-white/40">({sizeKb} KB)</span>
-        </a>
-      </div>
-    );
-  }
-
+  const clear = () => { lease.release(); setPreview(null); };
   return (
-    <button
-      type="button"
-      onClick={load}
-      disabled={state === 'loading'}
-      aria-busy={state === 'loading'}
-      className="mt-2 inline-flex items-center gap-2 rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm hover:bg-white/10 disabled:opacity-60 disabled:cursor-wait focus-ring"
-      title="End-to-end encrypted — click to download and decrypt locally"
-    >
-      {state === 'loading'
-        ? <Spinner size={16} className="text-primary" />
-        : <Paperclip size={16} className="text-primary" />}
-      <span className="truncate max-w-[14rem]">{attachment.name}</span>
-      <span className="text-white/40">({sizeKb} KB)</span>
-      {state === 'error'
-        ? <span className="text-red-400 text-xs">{error}</span>
-        : <span className="text-white/30 text-xs">{state === 'loading' ? 'decrypting…' : '🔒 decrypt'}</span>}
-    </button>
+    <div className="attachment-card mt-2 w-full max-w-sm rounded-lg border border-white/10 bg-white/5 p-3">
+      <div className="flex min-w-0 items-start gap-2">
+        <Paperclip size={18} aria-hidden="true" className="mt-0.5 shrink-0 text-primary" />
+        <div className="min-w-0 flex-1">
+          <p className="break-words text-sm text-white/90">{name}</p>
+          <p className="text-xs text-white/60">{size} · End-to-end encrypted</p>
+        </div>
+      </div>
+      {current?.status === 'ready' && current.url ? (
+        <>
+          {image && (current.imageFailed ? <p role="status" className="mt-3 text-sm text-white/70">This file cannot be previewed as an image. You can still save it.</p> : <img data-context-image src={current.url} alt={name} decoding="async" onError={() => setPreview(value => value?.lease === lease ? { ...value, imageFailed: true } : value)} className="mt-3 max-h-80 max-w-full rounded-lg object-contain" />)}
+          <div className="mt-2 flex flex-wrap gap-2">
+            <a href={current.url} download={name} className="touch-target inline-flex items-center gap-2 rounded-lg px-3 text-sm text-primary focus-ring"><Download size={16} />Save file</a>
+            <button type="button" onClick={clear} className="touch-target inline-flex items-center gap-2 rounded-lg px-3 text-sm text-white/70 focus-ring"><X size={16} />Close preview</button>
+          </div>
+        </>
+      ) : (
+        <>
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <button type="button" onClick={() => void load()} disabled={current?.status === 'loading'} aria-busy={current?.status === 'loading'} className="touch-target inline-flex items-center gap-2 rounded-lg bg-white/5 px-3 text-sm text-primary hover:bg-white/10 disabled:cursor-wait disabled:opacity-60 focus-ring">
+              {current?.status === 'loading' ? <Spinner size={16} /> : current?.status === 'error' ? <RotateCcw size={16} /> : <Download size={16} />}
+              {current?.status === 'loading' ? 'Downloading and decrypting…' : current?.status === 'error' ? 'Retry download' : 'Download and decrypt'}
+            </button>
+            {current?.status === 'loading' && <button type="button" onClick={clear} className="touch-target rounded-lg px-3 text-sm text-white/70 focus-ring">Dismiss</button>}
+          </div>
+          {current?.status === 'error' && <p role="status" className="mt-2 text-sm text-red-300">The attachment could not be verified or downloaded. Check your connection and try again.</p>}
+        </>
+      )}
+    </div>
   );
 };

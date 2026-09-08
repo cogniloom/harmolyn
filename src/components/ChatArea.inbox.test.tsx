@@ -114,8 +114,6 @@ describe('ChatArea inbox', () => {
         isDM={false}
         messageLayout="modern"
         onToggleLayout={() => {}}
-        bgSeed="seed"
-        setBgSeed={() => {}}
       />,
     );
 
@@ -124,7 +122,7 @@ describe('ChatArea inbox', () => {
     ));
 
     await user.click(screen.getByRole('button', { name: /inbox/i }));
-    await user.click(screen.getByRole('button', { name: /nova/i }));
+    await user.click(screen.getByRole('button', { name: /^Nova.*hello @me/ }));
 
     expect(markNotificationsReadMock).toHaveBeenCalledWith(
       expect.objectContaining({ read_through_message_id: 'm1', scope_type: 'channel', scope_id: 'ch-1' }),

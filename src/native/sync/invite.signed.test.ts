@@ -34,7 +34,7 @@ describe('portable signed invite capabilities', () => {
     expect(verifySignedInviteCapability(
       token, 'srv', owner.peerId, 1, decoded.expires_at + 1,
     )).toBeNull();
-    const last = token.at(-1)!;
+    const last = token.slice(-1)[0]!;
     const changed = token.slice(0, -1) + (last === 'A' ? 'B' : 'A');
     expect(verifySignedInviteCapability(changed, 'srv', owner.peerId, 1)).toBeNull();
   });

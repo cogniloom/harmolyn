@@ -8,10 +8,10 @@ afterEach(() => {
 });
 
 describe("usePersistentState", () => {
-  it("seeds from the fallback and persists it under the key", () => {
+  it("uses the fallback without writing it on mount", () => {
     const { result } = renderHook(() => usePersistentState("test:key", { count: 0 }));
     expect(result.current[0]).toEqual({ count: 0 });
-    expect(JSON.parse(window.localStorage.getItem("test:key")!)).toEqual({ count: 0 });
+    expect(window.localStorage.getItem("test:key")).toBeNull();
   });
 
   it("hydrates from an existing stored value", () => {

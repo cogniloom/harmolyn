@@ -81,7 +81,7 @@ describe('nativePinMessage / nativeUnpinMessage — P2P propagation', () => {
     await flush();
 
     expect(getState().messages.find(m => m.id === MSG)?.pinned).toBe(false);
-    const last = sync.broadcastToScope.mock.calls.at(-1)!;
+    const last = sync.broadcastToScope.mock.calls.slice(-1)[0]!;
     expect(last[3]).toMatchObject({ kind: 'pin', message_id: MSG, pinned: false });
   });
 

@@ -1,4 +1,5 @@
 import React from 'react';
+import { readShellRuntimeData } from '@/data';
 import { Sparkles, Plus, Link2, UserPlus, Network, Lock, KeyRound, ArrowRight } from 'lucide-react';
 
 interface WelcomeEmptyStateProps {
@@ -31,7 +32,30 @@ export const WelcomeEmptyState: React.FC<WelcomeEmptyStateProps> = ({
   onAddFriend,
   onOpenAuth,
 }) => {
+  // Layout also reaches this fallback for a Space with no text channels.
+  // Read the same normalized shell snapshot as Layout; do not mistake a
+  // voice-only or empty Space for an account with no Spaces at all.
+  const hasSpaces = readShellRuntimeData().servers.length > 0;
   const actionsEnabled = hasIdentity && canUseConnectivity;
+
+  if (hasSpaces) {
+    return (
+      <section aria-labelledby="empty-conversation-title" className="flex-1 min-w-0 min-h-0 overflow-auto px-6 py-12">
+        <div className="mx-auto max-w-[440px] space-y-4 text-center">
+          <Network size={32} className="mx-auto text-primary" aria-hidden="true" />
+          <h1 id="empty-conversation-title" className="text-2xl font-semibold theme-text">No text channel selected</h1>
+          <p className="text-sm leading-relaxed theme-text-dim">
+            This Space may only have voice channels, or no channels yet. Open Channels to choose a voice room,
+            or select a text conversation in another Space.
+          </p>
+          <p className="text-sm theme-text-dim">Opening this screen does not leave an active call.</p>
+          <button type="button" onClick={onAddFriend} className="touch-target inline-flex items-center justify-center rounded-full border border-primary/30 px-5 py-2 text-sm font-semibold text-primary focus-ring">
+            Open friends and direct messages
+          </button>
+        </div>
+      </section>
+    );
+  }
 
   const actions: { icon: React.ReactNode; title: string; body: string; onClick: () => void }[] = [
     { icon: <Plus size={18} className="text-primary" />, title: 'Create a Space', body: 'Start a community for friends, a team, or a project.', onClick: onCreateServer },

@@ -1,9 +1,15 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { SERVERS, DIRECT_MESSAGES, USERS } from '@/data';
+import type { Server, User, DirectMessageChannel } from '@/types';
 import { Search, Hash, AtSign, Volume2, X, ArrowRight, Clock } from 'lucide-react';
 import { useEscapeKey } from '@/hooks/useEscapeKey';
+import { trapDialogFocus } from '@/lib/stabilization/interaction';
+import { isComposingKey } from '@/lib/composerKeys';
 
 interface QuickSwitcherProps {
+  servers?: Server[];
+  users?: User[];
+  directMessages?: DirectMessageChannel[];
   onClose: () => void;
   onNavigate: (serverId: string, channelId: string) => void;
 }
@@ -13,9 +19,11 @@ const MAX_RECENT_SWITCHES = 12;
 
 function readRecentSwitches(): string[] {
   try {
-    const parsed = JSON.parse(window.localStorage.getItem(RECENT_SWITCHES_STORAGE_KEY) || '[]') as unknown;
+    const raw = window.localStorage.getItem(RECENT_SWITCHES_STORAGE_KEY) || '[]';
+    if (raw.length > 8192) return [];
+    const parsed = JSON.parse(raw) as unknown;
     if (!Array.isArray(parsed)) return [];
-    return parsed.filter((value): value is string => typeof value === 'string').slice(0, MAX_RECENT_SWITCHES);
+    return parsed.filter((value): value is string => typeof value === 'string' && value.length <= 256).slice(0, MAX_RECENT_SWITCHES);
   } catch {
     return [];
   }
@@ -134,10 +142,12 @@ function normalizeQuickSwitcherResults(items: SwitcherResult[]): SwitcherResult[
   return normalized;
 }
 
-export const QuickSwitcher: React.FC<QuickSwitcherProps> = ({ onClose, onNavigate }) => {
+export const QuickSwitcher: React.FC<QuickSwitcherProps> = ({ onClose, onNavigate, servers = SERVERS, users = USERS, directMessages = DIRECT_MESSAGES }) => {
   const [query, setQuery] = useState('');
   const [selectedIndex, setSelectedIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
 
   // Snapshot recency once per open so re-renders while typing stay stable.
   const recentOrder = useMemo(() => {
@@ -149,15 +159,17 @@ export const QuickSwitcher: React.FC<QuickSwitcherProps> = ({ onClose, onNavigat
   useEscapeKey(onClose);
 
   useEffect(() => {
+    const release = dialogRef.current ? trapDialogFocus(dialogRef.current) : undefined;
     inputRef.current?.focus();
+    return release;
   }, []);
 
   const allItems = useMemo(() => {
     const items: SwitcherResult[] = [];
-    const normalizedUsers = normalizeQuickSwitcherUsers(USERS);
+    const normalizedUsers = normalizeQuickSwitcherUsers(users);
 
     // Add DMs
-    DIRECT_MESSAGES.forEach(dm => {
+    directMessages.forEach(dm => {
       const user = normalizedUsers.find((entry) => entry.id === dm.userId);
       items.push({
         id: dm.id,
@@ -170,7 +182,7 @@ export const QuickSwitcher: React.FC<QuickSwitcherProps> = ({ onClose, onNavigat
     });
 
     // Add server channels
-    SERVERS.forEach(server => {
+    servers.forEach(server => {
       server.categories.forEach(cat => {
         cat.channels.forEach(ch => {
           items.push({
@@ -186,7 +198,7 @@ export const QuickSwitcher: React.FC<QuickSwitcherProps> = ({ onClose, onNavigat
     });
 
     return normalizeQuickSwitcherResults(items);
-  }, []);
+  }, [servers, users, directMessages]);
 
   const results = useMemo(() => {
     const recencyBonus = (id: string) => {
@@ -215,9 +227,13 @@ export const QuickSwitcher: React.FC<QuickSwitcherProps> = ({ onClose, onNavigat
       .map(entry => entry.item);
   }, [query, allItems, recentOrder]);
 
+  const activeIndex = Math.min(selectedIndex, Math.max(0, results.length - 1));
   useEffect(() => {
-    setSelectedIndex(0);
-  }, [query]);
+    setSelectedIndex(index => Math.min(index, Math.max(0, results.length - 1)));
+  }, [results.length]);
+  useEffect(() => {
+    listRef.current?.querySelector('[aria-selected="true"]')?.scrollIntoView?.({ block: 'nearest' });
+  }, [activeIndex, query]);
 
   const selectResult = (r: SwitcherResult) => {
     saveRecentSwitch(r.channelId);
@@ -226,16 +242,16 @@ export const QuickSwitcher: React.FC<QuickSwitcherProps> = ({ onClose, onNavigat
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.defaultPrevented || isComposingKey(e.nativeEvent)) return;
     if (e.key === 'ArrowDown') {
       e.preventDefault();
-      setSelectedIndex(i => Math.min(i + 1, results.length - 1));
+      setSelectedIndex(i => Math.min(i + 1, Math.max(0, results.length - 1)));
     } else if (e.key === 'ArrowUp') {
       e.preventDefault();
-      setSelectedIndex(i => Math.max(i - 1, 0));
-    } else if (e.key === 'Enter' && results[selectedIndex]) {
-      selectResult(results[selectedIndex]);
-    } else if (e.key === 'Escape') {
-      onClose();
+      setSelectedIndex(i => Math.max(Math.min(i, results.length - 1) - 1, 0));
+    } else if (e.key === 'Enter' && results[activeIndex]) {
+      e.preventDefault();
+      selectResult(results[activeIndex]);
     }
   };
 
@@ -248,13 +264,14 @@ export const QuickSwitcher: React.FC<QuickSwitcherProps> = ({ onClose, onNavigat
   };
 
   return (
-    <div className="fixed inset-0 z-[200] flex items-start justify-center pt-[15vh]" onClick={onClose}>
+    <div className="quick-switcher-backdrop fixed inset-0 z-[200] flex items-start justify-center" onClick={onClose}>
       <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" />
       <div
         role="dialog"
         aria-modal="true"
         aria-label="Quick switcher"
-        className="relative w-full max-w-[540px] mx-4 glass-card bg-bg-0 border border-white/10 rounded-r2 shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-200"
+        ref={dialogRef}
+        className="quick-switcher-dialog relative w-full max-w-[540px] mx-4 glass-card bg-bg-0 border border-white/10 rounded-r2 shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-200"
         onClick={e => e.stopPropagation()}
       >
         {/* Search input */}
@@ -264,19 +281,27 @@ export const QuickSwitcher: React.FC<QuickSwitcherProps> = ({ onClose, onNavigat
             ref={inputRef}
             type="text"
             value={query}
-            onChange={e => setQuery(e.target.value)}
+            onChange={e => { setQuery(e.target.value); setSelectedIndex(0); }}
             onKeyDown={handleKeyDown}
-            placeholder="JUMP TO // CHANNEL OR DM"
+            placeholder="Find a channel or conversation"
+            role="combobox"
+            aria-autocomplete="list"
+            aria-expanded="true"
+            aria-controls="quick-switcher-results"
+            aria-activedescendant={results.length ? `quick-switcher-option-${activeIndex}` : undefined}
+            autoComplete="off"
+            spellCheck={false}
+            maxLength={256}
             aria-label="Search channels and direct messages"
-            className="flex-1 bg-transparent text-white text-sm font-mono placeholder-white/30 focus:outline-none"
+            className="min-w-0 flex-1 bg-transparent text-white text-sm placeholder-white/30 focus:outline-none"
           />
-          <button onClick={onClose} aria-label="Close quick switcher" className="p-1 text-white/30 hover:text-white transition-colors focus-ring rounded-r1">
+          <button onClick={onClose} aria-label="Close quick switcher" className="quick-switcher-close text-white/30 hover:text-white transition-colors focus-ring rounded-r1">
             <X size={16} />
           </button>
         </div>
 
         {/* Results */}
-        <div className="max-h-[320px] overflow-y-auto no-scrollbar p-2" role="listbox" aria-label="Results">
+        <div ref={listRef} id="quick-switcher-results" className="quick-switcher-results overflow-y-auto p-2" role="listbox" aria-label="Results">
           {showingRecent && results.length > 0 && recentOrder.size > 0 && (
             <div className="flex items-center gap-1.5 px-4 pt-1 pb-2 text-white/25">
               <Clock size={10} />
@@ -285,19 +310,23 @@ export const QuickSwitcher: React.FC<QuickSwitcherProps> = ({ onClose, onNavigat
           )}
           {results.length === 0 ? (
             <div className="py-8 text-center">
-              <p className="text-white/20 text-xs font-mono">NO RESULTS // TRY DIFFERENT QUERY</p>
+              <p className="text-white text-sm font-semibold">{query ? 'No matching conversations' : 'No conversations yet'}</p>
+              <p className="text-white/50 text-xs mt-2">{query ? 'Try a channel, Space, or person’s name.' : 'Join a Space or add a friend to get started.'}</p>
             </div>
           ) : (
             results.map((r, i) => {
-              const isSelected = i === selectedIndex;
+              const isSelected = i === activeIndex;
               return (
                 <button
                   key={r.id}
+                  id={`quick-switcher-option-${i}`}
+                  type="button"
+                  tabIndex={-1}
                   role="option"
                   aria-selected={isSelected}
                   onClick={() => selectResult(r)}
                   onMouseEnter={() => setSelectedIndex(i)}
-                  className={`focus-ring w-full flex items-center gap-3 px-4 py-2.5 rounded-r1 text-left transition-all ${
+                  className={`quick-switcher-result focus-ring w-full flex items-center gap-3 px-4 py-2.5 rounded-r1 text-left transition-all ${
                     isSelected
                       ? 'bg-primary/15 border border-primary/50 shadow-glow-sm'
                       : 'border border-transparent hover:bg-white/5'
@@ -306,7 +335,7 @@ export const QuickSwitcher: React.FC<QuickSwitcherProps> = ({ onClose, onNavigat
                   <TypeIcon type={r.type} />
                   <div className="flex-1 min-w-0">
                     <span className={`text-xs font-bold block truncate ${isSelected ? 'text-white' : 'text-white/80'}`}>{r.label}</span>
-                    <span className="text-white/30 text-[10px] font-mono truncate block">{r.sublabel}</span>
+                    <span className="text-white/50 text-xs truncate block">{r.type === 'voice' ? 'Join voice · ' : ''}{r.sublabel}</span>
                   </div>
                   {isSelected && <ArrowRight size={12} className="text-primary flex-shrink-0" />}
                 </button>
@@ -315,11 +344,13 @@ export const QuickSwitcher: React.FC<QuickSwitcherProps> = ({ onClose, onNavigat
           )}
         </div>
 
+        <span className="sr-only" role="status">{results.length} conversations shown</span>
+
         {/* Footer hint */}
-        <div className="px-5 py-2 border-t border-white/5 flex items-center gap-4">
-          <span className="text-[9px] text-white/20 font-mono">↑↓ NAVIGATE</span>
-          <span className="text-[9px] text-white/20 font-mono">ENTER SELECT</span>
-          <span className="text-[9px] text-white/20 font-mono">ESC CLOSE</span>
+        <div className="quick-switcher-footer px-5 py-2 border-t border-white/5 flex items-center gap-4">
+          <span className="text-[9px] text-white/20 font-mono">↑↓ to navigate</span>
+          <span className="text-[9px] text-white/20 font-mono">{results[activeIndex]?.type === 'voice' ? 'Enter to join voice' : 'Enter to open'}</span>
+          <span className="text-[9px] text-white/20 font-mono">Esc to close</span>
         </div>
       </div>
     </div>

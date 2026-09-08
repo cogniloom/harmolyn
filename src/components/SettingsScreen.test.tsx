@@ -127,7 +127,7 @@ describe("SettingsScreen About & Legal", () => {
     await u.click(screen.getByRole("button", { name: /notifications/i }));
 
     expect(screen.getByText(/mentions only/i)).toBeTruthy();
-    expect(screen.getByRole("button", { name: /desktop notifications/i })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: /desktop notifications/i })).toHaveAttribute("aria-pressed", "false");
     expect(screen.getByRole("button", { name: /notification sounds/i })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("button", { name: /flash taskbar/i })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("button", { name: /pending friend request badge/i })).toHaveAttribute("aria-pressed", "true");

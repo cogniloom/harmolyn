@@ -401,7 +401,7 @@ export async function depositRecipientInboxOperation(
   const worker = async (): Promise<void> => {
     while (cursor < attempts.length && acknowledgements < TARGET_COPIES) {
       const attempt = attempts[cursor++];
-      let stored = false;
+      let stored: boolean;
       try {
         stored = await attempt.store();
       } catch {

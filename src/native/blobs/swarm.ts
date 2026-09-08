@@ -7,6 +7,7 @@
 // author-signed manifest before it is accepted or served.
 
 import { sha256 } from '@noble/hashes/sha2.js';
+import { awaitUpload, uploadAborted, type UploadGuard } from './uploadLifecycle.js';
 import { PROTOCOLS } from '../families/families.js';
 import {
   BLOB_SWARM_MAX_CHUNKS,
@@ -147,11 +148,19 @@ function requestResult<T>(request: IDBRequest<T>): Promise<T> {
   });
 }
 
-function transactionDone(transaction: IDBTransaction): Promise<void> {
+function transactionDone(transaction: IDBTransaction, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
-    transaction.oncomplete = () => resolve();
-    transaction.onabort = () => reject(transaction.error ?? new Error('blob swarm database transaction aborted'));
-    transaction.onerror = () => reject(transaction.error ?? new Error('blob swarm database transaction failed'));
+    const cleanup = () => signal?.removeEventListener('abort', abort);
+    const abort = () => {
+      try { transaction.abort(); } catch { /* already settled */ }
+      cleanup();
+      reject(uploadAborted());
+    };
+    transaction.oncomplete = () => { cleanup(); resolve(); };
+    transaction.onabort = () => { cleanup(); reject(transaction.error ?? new Error('blob swarm database transaction aborted')); };
+    transaction.onerror = () => { cleanup(); reject(transaction.error ?? new Error('blob swarm database transaction failed')); };
+    signal?.addEventListener('abort', abort, { once: true });
+    if (signal?.aborted) abort();
   });
 }
 
@@ -249,11 +258,17 @@ async function evictPersistentBytes(
   db: IDBDatabase,
   bytesNeeded: number,
   protectedKeys: ReadonlySet<string>,
+  guard?: UploadGuard,
 ): Promise<void> {
+  guard?.check();
   const usage = await persistentUsage(db);
+  guard?.check();
   if (usage.total_bytes + bytesNeeded <= MAX_LOCAL_CACHE_BYTES) return;
   const sponsorBytes = new Map(usage.sponsor_bytes);
   const tx = db.transaction([CHUNKS_STORE, USAGE_STORE], 'readwrite');
+  const completion = transactionDone(tx, guard?.signal);
+  // A cursor error can precede the transaction-abort event. Observe both.
+  void completion.catch(() => {});
   const store = tx.objectStore(CHUNKS_STORE);
   const cursorRequest = store.index('stored_at').openCursor();
   await new Promise<void>((resolve, reject) => {
@@ -282,7 +297,7 @@ async function evictPersistentBytes(
   });
   usage.sponsor_bytes = [...sponsorBytes];
   tx.objectStore(USAGE_STORE).put(usage);
-  await transactionDone(tx);
+  await completion;
   if (usage.total_bytes + bytesNeeded > MAX_LOCAL_CACHE_BYTES) {
     throw new Error('blob swarm: local cache quota reached');
   }
@@ -312,8 +327,9 @@ function evictMemoryBytes(bytesNeeded: number): void {
 async function putLocalChunksUnlocked(
   manifest: BlobSwarmManifest,
   chunks: Array<{ index: number; data: Uint8Array }>,
-  options: { sponsorPeerId?: string; allowEviction?: boolean } = {},
+  options: { sponsorPeerId?: string; allowEviction?: boolean; guard?: UploadGuard } = {},
 ): Promise<number[]> {
+  options.guard?.check();
   if (!isSafeBlobSwarmManifest(manifest)) throw new Error('blob swarm: invalid manifest');
   const unique = new Map<number, Uint8Array>();
   for (const chunk of chunks) {
@@ -333,6 +349,7 @@ async function putLocalChunksUnlocked(
   const sponsorPeerId = options.sponsorPeerId;
   const allowEviction = options.allowEviction !== false;
   const db = await openDatabase()?.catch(() => null);
+  options.guard?.check();
   if (!db) {
     const addedBytes = [...unique].reduce((sum, [index, data]) =>
       sum + (memoryChunks.has(chunkKey(manifest.blob_id, index)) ? 0 : data.length), 0);
@@ -401,45 +418,54 @@ async function putLocalChunksUnlocked(
       db,
       addedBytes,
       new Set(uniqueIndices.map(index => chunkKey(manifest.blob_id, index))),
+      options.guard,
     );
     usage = await persistentUsage(db);
   } else if (usage.total_bytes + addedBytes > MAX_LOCAL_CACHE_BYTES) {
     throw new Error('blob swarm: local cache quota reached');
   }
 
+  options.guard?.check();
   const tx = db.transaction([CHUNKS_STORE, MANIFESTS_STORE, USAGE_STORE], 'readwrite');
-  const store = tx.objectStore(CHUNKS_STORE);
-  for (const [index, data] of unique) {
-    if (existingIndices.has(index)) continue;
-    const record: StoredChunk = {
-      key: chunkKey(manifest.blob_id, index),
-      blob_id: manifest.blob_id,
-      index,
-      hash: manifest.chunk_hashes[index],
-      data: toArrayBuffer(data),
-      stored_at: now,
-      ...(sponsorPeerId ? { sponsor_peer_id: sponsorPeerId } : {}),
-    };
-    store.put(record);
-  }
-  tx.objectStore(MANIFESTS_STORE).put(cloneManifest(manifest));
-  if (addedBytes) {
-    usage.total_bytes += addedBytes;
-    if (sponsorPeerId) {
-      const sponsorBytes = new Map(usage.sponsor_bytes);
-      sponsorBytes.set(sponsorPeerId, (sponsorBytes.get(sponsorPeerId) ?? 0) + addedBytes);
-      usage.sponsor_bytes = [...sponsorBytes];
+  const completion = transactionDone(tx, options.guard?.signal);
+  try {
+    const store = tx.objectStore(CHUNKS_STORE);
+    for (const [index, data] of unique) {
+      if (existingIndices.has(index)) continue;
+      const record: StoredChunk = {
+        key: chunkKey(manifest.blob_id, index),
+        blob_id: manifest.blob_id,
+        index,
+        hash: manifest.chunk_hashes[index],
+        data: toArrayBuffer(data),
+        stored_at: now,
+        ...(sponsorPeerId ? { sponsor_peer_id: sponsorPeerId } : {}),
+      };
+      store.put(record);
     }
-    tx.objectStore(USAGE_STORE).put(usage);
+    tx.objectStore(MANIFESTS_STORE).put(cloneManifest(manifest));
+    if (addedBytes) {
+      usage.total_bytes += addedBytes;
+      if (sponsorPeerId) {
+        const sponsorBytes = new Map(usage.sponsor_bytes);
+        sponsorBytes.set(sponsorPeerId, (sponsorBytes.get(sponsorPeerId) ?? 0) + addedBytes);
+        usage.sponsor_bytes = [...sponsorBytes];
+      }
+      tx.objectStore(USAGE_STORE).put(usage);
+    }
+    await completion;
+  } catch (error) {
+    try { tx.abort(); } catch { /* already settled */ }
+    await completion.catch(() => {});
+    throw error;
   }
-  await transactionDone(tx);
   return accepted;
 }
 
 function putLocalChunks(
   manifest: BlobSwarmManifest,
   chunks: Array<{ index: number; data: Uint8Array }>,
-  options: { sponsorPeerId?: string; allowEviction?: boolean } = {},
+  options: { sponsorPeerId?: string; allowEviction?: boolean; guard?: UploadGuard } = {},
 ): Promise<number[]> {
   const run = persistentWriteQueue.then(() => putLocalChunksUnlocked(manifest, chunks, options));
   persistentWriteQueue = run.then(() => undefined, () => undefined);
@@ -501,7 +527,9 @@ export async function createLocalBlobSwarm(
   scopeId: string,
   ownerPeerId: string,
   providerCount = 0,
+  options: { deferPersistence?: boolean; guard?: UploadGuard } = {},
 ): Promise<BlobSwarmManifest> {
+  options.guard?.check();
   if (ciphertext.length < 16 || ciphertext.length > MAX_ATTACHMENT_BYTES + 16) {
     throw new Error('blob swarm: invalid ciphertext size');
   }
@@ -524,8 +552,93 @@ export async function createLocalBlobSwarm(
     chunk_hashes: hashes,
   };
   if (!isSafeBlobSwarmManifest(manifest)) throw new Error('blob swarm: generated invalid manifest');
-  await putLocalChunks(manifest, chunks);
+  if (!options.deferPersistence) await putLocalChunks(manifest, chunks, { guard: options.guard });
   return manifest;
+}
+
+
+/** Persist an unpublished upload only after its guarded distribution completed. */
+export async function commitLocalBlobUpload(manifest: BlobSwarmManifest, ciphertext: Uint8Array, guard: UploadGuard): Promise<void> {
+  guard.check();
+  const chunks = uploadChunks(manifest, ciphertext);
+  // Existing cache eviction policy applies only at commit, not while uploading.
+  await putLocalChunks(manifest, chunks, { guard });
+}
+
+function uploadChunks(manifest: BlobSwarmManifest, ciphertext: Uint8Array): Array<{ index: number; data: Uint8Array }> {
+  if (!isSafeBlobSwarmManifest(manifest) || ciphertext.length !== manifest.ciphertext_size
+    || digest(ciphertext) !== manifest.blob_id) throw new Error('blob swarm: invalid upload source');
+  return manifest.chunk_hashes.map((hash, index) => {
+    const data = ciphertext.subarray(index * manifest.chunk_size, Math.min(ciphertext.length, (index + 1) * manifest.chunk_size));
+    if (digest(data) !== hash) throw new Error('blob swarm: invalid upload fragment');
+    return { index, data };
+  });
+}
+
+/** Roll back only this upload's namespace, never a newer or unrelated manifest.
+ * This is local cleanup, not a claim to erase ciphertext already sent to peers. */
+export function discardLocalBlobUpload(manifest: BlobSwarmManifest): Promise<void> {
+  if (!isSafeBlobSwarmManifest(manifest)) return Promise.reject(new Error('blob swarm: invalid upload rollback'));
+  const remove = async () => {
+    const matches = (stored: BlobSwarmManifest | undefined) => stored?.blob_id === manifest.blob_id
+      && stored.node_namespace === manifest.node_namespace && stored.owner_peer_id === manifest.owner_peer_id
+      && stored.scope_id === manifest.scope_id;
+    const db = await openDatabase()?.catch(() => null);
+    if (!db) {
+      const stored = memoryManifests.get(manifest.blob_id);
+      if (!stored) { learnedNodeProviders.delete(manifest.blob_id); return; }
+      if (!matches(stored)) return;
+      for (const [key, chunk] of memoryChunks) {
+        if (chunk.blob_id !== manifest.blob_id) continue;
+        memoryChunks.delete(key);
+        memoryBytes -= chunk.data.byteLength;
+        if (chunk.sponsor_peer_id) {
+          const remaining = Math.max(0, (memorySponsorBytes.get(chunk.sponsor_peer_id) ?? 0) - chunk.data.byteLength);
+          if (remaining) memorySponsorBytes.set(chunk.sponsor_peer_id, remaining);
+          else memorySponsorBytes.delete(chunk.sponsor_peer_id);
+        }
+      }
+      memoryManifests.delete(manifest.blob_id);
+      learnedNodeProviders.delete(manifest.blob_id);
+      return;
+    }
+    const tx = db.transaction([CHUNKS_STORE, MANIFESTS_STORE, USAGE_STORE], 'readwrite');
+    const completion = transactionDone(tx);
+    try {
+      const manifests = tx.objectStore(MANIFESTS_STORE);
+      const stored = await requestResult(manifests.get(manifest.blob_id)) as BlobSwarmManifest | undefined;
+      if (matches(stored)) {
+        const chunks = tx.objectStore(CHUNKS_STORE);
+        const usage = normalizeUsage(await requestResult(tx.objectStore(USAGE_STORE).get(USAGE_KEY)));
+        if (!usage) throw new Error('blob swarm: cache accounting unavailable');
+        const sponsors = new Map(usage.sponsor_bytes);
+        const keys = manifest.chunk_hashes.map((_hash, index) => chunkKey(manifest.blob_id, index));
+        const records = await Promise.all(keys.map(key => requestResult(chunks.get(key)) as Promise<StoredChunk | undefined>));
+        for (const record of records) {
+          if (!record) continue;
+          usage.total_bytes = Math.max(0, usage.total_bytes - record.data.byteLength);
+          if (record.sponsor_peer_id) {
+            const remaining = Math.max(0, (sponsors.get(record.sponsor_peer_id) ?? 0) - record.data.byteLength);
+            if (remaining) sponsors.set(record.sponsor_peer_id, remaining);
+            else sponsors.delete(record.sponsor_peer_id);
+          }
+          chunks.delete(record.key);
+        }
+        usage.sponsor_bytes = [...sponsors];
+        tx.objectStore(USAGE_STORE).put(usage);
+        manifests.delete(manifest.blob_id);
+      }
+      await completion;
+      if (!stored || matches(stored)) learnedNodeProviders.delete(manifest.blob_id);
+    } catch (error) {
+      try { tx.abort(); } catch { /* already complete */ }
+      await completion.catch(() => {});
+      throw error;
+    }
+  };
+  const run = persistentWriteQueue.then(remove);
+  persistentWriteQueue = run.then(() => undefined, () => undefined);
+  return run;
 }
 
 export async function readLocalBlobSwarm(manifest: BlobSwarmManifest): Promise<Uint8Array | null> {
@@ -638,13 +751,16 @@ async function parallelMap<T, R>(
   values: T[],
   limit: number,
   fn: (value: T) => Promise<R>,
+  guard?: UploadGuard,
 ): Promise<R[]> {
+  guard?.check();
   const out = new Array<R>(values.length);
   let cursor = 0;
   await Promise.all(Array.from({ length: Math.min(limit, values.length) }, async () => {
     while (cursor < values.length) {
+      guard?.check();
       const index = cursor++;
-      out[index] = await fn(values[index]);
+      out[index] = await awaitUpload(fn(values[index]), guard);
     }
   }));
   return out;
@@ -694,7 +810,9 @@ async function sendChunkBatch(
   peerId: string,
   manifest: BlobSwarmManifest,
   chunks: Array<{ index: number; data: Uint8Array }>,
+  guard?: UploadGuard,
 ): Promise<number[]> {
+  guard?.check();
   const peerSync = getPeerSync();
   if (!peerSync || !usableProvider(peerId)) return [];
   const wireManifest = manifestForProvider(peerId, manifest);
@@ -743,7 +861,8 @@ async function sendChunkBatch(
 			...proof,
 		});
 	}
-  const response = await peerSync.requestPeer<{
+  guard?.check();
+  const response = await awaitUpload(peerSync.requestPeer<{
     ok?: boolean;
     stored_indices?: number[];
     provider_peer_ids?: string[];
@@ -755,7 +874,8 @@ async function sendChunkBatch(
       manifest: wireManifest,
 		chunks: wireChunks,
     },
-  );
+  ), guard);
+  guard?.check();
   if (!response?.ok || !Array.isArray(response.stored_indices)) {
     recordProviderFailure(peerId);
     return [];
@@ -767,12 +887,17 @@ async function sendChunkBatch(
   return accepted;
 }
 
-export async function seedBlobSwarm(manifest: BlobSwarmManifest): Promise<BlobSwarmSeedReport> {
+export async function seedBlobSwarm(
+  manifest: BlobSwarmManifest,
+  options: { ciphertext?: Uint8Array; guard?: UploadGuard } = {},
+): Promise<BlobSwarmSeedReport> {
+  const guard = options.guard;
+  guard?.check();
   if (!isSafeBlobSwarmManifest(manifest)) throw new Error('blob swarm: invalid manifest');
-  const local = await getLocalChunks(
-    manifest,
-    Array.from({ length: manifest.chunk_hashes.length }, (_, index) => index),
-  );
+  const local = options.ciphertext
+    ? new Map(uploadChunks(manifest, options.ciphertext).map(chunk => [chunk.index, chunk.data]))
+    : await getLocalChunks(manifest, Array.from({ length: manifest.chunk_hashes.length }, (_, index) => index));
+  guard?.check();
   if (local.size !== manifest.chunk_hashes.length) throw new Error('blob swarm: local source incomplete');
   const { support, members } = providerCandidates(manifest);
   const allCandidates = [...support, ...members];
@@ -799,7 +924,8 @@ export async function seedBlobSwarm(manifest: BlobSwarmManifest): Promise<BlobSw
   const inventories = await parallelMap(
     knownProviders,
     MAX_PARALLEL_REQUESTS,
-    async peerId => ({ peerId, indices: await providerInventory(peerId, manifest) }),
+    async peerId => ({ peerId, indices: await providerInventory(peerId, manifest, guard) }),
+    guard,
   );
   for (const inventory of inventories) {
     if (inventory.indices.length) successfulProviders.add(inventory.peerId);
@@ -811,6 +937,7 @@ export async function seedBlobSwarm(manifest: BlobSwarmManifest): Promise<BlobSw
   }
   let remaining = true;
   while (remaining) {
+    guard?.check();
     remaining = false;
     const assignments = new Map<string, Array<{ index: number; data: Uint8Array }>>();
     for (let index = 0; index < manifest.chunk_hashes.length; index++) {
@@ -837,8 +964,8 @@ export async function seedBlobSwarm(manifest: BlobSwarmManifest): Promise<BlobSw
     if (!jobs.length) break;
     const outcomes = await parallelMap(jobs, MAX_PARALLEL_REQUESTS, async job => ({
       peerId: job.peerId,
-      indices: await sendChunkBatch(job.peerId, manifest, job.batch),
-    }));
+      indices: await sendChunkBatch(job.peerId, manifest, job.batch, guard),
+    }), guard);
     for (const outcome of outcomes) {
       if (outcome.indices.length) successfulProviders.add(outcome.peerId);
       for (const index of outcome.indices) acknowledgements.get(index)?.add(outcome.peerId);
@@ -935,12 +1062,13 @@ export async function handleBlobSyncRequest(
   return { ok: false, error: 'unsupported_blob_operation' };
 }
 
-async function providerInventory(peerId: string, manifest: BlobSwarmManifest): Promise<number[]> {
+async function providerInventory(peerId: string, manifest: BlobSwarmManifest, guard?: UploadGuard): Promise<number[]> {
+  guard?.check();
   const peerSync = getPeerSync();
   if (!peerSync || !usableProvider(peerId)) return [];
   const wireManifest = manifestForProvider(peerId, manifest);
   if (!wireManifest) return [];
-  const response = await peerSync.requestPeer<{
+  const response = await awaitUpload(peerSync.requestPeer<{
     ok?: boolean;
     indices?: number[];
     provider_peer_ids?: string[];
@@ -949,7 +1077,8 @@ async function providerInventory(peerId: string, manifest: BlobSwarmManifest): P
     PROTOCOLS.sync,
     'sync.blob.inventory',
     { manifest: wireManifest },
-  );
+  ), guard);
+  guard?.check();
   if (!response?.ok || !Array.isArray(response.indices)) {
     recordProviderFailure(peerId);
     return [];

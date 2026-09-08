@@ -1,7 +1,10 @@
 {
   "compilerOptions": {
     "target": "ES2022",
-    "lib": ["ES2023", "DOM"],
+    "lib": [
+      "ES2023",
+      "DOM"
+    ],
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
     "strict": true,
@@ -13,8 +16,11 @@
     "sourceMap": false,
     "declaration": false,
     "verbatimModuleSyntax": true,
-    "esModuleInterop": false,
-    "isolatedModules": false
+    "esModuleInterop": true,
+    "isolatedModules": false,
+    "types": [
+      "node"
+    ]
   },
   "include": [
     "src/protocol/**/*.ts",
@@ -25,7 +31,8 @@
     "protocol-tests/**/*.ts"
   ],
   "exclude": [
+    "protocol-tests/node-test-compat.d.ts",
     "src/**/*.test.ts",
-    "src/**/*.test.tsx"
+    "src/**/*.spec.ts"
   ]
 }

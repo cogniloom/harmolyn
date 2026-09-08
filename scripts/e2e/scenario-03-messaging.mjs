@@ -166,7 +166,7 @@ try {
     await msgAction(alice, 'reply-target quebec', 'Pin');
     await alice.page.getByRole('button', { name: 'Pinned Messages', exact: true }).click();
     const drawer = alice.page.locator('div.slide-in-from-right');
-    await drawer.getByText('PINNED // MESSAGES').waitFor({ timeout: 8000 });
+    await drawer.getByText('Pinned messages', { exact: true }).waitFor({ timeout: 8000 });
     await drawer.getByText('reply-target quebec').waitFor({ timeout: 8000 });
     await s.shot(alice, 'alice-pinned-panel');
     // close via backdrop
