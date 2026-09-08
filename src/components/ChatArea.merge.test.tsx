@@ -7,7 +7,8 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ChatArea } from "./ChatArea";
-import type { Channel, Message } from "@/types";
+import { ContextMenuProvider } from "./GlobalContextMenu";
+import type { Channel, Message, MessageLayout } from "@/types";
 import { injectRuntimeSnapshot } from "@/test/runtimeHarness";
 import { createHappyRuntime } from "@/test/fixtures";
 import {
@@ -69,10 +70,11 @@ function seedPersistedScope(messages: Message[], deletedMessageIds: string[] = [
   });
 }
 
-function renderChat(messages: Message[]) {
+function renderChat(messages: Message[], messageLayout: MessageLayout = "modern") {
   const queryClient = new QueryClient();
   const view = render(
     <QueryClientProvider client={queryClient}>
+      <ContextMenuProvider>
       <ChatArea
         channel={channel}
         messages={messages}
@@ -81,14 +83,16 @@ function renderChat(messages: Message[]) {
         onToggleMobileMenu={() => {}}
         onToggleMemberList={() => {}}
         isDM={false}
-        messageLayout="modern"
+        messageLayout={messageLayout}
         onToggleLayout={() => {}}
         hasIdentity
       />
+          </ContextMenuProvider>
     </QueryClientProvider>,
   );
   const rerender = (nextMessages: Message[]) => view.rerender(
     <QueryClientProvider client={queryClient}>
+      <ContextMenuProvider>
       <ChatArea
         channel={channel}
         messages={nextMessages}
@@ -97,10 +101,11 @@ function renderChat(messages: Message[]) {
         onToggleMobileMenu={() => {}}
         onToggleMemberList={() => {}}
         isDM={false}
-        messageLayout="modern"
+        messageLayout={messageLayout}
         onToggleLayout={() => {}}
         hasIdentity
       />
+          </ContextMenuProvider>
     </QueryClientProvider>,
   );
   return { ...view, rerenderMessages: rerender };
@@ -301,6 +306,41 @@ describe("ChatArea polls", () => {
     expect(castPollVoteMock.mutate).toHaveBeenCalledWith({ messageId: "m-poll", optionIndex: 1 });
     // Optimistic overlay until the snapshot reflects the vote.
     expect(screen.getByText(/1 VOTE \/\/ VOTED/)).toBeTruthy();
+  });
+});
+
+describe("ChatArea content across message layouts", () => {
+  it("opens and cancels the editor for an own message in terminal layout", async () => {
+    renderChat([{ id: "edit-terminal", userId: "me", content: "Original text", timestamp: "12:00" }], "terminal");
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: /More message actions/ }));
+    await user.click(screen.getByRole("menuitem", { name: "Edit Message" }));
+    expect(screen.getByRole("textbox", { name: "Edit message" })).toHaveValue("Original text");
+    await user.click(screen.getByRole("button", { name: "cancel" }));
+    expect(screen.queryByRole("textbox", { name: "Edit message" })).toBeNull();
+    expect(screen.getByText("Original text")).toBeTruthy();
+  });
+
+  it.each(["modern", "bubbles", "terminal"] as const)("keeps poll options actionable in %s layout", async (layout) => {
+    renderChat([{
+      id: "layout-poll", userId: "u2", timestamp: "12:00",
+      content: `🗳️ POLL:${JSON.stringify({ q: "Choose a layout", o: ["Classic", "Compact"] })}`,
+    }], layout);
+
+    expect(screen.queryByText(/POLL:\{/)).toBeNull();
+    await userEvent.setup().click(screen.getByRole("button", { name: "Compact" }));
+    expect(castPollVoteMock.mutate).toHaveBeenCalledWith({ messageId: "layout-poll", optionIndex: 1 });
+    expect(screen.getByText(/1 VOTE \/\/ VOTED/)).toBeTruthy();
+  });
+
+  it.each(["modern", "bubbles", "terminal"] as const)("keeps encrypted attachment controls visible in %s layout", (layout) => {
+    renderChat([{
+      id: "layout-attachment", userId: "u2", timestamp: "12:00", content: "See attached notes",
+      media: [{ id: "encrypted-notes", name: "notes.txt", content_type: "text/plain", size: 42, key: "test-key", nonce: "test-nonce" }],
+    }], layout);
+
+    expect(screen.getByText("notes.txt")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Download and decrypt" })).toBeEnabled();
   });
 });
 

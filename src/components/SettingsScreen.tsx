@@ -900,14 +900,14 @@ const IdentityVaultSection: React.FC<{ showFeedback: (tone: FeedbackTone, messag
               <div className="text-[10px] text-white/45">This account lives only in this browser session. Set a password to encrypt and keep it (your keys and ID stay the same).</div>
             </div>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
             <input
               type="password"
               value={guestPass}
               onChange={e => setGuestPass(e.target.value)}
               placeholder="Choose a password (min 8 chars)"
               onKeyDown={e => { if (e.key === 'Enter') void handlePromoteAndSave(); }}
-              className="flex-1 h-10 px-4 rounded-full bg-surface-dark border border-stroke-subtle text-white text-xs placeholder:text-white/20 focus:border-primary focus:outline-none transition-colors"
+              className="min-w-0 w-full sm:flex-1 h-10 px-4 rounded-full bg-surface-dark border border-stroke-subtle text-white text-xs placeholder:text-white/20 focus:border-primary focus:outline-none transition-colors"
             />
             <button type="button" onClick={() => void handlePromoteAndSave()} disabled={saving || guestPass.trim().length < 8} className="px-4 h-10 rounded-full bg-primary text-bg-0 font-bold text-xs hover:shadow-glow transition-all disabled:opacity-40 flex items-center gap-1.5">
               {saving ? <RefreshCw size={12} className="animate-spin" /> : <Check size={12} />} Save
@@ -1395,14 +1395,14 @@ const RecoveryContactsSection: React.FC<{ showFeedback: (tone: FeedbackTone, mes
 
       {/* Add by ID */}
       {peerId && (
-        <div className="flex items-center gap-2">
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
           <input
             type="text"
             value={addId}
             onChange={e => setAddId(e.target.value)}
             placeholder="Paste a trusted friend’s account ID"
             onKeyDown={e => { if (e.key === 'Enter') void addContact(addId); }}
-            className="flex-1 h-10 px-4 rounded-full bg-surface-dark border border-stroke-subtle text-white text-xs placeholder:text-white/20 focus:border-primary focus:outline-none transition-colors"
+            className="min-w-0 w-full sm:flex-1 h-10 px-4 rounded-full bg-surface-dark border border-stroke-subtle text-white text-xs placeholder:text-white/20 focus:border-primary focus:outline-none transition-colors"
           />
           <button type="button" onClick={() => void addContact(addId)} disabled={busy || !addId.trim()} className="px-4 h-10 rounded-full bg-primary text-bg-0 font-bold text-xs hover:shadow-glow transition-all disabled:opacity-40">Add</button>
         </div>
@@ -2427,13 +2427,13 @@ const NetworkSection: React.FC<{
 
         <div className="glass-card rounded-r2 p-5 border border-white/10">
           <div className="text-white font-bold text-sm mb-3">Relay multiaddr</div>
-          <div className="flex gap-2">
+          <div className="flex flex-col gap-2 sm:flex-row">
             <input
               aria-label="Relay multiaddr"
               value={relayInput}
               onChange={(e) => setRelayInput(e.target.value)}
               placeholder="/ip4/127.0.0.1/tcp/4001/p2p/..."
-              className="flex-1 bg-surface-dark border border-white/10 rounded-full px-4 py-2 text-sm text-white placeholder:text-white/20 focus:border-primary/40 focus:outline-none"
+              className="min-w-0 w-full sm:flex-1 bg-surface-dark border border-white/10 rounded-full px-4 py-2 text-sm text-white placeholder:text-white/20 focus:border-primary/40 focus:outline-none"
             />
             <PendingButton
               type="button"

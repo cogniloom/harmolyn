@@ -10,7 +10,7 @@ export async function register(c, name, password = 'correct horse battery') {
   // "Create account" bar. Exercise whichever entry point the user sees.
   await page.getByRole('button', { name: /^Create (?:an )?account$/i }).first().click();
   await page.getByPlaceholder('e.g. Sam').fill(name);
-  await page.getByPlaceholder('At least 10 characters').fill(password);
+  await page.getByLabel('PASSWORD', { exact: true }).fill(password);
   await page.getByPlaceholder('Re-enter your password').fill(password);
   await page.getByRole('checkbox', { name: /Confirm age/ }).check();
   await page.getByRole('button', { name: 'Create account', exact: true }).first().click();

@@ -46,24 +46,32 @@ npm ci
 npm run dev
 ```
 
-Vite listens on `0.0.0.0:8080`. The production web container listens on host
-port `8909` by default. The public webpage lives in `website/` and listens on
-host port `8910` by default:
+Vite listens on `0.0.0.0:8080`. The production web container publishes host
+port `8080` by default. The public webpage lives in `website/` and publishes
+host port `8081` by default:
 
 ```bash
-docker compose up --build
+make up
 ```
 
-This starts two independent containers:
+This builds and starts two independent containers and waits for both HTTP
+health checks to pass:
 
 | Container | Purpose | Default URL |
 |---|---|---|
-| `harmolyn-app` | Browser client for Xorein | `http://localhost:8909` |
-| `harmolyn-webpage` | Public Harmolyn website | `http://localhost:8910` |
+| `harmolyn-app` | Browser client for Xorein | `http://localhost:8080` |
+| `harmolyn-webpage` | Public Harmolyn website | `http://localhost:8081` |
 
-Override `HARMOLYN_APP_PORT` or `HARMOLYN_WEBPAGE_PORT` to change host ports.
+Override `HARMOLYN_APP_PORT` or `HARMOLYN_WEBPAGE_PORT` in `.env` or the shell
+to change host ports. Use distinct, unused ports; stop Vite before starting
+the container on the same host port. Container-internal ports are isolated,
+so sharing an internal port across containers would not cause a conflict.
+The local webpage's **Open app** link follows `HARMOLYN_APP_PORT` by default.
 Set `VITE_HARMOLYN_APP_URL` to the public client URL before building a deployed
 webpage; its **Open app** links use that value.
+For access from another machine, use the Docker host's address and set
+`VITE_HARMOLYN_APP_URL` accordingly. Use HTTPS for remote deployments so the
+browser can enable secure-context features such as microphone access.
 
 For webpage-only development:
 
