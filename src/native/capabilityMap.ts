@@ -110,8 +110,8 @@ export const CAPABILITY_MAP: CapabilityEntry[] = [
     description: 'Stop screen-share track' },
   { name: 'isVoiceScreenSharing', route: 'native-local', p2pPropagated: false,
     description: 'Query whether screen share is active (sync, returns boolean)' },
-  { name: 'sendVoiceFrame', route: 'http', p2pPropagated: false,
-    description: 'Send a voice frame via HTTP (support-node bridge)' },
+  { name: 'sendVoiceFrame', route: 'native', p2pPropagated: false,
+    description: 'Reject HTTP voice-frame uploads on the native path; media uses the WebRTC mesh' },
 
   // ── Relay ─────────────────────────────────────────────────────────────────
   { name: 'registerRelay', route: 'native', p2pPropagated: false,
@@ -132,8 +132,8 @@ export const CAPABILITY_MAP: CapabilityEntry[] = [
     description: 'Accept, decline, cancel, or locally block a friend request; remote lifecycle actions use P2P' },
   { name: 'retryFriendRequest', route: 'native', p2pPropagated: true,
     description: 'Retry a queued or failed outgoing friend request under its original request ID' },
-  { name: 'removeFriend', route: 'http', p2pPropagated: false,
-    description: 'Remove an accepted friend (HTTP support node)' },
+  { name: 'removeFriend', route: 'native-local', p2pPropagated: false,
+    description: 'Remove a local friend or blocked-user record; never sent to a support node' },
 
   // ── DMs ───────────────────────────────────────────────────────────────────
   { name: 'ensureDirectMessage', route: 'native-local', p2pPropagated: false,
@@ -186,8 +186,8 @@ export const CAPABILITY_MAP: CapabilityEntry[] = [
     description: 'Inbox items are derived client-side; no scope ids are sent to the support node' },
 
   // ── Blobs / uploads ───────────────────────────────────────────────────────
-  { name: 'uploadAttachment', route: 'http', p2pPropagated: false,
-    description: 'Legacy unscoped HTTP blob upload retained for old callers; ChatArea v1 attachments use the native node-preferred replica swarm' },
+  { name: 'uploadAttachment', route: 'native', p2pPropagated: false,
+    description: 'Reject HTTP attachment uploads on the native path; ChatArea uses the encrypted blob swarm' },
 ];
 
 /** Quick lookup: route for a capability name. */

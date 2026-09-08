@@ -1,5 +1,4 @@
-import type { Message, XoreinRuntimeSnapshot } from '@/types';
-import { sendChannelMessage, sendDmMessage } from '@/lib/xoreinControl';
+import type { Message } from '@/types';
 
 export interface ForwardDestination {
   id: string;
@@ -47,26 +46,21 @@ export function describeForwardDeliveryOutcome(outcome: ForwardDeliveryOutcome, 
 }
 
 export async function sendForwardMessageBatch(
-  runtimeSnapshot: XoreinRuntimeSnapshot | null,
   forwardingMessage: Message,
   destinations: ForwardDestination[],
   note: string,
-  sendChannelFn: typeof sendChannelMessage = sendChannelMessage,
-  sendDmFn: typeof sendDmMessage = sendDmMessage,
+  sendChannelFn: (destinationId: string, payload: string, opts?: { forwarded_from?: string }) => Promise<unknown>,
+  sendDmFn: (destinationId: string, payload: string, opts?: { forwarded_from?: string }) => Promise<unknown>,
 ): Promise<ForwardDeliveryOutcome> {
-  if (!runtimeSnapshot) {
-    throw new Error('The local xorein runtime is unavailable.');
-  }
-
   const payload = note.trim() ? `${note.trim()}\n\n${forwardingMessage.content}` : forwardingMessage.content;
   const outcome: ForwardDeliveryOutcome = { sent: 0, failed: [] };
 
   for (const destination of destinations) {
     try {
       if (destination.type === 'channel') {
-        await sendChannelFn(runtimeSnapshot, destination.id, payload, { forwarded_from: forwardingMessage.id });
+        await sendChannelFn(destination.id, payload, { forwarded_from: forwardingMessage.id });
       } else {
-        await sendDmFn(runtimeSnapshot, destination.id, payload, { forwarded_from: forwardingMessage.id });
+        await sendDmFn(destination.id, payload, { forwarded_from: forwardingMessage.id });
       }
       outcome.sent += 1;
     } catch (error) {

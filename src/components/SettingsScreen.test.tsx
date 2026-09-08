@@ -5,9 +5,15 @@ import { SettingsScreen } from "./SettingsScreen";
 import * as clipboardUtils from './contextMenuUtils';
 import type { User } from "@/types";
 
-const updatePresenceMutateAsync = vi.fn();
-const registerRelayMutateAsync = vi.fn();
-const removeRelayMutateAsync = vi.fn();
+const {
+  updatePresenceMutateAsync,
+  registerRelayMutateAsync,
+  removeRelayMutateAsync,
+} = vi.hoisted(() => ({
+  updatePresenceMutateAsync: vi.fn(),
+  registerRelayMutateAsync: vi.fn(),
+  removeRelayMutateAsync: vi.fn(),
+}));
 
 vi.mock("@/hooks/runtime/mutations", async () => {
   const actual = await vi.importActual<typeof import("@/hooks/runtime/mutations")>("@/hooks/runtime/mutations");

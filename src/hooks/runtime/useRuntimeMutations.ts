@@ -23,7 +23,7 @@ import {
   nativeAddRelay, nativeRemoveRelay as nativeRemoveRelayMutation,
   nativeUpdatePresence,
   nativeAddFriendRequest, nativeAcceptFriend, nativeDeclineFriend,
-  nativeActOnFriendRequest, nativeRetryFriendRequest,
+  nativeActOnFriendRequest, nativeRetryFriendRequest, nativeRemoveFriend,
   nativeJoinServer,
   nativeEnsureDirectMessage,
   nativeCreateRole, nativeUpdateRole, nativeDeleteRole, nativeAssignRole, nativeCastPollVote,
@@ -301,7 +301,7 @@ export function useRuntimeMutations() {
         declineFriend: (requestId: string) => Promise.resolve(nativeDeclineFriend(requestId)),
         actOnFriendRequest: (requestId: string, action: 'accept' | 'decline' | 'cancel' | 'block') =>
           Promise.resolve(nativeActOnFriendRequest(requestId, action)),
-        removeFriend: (friendId: string) => removeFriend(snap, friendId),
+        removeFriend: async (friendId: string) => nativeRemoveFriend(friendId),
         // Notifications — native/local. Read-state (which scopes you read, and
         // when) is identity metadata: on the native path it is recorded in the
         // local native store only and NOTHING is sent to the support node.
@@ -321,9 +321,15 @@ export function useRuntimeMutations() {
         // Message search — native local store (full-text over P2P messages, no API round-trip).
         searchMessages: (q?: Parameters<typeof nativeSearchMessages>[0]) => Promise.resolve(nativeSearchMessages(q ?? {})),
         // Legacy unscoped upload API. ChatArea uses the native blob swarm.
-        uploadAttachment: (input: { filename: string; contentType: string; data: string }) => uploadAttachment(snap, input),
-        // Voice frames — HTTP
-        sendVoiceFrame: (channelId: string, payload: unknown) => sendVoiceFrame(snap, channelId, payload),
+        // On the native path the support node must never see attachment bytes.
+        uploadAttachment: () => Promise.reject(new Error(
+          'Attachments use the native encrypted blob swarm, so nothing was sent. (Uploads are never routed through the support node.)',
+        )),
+        // Voice media is the WebRTC mesh. HTTP frames would ship payload bytes
+        // to a support node that is only meant to relay ciphertext.
+        sendVoiceFrame: () => Promise.reject(new Error(
+          'Voice frames use the native WebRTC mesh, so nothing was sent. (Voice is never routed through the support node.)',
+        )),
       };
     }
 
