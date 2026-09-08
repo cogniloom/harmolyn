@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { X, Upload, Globe, Loader2, Link as LinkIcon } from 'lucide-react';
+import { X, Globe, Loader2, Link as LinkIcon } from 'lucide-react';
 import { useEscapeKey } from '@/hooks/useEscapeKey';
 
 interface CreateServerModalProps {
@@ -63,14 +63,6 @@ export const CreateServerModal: React.FC<CreateServerModalProps> = ({ onClose, o
                         <h2 id="create-server-title" className="text-2xl font-bold text-white mb-2.5 font-display tracking-tight uppercase">Create Space</h2>
                         <p className="text-white/40 text-xs font-light leading-relaxed max-w-sm mx-auto">Start an encrypted community for friends, a team, or anyone you invite.</p>
                     </header>
-                    
-                    <div className="flex flex-col items-center mb-8">
-                        <div className="w-[90px] h-[90px] rounded-2xl border-2 border-dashed border-white/10 flex flex-col items-center justify-center text-white/20 hover:border-primary hover:text-primary cursor-pointer transition-all hover:bg-primary/5 group relative overflow-hidden">
-                            <Upload size={26} className="mb-1.5 transition-transform group-hover:-translate-y-1" />
-                            <span className="micro-label text-[7px] font-bold">Upload // Icon</span>
-                            <div className="absolute inset-0 grid-overlay opacity-0 group-hover:opacity-20"></div>
-                        </div>
-                    </div>
                     
                     <div className="space-y-5 mb-8">
                         <div className="text-left">

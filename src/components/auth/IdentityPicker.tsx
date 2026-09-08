@@ -84,7 +84,7 @@ export const IdentityPicker: React.FC<IdentityPickerProps> = ({ onRestore, onCre
 
   return (
     <div
-      className="fixed inset-0 z-[200] bg-bg-0 flex items-center justify-center overflow-auto"
+      className="fixed inset-0 z-[200] bg-bg-0 flex items-start justify-center overflow-auto py-10"
       role="dialog"
       aria-modal="true"
       aria-labelledby="identity-picker-title"
@@ -104,7 +104,7 @@ export const IdentityPicker: React.FC<IdentityPickerProps> = ({ onRestore, onCre
         <X size={20} />
       </button>
 
-      <div className="relative z-10 w-full max-w-[440px] mx-6 my-10">
+      <div className="relative z-10 w-full max-w-[440px] mx-6 my-auto">
         <div className="text-center mb-8">
           <div className="inline-flex items-center justify-center w-16 h-16 rounded-r2 bg-primary/10 border border-primary/20 mb-5 shadow-glow">
             <Shield size={28} className="text-primary" />

@@ -37,8 +37,9 @@ describe("SearchPanel", () => {
         scopeType="channel"
         scopeId="chan-1"
         serverId="srv-1"
+        localPeerId="peer-local"
         users={[
-          { id: "peer-local", username: "Ada", avatar: "/avatar.png", status: "online" },
+          { id: "me", username: "Ada", avatar: "/avatar.png", status: "online" },
         ]}
       />,
     );

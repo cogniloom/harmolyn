@@ -13,6 +13,7 @@ interface SearchPanelProps {
   scopeId: string;
   serverId?: string;
   users: AppUser[];
+  localPeerId?: string;
 }
 
 type FilterType = 'from' | 'before' | 'after' | null;
@@ -72,7 +73,7 @@ function normalizeSearchUsers(users: AppUser[]): AppUser[] {
   return normalized;
 }
 
-export const SearchPanel: React.FC<SearchPanelProps> = ({ onClose, scopeType, scopeId, serverId, users }) => {
+export const SearchPanel: React.FC<SearchPanelProps> = ({ onClose, scopeType, scopeId, serverId, users, localPeerId }) => {
   const { searchMessages } = useRuntimeMutations();
   const [query, setQuery] = useState('');
   const [filters, setFilters] = useState<SearchFilter[]>([]);
@@ -82,7 +83,9 @@ export const SearchPanel: React.FC<SearchPanelProps> = ({ onClose, scopeType, sc
   const [results, setResults] = useState<XoreinMessageSearchResult>({ messages: [], results: [] });
   const [loading, setLoading] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
-  const normalizedUsers = useMemo(() => normalizeSearchUsers(users), [users]);
+  const normalizedUsers = useMemo(() => normalizeSearchUsers(users).map(user => (
+    user.id === 'me' && localPeerId ? { ...user, id: localPeerId } : user
+  )), [users, localPeerId]);
 
   // Close the active filter dropdown first; otherwise dismiss the whole panel.
   useEscapeKey(showFilterMenu ? () => setShowFilterMenu(null) : onClose);
@@ -269,7 +272,7 @@ export const SearchPanel: React.FC<SearchPanelProps> = ({ onClose, scopeType, sc
           <div className="flex flex-col items-center justify-center h-full text-text-tertiary gap-3">
             <Search size={40} className="text-white/10" />
             <p className="text-body text-text-secondary">Start typing to search</p>
-            <p className="text-caption text-text-disabled">Search runs against the live xorein control API.</p>
+            <p className="text-caption text-text-disabled">Search messages in this conversation.</p>
           </div>
         ) : loading ? (
           <div className="flex flex-col items-center justify-center h-full text-text-tertiary gap-3">
@@ -293,13 +296,13 @@ export const SearchPanel: React.FC<SearchPanelProps> = ({ onClose, scopeType, sc
             {resultMessages.map(msg => {
               const user = normalizedUsers.find(u => u.id === msg.sender_peer_id) ?? UNKNOWN_SEARCH_USER;
               return (
-                <div key={msg.id} className="glass-card rounded-r2 p-3 border border-stroke hover:border-stroke-strong transition-all cursor-pointer">
-                  <div className="flex items-center gap-2 mb-1.5">
-                    <img referrerPolicy="no-referrer" src={resolveAvatarSrc(user.avatar, user.username)} className="w-5 h-5 rounded-full" alt="" />
-                    <span className="text-xs font-bold text-text-primary">{user.username}</span>
-                    <span className="text-[9px] text-text-disabled font-mono">{msg.created_at ?? ''}</span>
+                <div key={msg.id} className="glass-card min-w-0 rounded-r2 p-3 border border-stroke">
+                  <div className="flex flex-wrap items-center gap-2 mb-1.5">
+                    <img referrerPolicy="no-referrer" src={resolveAvatarSrc(user.avatar, user.username)} className="w-5 h-5 shrink-0 rounded-full" alt="" />
+                    <span className="min-w-0 break-words text-xs font-bold text-text-primary">{user.username}</span>
+                    <span className="break-all text-[9px] text-text-disabled font-mono">{msg.created_at ?? ''}</span>
                   </div>
-                  <div className="text-caption text-text-secondary">{renderMarkdown(msg.body)}</div>
+                  <div className="break-words text-caption text-text-secondary">{renderMarkdown(msg.body)}</div>
                 </div>
               );
             })}

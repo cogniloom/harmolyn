@@ -25,4 +25,4 @@ COPY nginx.conf /etc/nginx/conf.d/default.conf
 
 USER nginx
 
-EXPOSE 8080
+EXPOSE 8081

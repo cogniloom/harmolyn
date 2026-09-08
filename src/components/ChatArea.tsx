@@ -1991,15 +1991,37 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
           const messageActionLabel = `More message actions for ${user.username.slice(0, 80)}, ${msg.timestamp}, message ${msgIndex + 1}`;
           const isSpecial = user.role === 'Admin' || user.role === 'Moderator';
           const isMe = msg.userId === 'me';
-          // Polls: the body carries an encoded payload (🗳️ POLL:{json}) that must
-          // never render as message text — the modern layout shows only the poll
-          // card; compact layouts show a readable "🗳️ question" summary instead.
+          // Encoded poll payloads render as interactive cards, never raw text.
           const poll = parsePollContent(msg.content);
           const displayContent = msg.sticker
             ? <span className="text-5xl leading-none">{msg.content}</span>
             : poll
-              ? <span className="italic">🗳️ {normalizedSearch ? highlightText(poll.q, normalizedSearch) : poll.q}</span>
+              ? null
               : normalizedSearch ? highlightText(msg.content, normalizedSearch) : renderMarkdown(msg.content);
+          // Keep interactive message contents available in every visual layout.
+          const pollCard = poll && (() => {
+            const votes = msg.poll_votes ?? {};
+            const options = poll.o.map((text, i) => ({ text, votes: (votes[i] ?? []).length }));
+            const totalVotes = options.reduce((sum, option) => sum + option.votes, 0);
+            const ownVoteIndex = localPeerId
+              ? poll.o.findIndex((_text, i) => (votes[i] ?? []).includes(localPeerId))
+              : -1;
+            return (
+              <PollMessage
+                question={poll.q}
+                options={options}
+                totalVotes={totalVotes}
+                votedIndex={ownVoteIndex >= 0 ? ownVoteIndex : null}
+                onVote={(i) => castPollVoteMutation.mutate({ messageId: msg.id, optionIndex: i })}
+              />
+            );
+          })();
+          const attachments = msg.media && msg.media.length > 0 ? (
+            <div className="flex min-w-0 w-full flex-col items-start gap-1">
+              {msg.media.map(att => <AttachmentView key={att.id} attachment={att} />)}
+            </div>
+          ) : null;
+          const mediaEmbed = !poll ? <MediaEmbed content={msg.content} /> : null;
           const replyMsg = msg.replyToId ? messagesState.find(m => m.id === msg.replyToId) : null;
           const replyUser = replyMsg ? getUser(replyMsg.userId) : null;
 
@@ -2024,7 +2046,27 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                      <div className="min-w-0">
                        <span className="font-bold whitespace-nowrap" style={{ color: user.color }}>{user.username}</span>
                        <span className="text-white/40">:&nbsp;</span>
-                       <span className="text-white/90 break-words">{displayContent}{msg.editedAt && <span className="text-white/20 text-[8px] ml-1">(edited)</span>}</span>
+                       {editingMsgId === msg.id ? (
+                         <div className="flex min-w-0 flex-col gap-1.5">
+                           <input
+                             aria-label="Edit message"
+                             value={editValue}
+                             onChange={event => setEditValue(event.target.value)}
+                             onKeyDown={event => { if (event.key === 'Enter') saveEdit(); if (event.key === 'Escape') cancelEdit(); }}
+                             className="min-w-0 w-full rounded border border-white/20 bg-white/5 px-2 py-1 text-white focus:outline-none focus:border-primary"
+                             autoFocus
+                           />
+                           <div className="flex gap-2">
+                             <button onClick={saveEdit} className="text-primary hover:underline">save</button>
+                             <button onClick={cancelEdit} className="text-white/50 hover:underline">cancel</button>
+                           </div>
+                         </div>
+                       ) : (
+                         <span className="text-white/90 break-words">{displayContent}{msg.editedAt && <span className="text-white/20 text-[8px] ml-1">(edited)</span>}</span>
+                       )}
+                       {pollCard}
+                       {mediaEmbed}
+                       {attachments}
                      </div>
                      <button
                        type="button"
@@ -2079,7 +2121,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                         </UserPopup>
                       )}
                       
-                       <div className={`max-w-[85%] md:max-w-[65%] relative flex flex-col ${isMe ? 'items-end' : 'items-start'}`}>
+                       <div className={`min-w-0 max-w-[85%] md:max-w-[65%] relative flex flex-col ${isMe ? 'items-end' : 'items-start'}`}>
                           {replyMsg && replyUser && (
                             <div className={`flex items-center gap-1.5 mb-1 px-2.5 py-0.5 rounded-full bg-white/5 border border-white/5 text-[10px] ${isMe ? 'self-end' : 'self-start'}`}>
                               <CornerUpRight size={9} className="text-primary/50" />
@@ -2089,8 +2131,8 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                           )}
                           {!isMe && <div className="ml-1 mb-0.5 text-[9px] font-bold text-white/40 tracking-wider uppercase">{user.username}</div>}
                           
-                          <div className={`px-4 py-2.5 text-[13px] leading-relaxed relative shadow-lg group-hover:brightness-110 transition-all
-                              ${isMe 
+                          <div className={`min-w-0 max-w-full break-words px-4 py-2.5 text-[13px] leading-relaxed relative shadow-lg group-hover:brightness-110 transition-all
+                              ${isMe && !poll
                                   ? 'bg-primary text-bg-0 rounded-2xl rounded-tr-sm shadow-[0_0_15px_rgba(19,221,236,0.15)]' 
                                   : 'bg-white/5 border border-white/10 text-white/90 rounded-2xl rounded-tl-sm backdrop-blur-sm'
                               }`}
@@ -2111,14 +2153,15 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                                  </div>
                                </div>
                              ) : (
-                               <>{displayContent}{msg.editedAt && <span className={`text-[8px] ml-1 ${isMe ? 'text-bg-0/50' : 'text-white/20'}`}>(edited)</span>}</>
+                               <>{displayContent}{pollCard}{msg.editedAt && <span className={`text-[8px] ml-1 ${isMe ? 'text-bg-0/50' : 'text-white/20'}`}>(edited)</span>}</>
                              )}
                              <div className={`text-[8px] text-right mt-1 font-mono transition-opacity duration-300 flex items-center justify-end gap-1 ${isMe ? 'text-bg-0/70' : 'text-white/30'} ${hoveredMessageId === msg.id ? 'opacity-60' : 'opacity-0'}`}>
                                 {msg.timestamp}
                                 {isMe && msg.delivery_status && <DeliveryStatusIcon status={msg.delivery_status} />}
                              </div>
                           </div>
-                          
+                          {mediaEmbed}
+                          {attachments}
                             {msg.reactions && msg.reactions.length > 0 && (
                                 <div className={`flex gap-1 mt-1 flex-wrap ${isMe ? 'justify-end' : 'justify-start'}`}>
                                     {msg.reactions.map((r, i) => (
@@ -2258,36 +2301,9 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                   </div>
                 )}
 
-                {/* Poll embed — rendered from LIVE snapshot data (poll_votes syncs P2P):
-                    vote counts and the local user's own vote are derived per render,
-                    so remote votes appear without a remount. */}
-                {poll && (() => {
-                  const votes = msg.poll_votes ?? {};
-                  const options = poll.o.map((text, i) => ({ text, votes: (votes[i] ?? []).length }));
-                  const totalVotes = options.reduce((sum, o) => sum + o.votes, 0);
-                  const ownVoteIndex = localPeerId
-                    ? poll.o.findIndex((_text, i) => (votes[i] ?? []).includes(localPeerId))
-                    : -1;
-                  return (
-                    <PollMessage
-                      question={poll.q}
-                      options={options}
-                      totalVotes={totalVotes}
-                      votedIndex={ownVoteIndex >= 0 ? ownVoteIndex : null}
-                      onVote={(i) => castPollVoteMutation.mutate({ messageId: msg.id, optionIndex: i })}
-                    />
-                  );
-                })()}
-
-                {/* Media Embeds (never for polls — the body is an encoded payload) */}
-                {!poll && <MediaEmbed content={msg.content} />}
-
-                {/* End-to-end encrypted attachments (decrypted on view) */}
-                {msg.media && msg.media.length > 0 && (
-                  <div className="flex flex-col items-start gap-1">
-                    {msg.media.map((att) => <AttachmentView key={att.id} attachment={att} />)}
-                  </div>
-                )}
+                {pollCard}
+                {mediaEmbed}
+                {attachments}
 
                 {msg.reactions && msg.reactions.length > 0 && (
                     <div className="flex gap-1.5 mt-3 flex-wrap">
@@ -2659,6 +2675,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
           scopeId={channel.id}
           serverId={historyServerId}
           users={normalizedUsers}
+          localPeerId={localPeerId}
         />
       )}
 

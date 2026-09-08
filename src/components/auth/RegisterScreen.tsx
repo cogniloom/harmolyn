@@ -65,7 +65,7 @@ export const RegisterScreen: React.FC<RegisterScreenProps> = ({ onCreated, onSwi
   };
 
   return (
-    <div className="fixed inset-0 z-[200] bg-bg-0 flex items-center justify-center overflow-auto" aria-busy={pending}>
+    <div className="fixed inset-0 z-[200] bg-bg-0 flex items-start justify-center overflow-auto py-10" aria-busy={pending}>
       <div className="absolute inset-0 bg-gradient-to-b from-bg-0 via-bg-2 to-bg-0" />
       <div className="absolute inset-0" style={{ background: 'radial-gradient(circle at 50% 0%, rgba(19,221,236,0.08) 0%, transparent 60%)' }} />
       <div className="absolute inset-0 grid-overlay opacity-30" />
@@ -82,7 +82,7 @@ export const RegisterScreen: React.FC<RegisterScreenProps> = ({ onCreated, onSwi
         </button>
       )}
 
-      <div className="relative z-10 w-full max-w-[440px] mx-6 my-10">
+      <div className="relative z-10 w-full max-w-[440px] mx-6 my-auto">
         <div className="text-center mb-8">
           <div className="inline-flex items-center justify-center w-14 h-14 rounded-r2 bg-primary/10 border border-primary/20 mb-4 shadow-glow">
             <Shield size={24} className="text-primary" />
