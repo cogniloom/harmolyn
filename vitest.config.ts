@@ -37,6 +37,11 @@ export default defineConfig({
     },
   },
   resolve: {
-    alias: { "@": path.resolve(__dirname, "./src") },
+    alias: {
+      "@": path.resolve(__dirname, "./src"),
+      // Unit tests run in jsdom and must not load the native WebRTC addon.
+      "@libp2p/webrtc": path.resolve(__dirname, "./src/test/webrtcStub.ts"),
+      "node-datachannel": path.resolve(__dirname, "./src/test/nodeDatachannelStub.ts"),
+    },
   },
 });

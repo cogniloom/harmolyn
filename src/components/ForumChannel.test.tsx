@@ -2,10 +2,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ForumChannel } from "./ForumChannel";
-import { useRuntimeSnapshot } from "@/lib/xoreinRuntimeContext";
-import { searchMessages, sendChannelMessage } from "@/lib/xoreinControl";
+import { useRuntimeMutations } from "@/hooks/runtime/useRuntimeMutations";
 import { PREVIEW_STORAGE_KEYS } from "@/config/storageKeys";
 import type { Channel } from "@/types";
+
+const searchMessages = vi.fn();
+const sendChannelMessage = vi.fn();
 
 vi.mock("@/data", () => ({
   CURRENT_USER: {
@@ -36,29 +38,21 @@ vi.mock("@/data", () => ({
   ],
 }));
 
-vi.mock("@/lib/xoreinRuntimeContext", () => ({
-  useRuntimeSnapshot: vi.fn(),
+vi.mock("@/hooks/runtime/useRuntimeMutations", () => ({
+  useRuntimeMutations: vi.fn(),
 }));
-
-vi.mock("@/lib/xoreinControl", async () => {
-  const actual = await vi.importActual<typeof import("@/lib/xoreinControl")>("@/lib/xoreinControl");
-  return {
-    ...actual,
-    searchMessages: vi.fn(),
-    sendChannelMessage: vi.fn(),
-  };
-});
 
 const channel: Channel = { id: "ch-forum", name: "ideas", type: "forum", categoryId: "c" };
 
 describe("ForumChannel backend wiring", () => {
   beforeEach(() => {
-    vi.mocked(useRuntimeSnapshot).mockReturnValue({
-      peer_id: "peer-local",
-      identity: { peer_id: "peer-local" },
-      control_endpoint: "http://xorein.local",
-    });
-    vi.mocked(searchMessages).mockResolvedValue({
+    searchMessages.mockReset();
+    sendChannelMessage.mockReset();
+    vi.mocked(useRuntimeMutations).mockReturnValue({
+      searchMessages,
+      sendChannelMessage,
+    } as never);
+    searchMessages.mockResolvedValue({
       messages: ["msg-1", "msg-2"],
       results: [
         {
@@ -79,14 +73,14 @@ describe("ForumChannel backend wiring", () => {
           created_at: "2026-05-26T11:00:00Z",
         },
       ],
-    } as never);
-    vi.mocked(sendChannelMessage).mockResolvedValue({
+    });
+    sendChannelMessage.mockResolvedValue({
       id: "msg-3",
       scope_type: "channel",
       scope_id: "ch-forum",
       sender_peer_id: "peer-local",
       body: "New forum post\n\nHello world\n\n#idea",
-    } as never);
+    });
   });
 
   it("loads live forum posts from xorein", async () => {
@@ -102,7 +96,6 @@ describe("ForumChannel backend wiring", () => {
 
     await waitFor(() => {
       expect(searchMessages).toHaveBeenCalledWith(
-        expect.objectContaining({ peer_id: "peer-local" }),
         expect.objectContaining({
           scope_type: "channel",
           scope_id: "ch-forum",
@@ -116,7 +109,10 @@ describe("ForumChannel backend wiring", () => {
   });
 
   it("normalizes malformed persisted forum posts", () => {
-    vi.mocked(useRuntimeSnapshot).mockReturnValue(null);
+    vi.mocked(useRuntimeMutations).mockReturnValue({
+      searchMessages: vi.fn().mockRejectedValue(new Error("native engine is not ready")),
+      sendChannelMessage: vi.fn(),
+    } as never);
     window.localStorage.setItem(
       PREVIEW_STORAGE_KEYS.forum(channel.id),
       JSON.stringify([
@@ -166,7 +162,10 @@ describe("ForumChannel backend wiring", () => {
   });
 
   it("renders the empty state when all persisted forum posts are malformed", () => {
-    vi.mocked(useRuntimeSnapshot).mockReturnValue(null);
+    vi.mocked(useRuntimeMutations).mockReturnValue({
+      searchMessages: vi.fn().mockRejectedValue(new Error("native engine is not ready")),
+      sendChannelMessage: vi.fn(),
+    } as never);
     window.localStorage.setItem(
       PREVIEW_STORAGE_KEYS.forum(channel.id),
       JSON.stringify([
@@ -183,7 +182,10 @@ describe("ForumChannel backend wiring", () => {
   });
 
   it("dedupes forum tags before rendering chips and tag filters", () => {
-    vi.mocked(useRuntimeSnapshot).mockReturnValue(null);
+    vi.mocked(useRuntimeMutations).mockReturnValue({
+      searchMessages: vi.fn().mockRejectedValue(new Error("native engine is not ready")),
+      sendChannelMessage: vi.fn(),
+    } as never);
     window.localStorage.setItem(
       PREVIEW_STORAGE_KEYS.forum(channel.id),
       JSON.stringify([
@@ -229,11 +231,26 @@ describe("ForumChannel backend wiring", () => {
 
     await waitFor(() => {
       expect(sendChannelMessage).toHaveBeenCalledWith(
-        expect.objectContaining({ peer_id: "peer-local" }),
         "ch-forum",
         "New forum post\n\nHello world\n\n#idea",
       );
     });
+  });
+
+  it("surfaces a publish failure and does not invent a local post", async () => {
+    sendChannelMessage.mockRejectedValueOnce(new Error("native engine is not ready"));
+    const user = userEvent.setup();
+
+    render(<ForumChannel channel={channel} />);
+
+    await user.click(screen.getByRole("button", { name: /new post/i }));
+    await user.type(screen.getByLabelText(/post title/i), "Failed post");
+    await user.type(screen.getByLabelText(/post content/i), "Should stay local-only");
+    await user.click(screen.getByRole("button", { name: /^publish$/i }));
+
+    expect(await screen.findByRole("status")).toHaveTextContent("native engine is not ready");
+    expect(screen.getByLabelText(/post title/i)).toHaveValue("Failed post");
+    expect(screen.queryByRole("heading", { name: "Failed post" })).toBeNull();
   });
 
   it("opens a thread and replies through xorein", async () => {
@@ -256,7 +273,6 @@ describe("ForumChannel backend wiring", () => {
 
     await waitFor(() => {
       expect(sendChannelMessage).toHaveBeenCalledWith(
-        expect.objectContaining({ peer_id: "peer-local" }),
         "ch-forum",
         "Try the relay queue",
         { reply_to: "msg-1" },
@@ -264,8 +280,26 @@ describe("ForumChannel backend wiring", () => {
     });
   });
 
+  it("surfaces a reply failure and keeps the draft", async () => {
+    const user = userEvent.setup();
+
+    render(<ForumChannel channel={channel} />);
+
+    await waitFor(() => expect(searchMessages).toHaveBeenCalled());
+    await user.click(screen.getByRole("button", { name: /How do I set up relays\?/i }));
+    sendChannelMessage.mockRejectedValueOnce(new Error("native engine is not ready"));
+    await user.type(screen.getByPlaceholderText(/reply \/\/ thread/i), "Try the relay queue");
+    await user.click(screen.getByRole("button", { name: /send reply/i }));
+
+    expect(await screen.findByRole("status")).toHaveTextContent("native engine is not ready");
+    expect(screen.getByPlaceholderText(/reply \/\/ thread/i)).toHaveValue("Try the relay queue");
+  });
+
   it("keeps the first normalized user when duplicate author ids are present", () => {
-    vi.mocked(useRuntimeSnapshot).mockReturnValue(null);
+    vi.mocked(useRuntimeMutations).mockReturnValue({
+      searchMessages: vi.fn().mockRejectedValue(new Error("native engine is not ready")),
+      sendChannelMessage: vi.fn(),
+    } as never);
     window.localStorage.setItem(
       PREVIEW_STORAGE_KEYS.forum(channel.id),
       JSON.stringify([

@@ -1,13 +1,19 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { MessageSquare, Eye, ArrowUp, ArrowDown, Plus, Pin, Search, X, ArrowLeft } from 'lucide-react';
-import { USERS, CURRENT_USER } from '@/data';
+import { USERS } from '@/data';
 import type { Channel } from '@/types';
 import { usePersistentState } from '@/hooks/usePersistentState';
-import { useRuntimeSnapshot } from '@/lib/xoreinRuntimeContext';
+import { useRuntimeMutations } from '@/hooks/runtime/useRuntimeMutations';
 import { PREVIEW_STORAGE_KEYS } from '@/config/storageKeys';
 import { resolveAvatarSrc } from '@/lib/avatar';
-import { createCollisionResistantId } from '@/lib/localIds';
-import { searchMessages, sendChannelMessage, type XoreinMessageRecord } from '@/lib/xoreinControl';
+
+interface ForumMessageRecord {
+  id: string;
+  body: string;
+  created_at?: string;
+  sender_peer_id: string;
+  reply_to?: string;
+}
 
 interface ForumPostData {
   id: string;
@@ -57,7 +63,7 @@ function formatForumTimestamp(raw?: string): string {
   }
 }
 
-function parseForumMessage(record: Pick<XoreinMessageRecord, 'id' | 'body' | 'created_at' | 'sender_peer_id' | 'reply_to'>): ForumPostData {
+function parseForumMessage(record: ForumMessageRecord): ForumPostData {
   const parts = record.body.split(/\n\n+/).map((part) => part.trim()).filter(Boolean);
   const title = parts[0] || 'Untitled post';
   const tagMatches = record.body.match(/#[\w-]+/g) ?? [];
@@ -111,7 +117,7 @@ function normalizeForumUsers(value: unknown): typeof USERS {
 }
 
 export const ForumChannel: React.FC<ForumChannelProps> = ({ channel, headerControl }) => {
-  const runtimeSnapshot = useRuntimeSnapshot();
+  const { searchMessages, sendChannelMessage } = useRuntimeMutations();
   const [storedPosts, setPosts] = usePersistentState<ForumPostData[]>(PREVIEW_STORAGE_KEYS.forum(channel.id), []);
   const [sortMode, setSortMode] = useState<SortMode>('latest');
   const [searchQuery, setSearchQuery] = useState('');
@@ -122,26 +128,27 @@ export const ForumChannel: React.FC<ForumChannelProps> = ({ channel, headerContr
   const [draftTags, setDraftTags] = useState('');
   const [activeThread, setActiveThread] = useState<ForumPostData | null>(null);
   const [threadReply, setThreadReply] = useState('');
+  const [feedback, setFeedback] = useState<string | null>(null);
   const posts = useMemo(() => normalizeForumPosts(storedPosts), [storedPosts]);
   const normalizedUsers = useMemo(() => normalizeForumUsers(USERS), []);
 
   useEffect(() => {
-    if (!runtimeSnapshot) {
-      return;
-    }
-
     void (async () => {
-      const result = await searchMessages(runtimeSnapshot, {
+      const result = await searchMessages({
         scope_type: 'channel',
         scope_id: channel.id,
         limit: 200,
       });
-      const livePosts = result.results.map((record) => parseForumMessage(record));
+      const livePosts = result.results
+        .map((record) => parseForumMessage(record))
+        .filter((post) => post.id && post.title);
       if (livePosts.length > 0) {
         setPosts(livePosts);
       }
-    })();
-  }, [channel.id, runtimeSnapshot, setPosts]);
+    })().catch(() => {
+      // Search is local on the native path. A missing engine must not invent posts.
+    });
+  }, [channel.id, searchMessages, setPosts]);
 
   const allTags = useMemo(() => [...new Set(posts.flatMap((post) => post.tags))], [posts]);
 
@@ -169,29 +176,18 @@ export const ForumChannel: React.FC<ForumChannelProps> = ({ channel, headerContr
     const tags = draftTags.split(',').map((tag) => tag.trim().toLowerCase()).filter(Boolean);
     const body = [title, content, tags.map((tag) => `#${tag}`).join(' ')].filter(Boolean).join('\n\n');
 
-    if (runtimeSnapshot) {
-      const record = await sendChannelMessage(runtimeSnapshot, channel.id, body);
+    try {
+      const record = await sendChannelMessage(channel.id, body) as ForumMessageRecord;
       const livePost = parseForumMessage(record);
       setPosts((prev) => [livePost, ...prev]);
-    } else {
-      const post: ForumPostData = {
-        id: createCollisionResistantId('fp'),
-        title,
-        authorId: CURRENT_USER.id,
-        content,
-        tags,
-        timestamp: 'just now',
-        replies: 0,
-        views: 0,
-        upvotes: 1,
-      };
-      setPosts((prev) => [post, ...prev]);
+      setDraftTitle('');
+      setDraftContent('');
+      setDraftTags('');
+      setComposing(false);
+      setFeedback(null);
+    } catch (error) {
+      setFeedback(error instanceof Error ? error.message : 'Unable to publish forum post.');
     }
-
-    setDraftTitle('');
-    setDraftContent('');
-    setDraftTags('');
-    setComposing(false);
   };
 
   const submitReply = async () => {
@@ -203,10 +199,13 @@ export const ForumChannel: React.FC<ForumChannelProps> = ({ channel, headerContr
       return;
     }
 
-    if (runtimeSnapshot) {
-      await sendChannelMessage(runtimeSnapshot, channel.id, replyBody, { reply_to: activeThread.id });
+    try {
+      await sendChannelMessage(channel.id, replyBody, { reply_to: activeThread.id });
+      setThreadReply('');
+      setFeedback(null);
+    } catch (error) {
+      setFeedback(error instanceof Error ? error.message : 'Unable to send forum reply.');
     }
-    setThreadReply('');
   };
 
   if (activeThread) {
@@ -221,6 +220,11 @@ export const ForumChannel: React.FC<ForumChannelProps> = ({ channel, headerContr
           {headerControl}
         </div>
         <div className="flex-1 overflow-y-auto p-4 space-y-4">
+          {feedback && (
+            <div role="status" className="glass-card rounded-r2 border border-accent-warning/20 bg-accent-warning/10 px-4 py-3 text-xs text-accent-warning">
+              {feedback}
+            </div>
+          )}
           <article className="glass-card rounded-r2 p-4 border border-stroke-subtle space-y-3">
             <div className="flex items-center gap-2 flex-wrap">
               {activeThread.pinned && <Pin size={10} className="text-accent-warning" />}
@@ -279,6 +283,12 @@ export const ForumChannel: React.FC<ForumChannelProps> = ({ channel, headerContr
             </button>
           </div>
         </div>
+
+        {feedback && (
+          <div role="status" className="glass-card rounded-r2 border border-accent-warning/20 bg-accent-warning/10 px-4 py-3 text-xs text-accent-warning">
+            {feedback}
+          </div>
+        )}
 
         {composing && (
           <div className="glass-card rounded-r2 p-3 border border-primary/20 space-y-2">

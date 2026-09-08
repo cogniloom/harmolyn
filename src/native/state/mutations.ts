@@ -18,7 +18,7 @@ import {
   updateServer, removeServerMembership, removeServerMember,
   setActiveScope as storeSetActiveScope, clearUnread as storeClearUnread,
   ensureDm,
-  addFriendRequest, acceptFriend,
+  addFriendRequest, acceptFriend, removeFriendRecord,
   joinVoice, leaveVoice,
   addRelay, removeRelay,
   updatePresenceEntry,
@@ -1575,6 +1575,14 @@ export function nativeAcceptFriend(requestId: string): Promise<void> {
 
 export function nativeDeclineFriend(requestId: string): Promise<void> {
   return nativeActOnFriendRequest(requestId, 'decline');
+}
+
+/** Local-only friend/block-record removal. Never sent to a support node. */
+export function nativeRemoveFriend(friendId: string): void {
+  if (!removeFriendRecord(friendId)) {
+    throw new Error('This friend record no longer exists.');
+  }
+  publishNativeSnapshot();
 }
 
 // ── Voice ──────────────────────────────────────────────────────────────────

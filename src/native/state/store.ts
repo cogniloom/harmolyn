@@ -1313,6 +1313,23 @@ export function removeFriendRequest(requestId: string): void {
   }));
 }
 
+/** Remove a local friend or blocked-user record by id. Does not contact a node. */
+export function removeFriendRecord(friendId: string): boolean {
+  const id = friendId.trim();
+  if (!id) return false;
+  let removed = false;
+  updateState(s => {
+    const nextFriends = s.friends.filter(record => record.id !== id);
+    const nextRequests = s.friend_requests.filter(record => record.id !== id);
+    if (nextFriends.length === s.friends.length && nextRequests.length === s.friend_requests.length) {
+      return {};
+    }
+    removed = true;
+    return { friends: nextFriends, friend_requests: nextRequests };
+  });
+  return removed;
+}
+
 /**
  * @deprecated A remote acceptance without the original request id is unsafe:
  * a delayed packet could settle a newer retry to the same peer. Use

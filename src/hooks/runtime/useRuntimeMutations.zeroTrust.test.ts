@@ -151,3 +151,32 @@ describe('useRuntimeMutations — invite preview stays local on the native path'
     await expect(result.current.markScopeRead?.('channel-1')).resolves.toBeUndefined();
   });
 });
+
+describe('useRuntimeMutations — native friend/voice/upload stay off the support node', () => {
+  beforeEach(() => {
+    engineHolder.engine = {};
+  });
+
+  it('removes a missing friend record locally without HTTP', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const { result } = renderHook(() => useRuntimeMutations());
+
+    await expect(result.current.removeFriend('missing-friend')).rejects.toThrow(/no longer exists/);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects HTTP voice frames and attachment uploads on the native path', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const { result } = renderHook(() => useRuntimeMutations());
+
+    await expect(result.current.sendVoiceFrame('voice-1', { pcm: 'secret' })).rejects.toThrow(/WebRTC mesh/);
+    await expect(result.current.uploadAttachment({
+      filename: 'secret.png',
+      contentType: 'image/png',
+      data: 'AAAA',
+    })).rejects.toThrow(/blob swarm/);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});

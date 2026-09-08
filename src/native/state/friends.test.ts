@@ -9,13 +9,13 @@
 // presence broadcasts carrying typing_in_scope, with an automatic stop after idle.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
-  initStore, getState, setNativeIdentity, addFriendRequest, getOutbox,
+  initStore, getState, setNativeIdentity, addFriendRequest, getOutbox, updateState,
 } from './store';
 import { registerPeerSync } from '../sync/registry';
 import { PROTOCOLS } from '../families/families';
 import {
   nativeAcceptFriend, nativeDrainOutbox, nativeUpdatePresence,
-  nativeNotifyTyping, nativeStopTyping,
+  nativeNotifyTyping, nativeStopTyping, nativeRemoveFriend,
 } from './mutations';
 import type { PeerSync } from '../sync/peersync';
 
@@ -214,5 +214,33 @@ describe('typing producer (nativeNotifyTyping / nativeStopTyping)', () => {
       status: 'dnd',
       status_text: 'in a meeting',
     }));
+  });
+});
+
+describe('nativeRemoveFriend is local-only', () => {
+  beforeEach(() => {
+    localStorage.clear();
+    initStore();
+    setNativeIdentity({ id: ME, peer_id: ME });
+  });
+
+  it('unblocks a blocked user without contacting a peer or node', () => {
+    updateState(s => ({
+      friends: [{
+        id: 'block-1',
+        from_peer_id: ME,
+        to_peer_id: ALICE,
+        status: 'blocked',
+        created_at: new Date().toISOString(),
+      }],
+    }));
+
+    nativeRemoveFriend('block-1');
+
+    expect(getState().friends).toEqual([]);
+  });
+
+  it('rejects a missing friend id', () => {
+    expect(() => nativeRemoveFriend('missing')).toThrow(/no longer exists/);
   });
 });
